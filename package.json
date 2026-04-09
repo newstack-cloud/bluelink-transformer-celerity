@@ -1,0 +1,12 @@
+{
+  "name": "bluelink-transformer-celerity",
+  "version": "0.1.0",
+  "description": "Dependencies for scripts and git hooks for the Bluelink Transformer for Celerity",
+  "main": "index.js",
+  "repository": "git@github.com:newstack-cloud/bluelink-transformer-celerity.git",
+  "devDependencies": {
+    "@commitlint/cli": "^17.0.0",
+    "@commitlint/config-conventional": "^17.0.0"
+  },
+  "packageManager": "yarn@4.3.1"
+}

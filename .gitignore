@@ -1,0 +1,73 @@
+# Code generated pre-build, (e.g genny generics templates)
+gen-*.go
+
+# Binaries for programs and plugins
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Test binary, built with `go test -c`
+*.test
+
+# Output of the go coverage tool, specifically when used with LiteIDE
+*.out
+coverage.txt
+coverage.html
+
+# Test report for sonar.
+report.json
+
+# Lint report for sonar.
+lint-report.xml
+
+# Dependency directories (remove the comment below to include it)
+# vendor/
+
+# Test harness artifcats
+.mypy_cache
+
+# Any log files.
+*.log
+
+# Environment variables and app config
+.env
+!.env.test.example
+
+tmp
+*-tmp
+
+.vscode
+
+# Virtual environment for python test harness.
+.venv
+bin
+
+# A file name used for the compiled binary when testing during development.
+bluelink-transformer-celerity
+
+# Yarn depedencies and generated node files used for commitlint tooling.
+.yarn
+node_modules
+*.cjs
+*.mjs
+
+# Directories for locally built plugins for testing docgen.
+plugins
+
+# Generated docs file for the plugin.
+docs.json
+
+.DS_Store
+
+# Directory for miscellaneous files
+# that should not be committed to version control.
+misc
+
+# Files for instructions and notes for cursor to generate integrations.
+.cursor
+
+# Claude workflow/plan files used by individuals to streamline
+# resource, link and data source development.
+CLAUDE.md

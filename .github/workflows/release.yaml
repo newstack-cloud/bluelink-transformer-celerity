@@ -1,0 +1,267 @@
+# Bluelink Plugin release workflow.
+#
+# Uses svu for version calculation, git-cliff for changelog generation,
+# and goreleaser for building artifacts and publishing the GitHub release.
+#
+# Flow:
+# 1. On push to main, a release PR is created/updated with the next version
+#    and changelog preview. If no releasable commits exist, no PR is created.
+# 2. When the release PR is merged, the tag is created and goreleaser runs.
+# 3. goreleaser builds artifacts, creates the GitHub release, and publishes.
+# 4. The Bluelink Registry webhook picks up the single "published" event
+#    with all artifacts already available.
+#
+# Pre-release mode:
+# Set "prerelease": true in .release.json to produce pre-release versions
+# (e.g. v0.2.0-next.1). When switched back to false, the stable release
+# changelog will include all changes since the last stable tag.
+#
+# Manual dispatch:
+# The goreleaser job can be triggered manually via workflow_dispatch with a
+# version input (e.g. "0.1.1"). The tag must already exist.
+name: Release
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Release version (without v prefix, e.g. 0.1.1). Tag must already exist.'
+        required: true
+        type: string
+
+permissions: {}
+
+jobs:
+  prepare-release:
+    permissions:
+      contents: write
+      pull-requests: write
+    runs-on: ubuntu-latest
+    if: ${{ github.event_name == 'push' }}
+    outputs:
+      release_merged: ${{ steps.check-merge.outputs.release_merged }}
+      version: ${{ steps.check-merge.outputs.version }}
+      tag: ${{ steps.check-merge.outputs.tag }}
+      prerelease: ${{ steps.check-merge.outputs.prerelease }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Check if this is a release PR merge
+        id: check-merge
+        run: |
+          COMMIT_MSG=$(git log -1 --pretty=%s)
+          # Match both stable (v0.1.0) and pre-release (v0.2.0-next.1) versions
+          if echo "$COMMIT_MSG" | grep -qE '^chore: release v[0-9]+\.[0-9]+\.[0-9]+'; then
+            VERSION=$(echo "$COMMIT_MSG" | grep -oE 'v[0-9]+\.[0-9]+\.[0-9]+(-[a-zA-Z0-9.]+)?')
+            echo "release_merged=true" >> "$GITHUB_OUTPUT"
+            echo "version=${VERSION#v}" >> "$GITHUB_OUTPUT"
+            echo "tag=$VERSION" >> "$GITHUB_OUTPUT"
+            # Check if this is a pre-release
+            if echo "$VERSION" | grep -qE '\-'; then
+              echo "prerelease=true" >> "$GITHUB_OUTPUT"
+            else
+              echo "prerelease=false" >> "$GITHUB_OUTPUT"
+            fi
+            echo "Release PR merged for $VERSION"
+          else
+            echo "release_merged=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Read release config
+        if: ${{ steps.check-merge.outputs.release_merged == 'false' }}
+        id: config
+        run: |
+          PRERELEASE=$(jq -r '.prerelease // false' .release.json)
+          echo "prerelease=$PRERELEASE" >> "$GITHUB_OUTPUT"
+
+      - name: Setup Go for version calculation
+        if: ${{ steps.check-merge.outputs.release_merged == 'false' }}
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: 'go.mod'
+          cache: true
+      - name: Install svu binary
+        if: ${{ steps.check-merge.outputs.release_merged == 'false' }}
+        run: go install github.com/caarlos0/svu@latest
+
+      - name: Determine version
+        if: ${{ steps.check-merge.outputs.release_merged == 'false' }}
+        id: version
+        run: |
+          PRERELEASE="${{ steps.config.outputs.prerelease }}"
+
+          if [ "$PRERELEASE" = "true" ]; then
+            NEXT=$(svu prerelease --pre-release=next)
+          else
+            NEXT=$(svu next)
+          fi
+
+          # For stable releases, compare against the last stable tag
+          # For pre-releases, compare against any tag (including pre-release)
+          if [ "$PRERELEASE" = "true" ]; then
+            CURRENT=$(svu current)
+          else
+            # Get the last stable tag (no hyphen in version)
+            CURRENT=$(git tag -l 'v[0-9]*' --sort=-v:refname | grep -vE '\-' | head -1)
+            CURRENT="${CURRENT:-v0.0.0}"
+          fi
+
+          if [ "$CURRENT" != "$NEXT" ]; then
+            echo "version=${NEXT#v}" >> "$GITHUB_OUTPUT"
+            echo "tag=$NEXT" >> "$GITHUB_OUTPUT"
+            echo "prerelease=$PRERELEASE" >> "$GITHUB_OUTPUT"
+            echo "Next release: $CURRENT → $NEXT"
+          else
+            echo "No releasable commits since $CURRENT"
+          fi
+
+      - name: Generate changelog
+        if: ${{ steps.check-merge.outputs.release_merged == 'false' && steps.version.outputs.tag != '' }}
+        uses: orhun/git-cliff-action@v4
+        with:
+          config: cliff.toml
+          args: >-
+            --tag ${{ steps.version.outputs.tag }}
+            ${{ steps.version.outputs.prerelease == 'false' && '--ignore-tags ".*-.*"' || '' }}
+        env:
+          OUTPUT: CHANGELOG.md
+
+      - name: Create or update release PR
+        if: ${{ steps.check-merge.outputs.release_merged == 'false' && steps.version.outputs.tag != '' }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.version.outputs.tag }}
+          VERSION: ${{ steps.version.outputs.version }}
+          PRERELEASE: ${{ steps.version.outputs.prerelease }}
+        run: |
+          BRANCH="release/$TAG"
+
+          # Configure git
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          # Create or reset the release branch from main
+          git checkout -B "$BRANCH"
+          git add CHANGELOG.md
+          if git diff --cached --quiet; then
+            echo "No changelog changes"
+          else
+            git commit -m "chore: release $TAG"
+          fi
+          git push -f origin "$BRANCH"
+
+          # Build PR body
+          if [ "$PRERELEASE" = "true" ]; then
+            RELEASE_TYPE="Pre-release"
+          else
+            RELEASE_TYPE="Release"
+          fi
+
+          BODY="$(cat <<EOF
+          ## $RELEASE_TYPE $TAG
+
+          This PR updates the changelog for $TAG.
+
+          Merge this PR to trigger the release workflow which will:
+          1. Create the \`$TAG\` tag
+          2. Build artifacts with goreleaser
+          3. Publish the GitHub release
+          4. Notify the Bluelink Registry
+          EOF
+          )"
+
+          # Create or update the PR
+          EXISTING_PR=$(gh pr list --head "$BRANCH" --json number --jq '.[0].number')
+          if [ -n "$EXISTING_PR" ]; then
+            gh pr edit "$EXISTING_PR" \
+              --title "chore: release $TAG" \
+              --body "$BODY"
+            echo "Updated PR #$EXISTING_PR"
+          else
+            gh pr create \
+              --head "$BRANCH" \
+              --base main \
+              --title "chore: release $TAG" \
+              --body "$BODY"
+            echo "Created release PR"
+          fi
+
+      - name: Create tag for merged release
+        if: ${{ steps.check-merge.outputs.release_merged == 'true' }}
+        run: |
+          TAG="${{ steps.check-merge.outputs.tag }}"
+          git tag "$TAG"
+          git push origin "$TAG"
+
+  goreleaser:
+    permissions:
+      contents: write
+    runs-on: ubuntu-latest
+    needs: prepare-release
+    if: >-
+      ${{
+        always() && (
+          (needs.prepare-release.outputs.release_merged == 'true') ||
+          github.event_name == 'workflow_dispatch'
+        )
+      }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Resolve Version
+        id: version
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "tag=v${{ inputs.version }}" >> "$GITHUB_OUTPUT"
+            echo "version=${{ inputs.version }}" >> "$GITHUB_OUTPUT"
+            # Detect pre-release from version string
+            if echo "${{ inputs.version }}" | grep -qE '\-'; then
+              echo "prerelease=true" >> "$GITHUB_OUTPUT"
+            else
+              echo "prerelease=false" >> "$GITHUB_OUTPUT"
+            fi
+          else
+            echo "tag=${{ needs.prepare-release.outputs.tag }}" >> "$GITHUB_OUTPUT"
+            echo "version=${{ needs.prepare-release.outputs.version }}" >> "$GITHUB_OUTPUT"
+            echo "prerelease=${{ needs.prepare-release.outputs.prerelease }}" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Checkout release tag
+        run: git checkout "${{ steps.version.outputs.tag }}"
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: 'go.mod'
+          cache: true
+      - name: Install Plugin Docgen Tool
+        run: |
+          go install github.com/newstack-cloud/bluelink/tools/plugin-docgen/cmd/bluelink-plugin-docgen@latest
+      - name: Build Transformer for Docgen
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          mkdir -p /tmp/bluelink/plugins/transformers/newstack-cloud/celerity/$VERSION
+          go build -ldflags "-X main.version=$VERSION" -o /tmp/bluelink/plugins/transformers/newstack-cloud/celerity/$VERSION/plugin .
+      - name: Generate Plugin JSON Docs
+        run: |
+          bluelink-plugin-docgen -plugin=newstack-cloud/celerity
+        env:
+          BLUELINK_PLUGIN_DOCGEN_PLUGIN_LOG_FILE_ROOT_DIR: /tmp/bluelink/plugins/logs
+          BLUELINK_DEPLOY_ENGINE_PLUGIN_PATH: /tmp/bluelink/plugins
+      - name: Import GPG key
+        uses: crazy-max/ghaction-import-gpg@v6
+        id: import_gpg
+        with:
+          gpg_private_key: ${{ secrets.GPG_PRIVATE_KEY }}
+          passphrase: ${{ secrets.PASSPHRASE }}
+      - name: Run GoReleaser
+        uses: goreleaser/goreleaser-action@v6
+        with:
+          args: release --clean
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GPG_FINGERPRINT: ${{ steps.import_gpg.outputs.fingerprint }}
+          GORELEASER_CURRENT_TAG: ${{ steps.version.outputs.tag }}

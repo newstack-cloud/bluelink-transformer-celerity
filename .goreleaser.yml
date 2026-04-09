@@ -1,0 +1,84 @@
+# See https://goreleaser.com for documentation on how to customise this
+# behavior.
+version: 2
+builds:
+- env:
+    # goreleaser does not work with CGO.
+    - CGO_ENABLED=0
+  mod_timestamp: '{{ .CommitTimestamp }}'
+  flags:
+    - -trimpath
+  ldflags:
+    - '-s -w -X main.version={{.Version}}'
+  goos:
+    - freebsd
+    - windows
+    - linux
+    - darwin
+  goarch:
+    - amd64
+    - '386'
+    - arm
+    - arm64
+  ignore:
+    - goos: darwin
+      goarch: '386'
+  binary: 'plugin'
+archives:
+- format: zip
+  name_template: '{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}'
+checksum:
+  extra_files:
+    - glob: 'bluelink-registry-info.json'
+      name_template: '{{ .ProjectName }}_{{ .Version }}_registry_info.json'
+    - glob: 'docs.json'
+      name_template: '{{ .ProjectName }}_{{ .Version }}_docs.json'
+  name_template: '{{ .ProjectName }}_{{ .Version }}_SHA256SUMS'
+  algorithm: sha256
+signs:
+  - artifacts: checksum
+    args:
+      # if you are using this in a GitHub action or some other automated pipeline,
+      # the batch flag needs to be passed to avoid interactive prompts.
+      - "--batch"
+      - "--local-user"
+      # set this environment variable for the fingerprint of your signing key.
+      - "{{ .Env.GPG_FINGERPRINT }}"
+      - "--output"
+      - "${signature}"
+      - "--detach-sign"
+      - "${artifact}"
+release:
+  extra_files:
+    - glob: 'bluelink-registry-info.json'
+      name_template: '{{ .ProjectName }}_{{ .Version }}_registry_info.json'
+    - glob: 'docs.json'
+      name_template: '{{ .ProjectName }}_{{ .Version }}_docs.json'
+  # If you want to manually examine the release before its live, uncomment this line:
+  # draft: true
+changelog:
+  use: github
+  sort: asc
+  groups:
+    - title: Features
+      regexp: '^.*?feat(\([[:word:]]+\))??!?:.+$'
+      order: 0
+    - title: Bug Fixes
+      regexp: '^.*?fix(\([[:word:]]+\))??!?:.+$'
+      order: 1
+    - title: Performance Improvements
+      regexp: '^.*?perf(\([[:word:]]+\))??!?:.+$'
+      order: 2
+    - title: Dependencies
+      regexp: '^.*?deps(\([[:word:]]+\))??!?:.+$'
+      order: 3
+    - title: Other
+      order: 999
+  filters:
+    exclude:
+      - '^docs:'
+      - '^style:'
+      - '^chore:'
+      - '^ci:'
+      - '^build:'
+      - '^wip:'
