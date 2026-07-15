@@ -65,6 +65,41 @@ if [[ "$TEST_MODE" == "integration" || "$TEST_MODE" == "all" ]] && [ -f ".env.te
   set +o allexport
 fi
 
+if [[ "$TEST_MODE" == "integration" || "$TEST_MODE" == "all" ]]; then
+  finish() {
+    echo "Taking down test dependencies docker compose stack ..."
+    docker compose -f docker-compose.test-deps.yml down
+  }
+  trap finish EXIT
+
+  echo "Bringing up docker compose stack for test dependencies ..."
+  docker compose -f docker-compose.test-deps.yml up -d
+
+  echo "Waiting for LocalStack to be ready ..."
+  start=$EPOCHSECONDS
+  completed="false"
+  while [ "$completed" != "true" ]; do
+    sleep 5
+    completed=$(curl -s localhost:4579/_localstack/init/ready | jq .completed)
+    if (( EPOCHSECONDS - start > 60 )); then break; fi
+  done
+
+  echo "Populating S3 with test data ..."
+  awslocal --endpoint-url=http://localhost:4579 s3 mb s3://test-bucket --region eu-west-2
+  awslocal --endpoint-url=http://localhost:4579 s3api put-object --bucket test-bucket \
+    --body shared/build/__testdata/s3/data/test-bucket/valid.manifest.json \
+    --key valid.manifest.json --region eu-west-2
+  awslocal --endpoint-url=http://localhost:4579 s3api put-object --bucket test-bucket \
+    --body shared/build/__testdata/s3/data/test-bucket/invalid.manifest.json \
+    --key invalid.manifest.json --region eu-west-2
+
+  # LocalStack accepts any credentials, but the AWS SDK's default credential
+  # chain still needs *something* present. Setting these here keeps the test
+  # code itself free of credential plumbing.
+  export AWS_ACCESS_KEY_ID=test
+  export AWS_SECRET_ACCESS_KEY=test
+fi
+
 go test -tags="$TEST_TAGS" -count=1 -timeout 90000ms -race -coverprofile=coverage.txt -coverpkg=./... -covermode=atomic `go list ./... | egrep -v '(/(testutils))$'`
 
 if [ -z "$GITHUB_ACTION" ]; then
