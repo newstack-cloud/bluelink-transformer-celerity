@@ -5,12 +5,17 @@ import (
 	"embed"
 	"fmt"
 	"log"
+	"os"
 
+	"github.com/newstack-cloud/bluelink-transformer-celerity/shared"
+	awsshared "github.com/newstack-cloud/bluelink-transformer-celerity/shared/aws"
+	"github.com/newstack-cloud/bluelink-transformer-celerity/shared/build"
 	"github.com/newstack-cloud/bluelink-transformer-celerity/transformer"
 	"github.com/newstack-cloud/bluelink/libs/plugin-framework/plugin"
 	"github.com/newstack-cloud/bluelink/libs/plugin-framework/pluginservicev1"
 	"github.com/newstack-cloud/bluelink/libs/plugin-framework/sdk/pluginutils"
 	"github.com/newstack-cloud/bluelink/libs/plugin-framework/sdk/transformerv1"
+	"github.com/spf13/afero"
 )
 
 //go:embed transformer_description.md
@@ -23,9 +28,24 @@ func main() {
 	}
 	defer closeService()
 
+	fileSystem := afero.NewOsFs()
 	hostInfoContainer := pluginutils.NewHostInfoContainer()
+	fsResourceLoader := build.NewFSResourceLoader(fileSystem)
+	envMap := shared.EnvMap(os.Environ())
+	s3ResourceLoader := build.NewS3ResourceLoader(
+		awsshared.NewS3Client,
+		envMap,
+		nil, // Use default config loader
+	)
+	manifestLoader := build.NewManifestLoader(
+		build.WithDefaultResourceLoader(fsResourceLoader),
+		build.WithSchemeResourceLoader("s3", s3ResourceLoader),
+	)
+	deps := &shared.Dependencies{
+		BuildManifestLoader: manifestLoader,
+	}
 	transformerServer := transformerv1.NewTransformerPlugin(
-		transformer.NewTransformer(),
+		transformer.NewTransformer(deps),
 		hostInfoContainer,
 		serviceClient,
 	)

@@ -1,0 +1,13 @@
+services:
+  localstack:
+    container_name: "localstack_bluelink_transformer_celerity_tests"
+    image: localstack/localstack:4.12.0
+    network_mode: bridge
+    ports:
+      - "4579:4566"
+    environment:
+      SERVICES: s3
+      DEBUG: 1
+      DOCKER_HOST: unix:///var/run/docker.sock
+    volumes:
+      - "/var/run/docker.sock:/var/run/docker.sock"
