@@ -143,6 +143,11 @@ func (e *awsServerlessEmitter) emit(
 	}
 	funcResourceName := lambdaFuncResourceName(r.Name)
 
+	// Preserve the handler's linkSelector onto the Lambda so the provider's
+	// outbound links (queue, topic, datastore, bucket, config) resolve against
+	// the concrete resources by label.
+	declareOutboundLinks(r, lambdaResource)
+
 	derivedValues := e.createDerivedValues(funcResourceName, handlerID, celerityRuntime, r)
 
 	result := &transformutils.EmitResult{
@@ -265,8 +270,4 @@ func (e *awsServerlessEmitter) wireLayerForHandler(
 
 func lambdaFuncResourceName(handlerName string) string {
 	return fmt.Sprintf("%s_lambda_func", handlerName)
-}
-
-func createSharedParentContributions(r *ResolvedHandler) map[string]*core.MappingNode {
-	return map[string]*core.MappingNode{}
 }
