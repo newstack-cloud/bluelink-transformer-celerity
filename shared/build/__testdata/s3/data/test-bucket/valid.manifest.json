@@ -1,0 +1,27 @@
+{
+  "version": "1",
+  "runtime": "nodejs20.x",
+  "target": "aws-serverless",
+  "handlers": {
+    "api.handler": {
+      "lambda": {}
+    }
+  },
+  "lambda": {
+    "appCode": {
+      "type": "zip",
+      "s3Bucket": "build-artifacts",
+      "s3Key": "app.zip",
+      "size": 1024,
+      "contentHash": "abc123"
+    },
+    "entryPoint": "__celerity_lambda_entry__.handler",
+    "sharedLayer": {
+      "type": "zip",
+      "s3Bucket": "build-artifacts",
+      "s3Key": "shared-layer.zip",
+      "size": 2048,
+      "contentHash": "def456"
+    }
+  }
+}
