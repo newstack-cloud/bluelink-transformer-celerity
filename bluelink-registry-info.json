@@ -1,3 +1,6 @@
 {
-    "supportedProtocols": ["1.0"]
+    "supportedProtocols": ["1.0"],
+    "dependencies": {
+        "newstack-cloud/aws": "^0.4.0"
+    }
 }
