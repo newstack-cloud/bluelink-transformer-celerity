@@ -18,35 +18,49 @@ The initial focus of the transformer (powering Celerity v0) is to support FaaS-b
 ## Project Structure
 
 ```
+transformer/
+  transformer.go     # Transformer plugin definition and blueprint transform function.
 resources/           # Celerity resource implementations.
   handler/           # `celerity/handler` resource implementation.
-    aws/             # AWS-specific implementation of the `handler` resource.
+    handler.go
+    handler_aws.go
   handlerconfig/     # `celerity/handlerConfig` resource implementation.
-    aws/             # AWS-specific implementation of the `handlerConfig` resource.
+    handlerconfig.go
+    handlerconfig_aws.go
   api/               # `celerity/api` resource implementation.
-    aws/             # AWS-specific implementation of the `api` resource.
+    api.go
+    api_aws.go
   consumer/          # `celerity/consumer` resource implementation.
-    aws/             # AWS-specific implementation of the `consumer` resource.
+    consumer.go
+    consumer_aws.go
   schedule/          # `celerity/schedule` resource implementation.
-    aws/             # AWS-specific implementation of the `schedule` resource.
+    schedule.go
+    schedule_aws.go
   vpc/               # `celerity/vpc` resource implementation.
-    aws/             # AWS-specific implementation of the `vpc` resource.
+    vpc.go
+    vpc_aws.go
   sqldatabase/       # `celerity/sqlDatabase` resource implementation.
-    aws/             # AWS-specific implementation of the `sqldatabase` resource.
+    sqldatabase.go
+    sqldatabase_aws.go
   datastore/         # `celerity/datastore` resource implementation.
-    aws/             # AWS-specific implementation of the `datastore` resource.
+    datastore.go
+    datastore_aws.go
   cache/             # `celerity/cache` resource implementation.
-    aws/             # AWS-specific implementation of the `cache` resource.
+    cache.go
+    cache_aws.go
   topic/             # `celerity/topic` resource implementation.
-    aws/             # AWS-specific implementation of the `topic` resource.
+    topic.go
+    topic_aws.go
   queue/             # `celerity/queue` resource implementation.
-    aws/             # AWS-specific implementation of the `queue` resource.
+    queue.go
+    queue_aws.go
   bucket/            # `celerity/bucket` resource implementation.
-    aws/             # AWS-specific implementation of the `bucket` resource.
+    bucket.go
+    bucket_aws.go
   config/            # `celerity/config` resource implementation.
-    aws/             # AWS-specific implementation of the `config` resource.
-utils/               # Shared utilities and helpers
-internal/testutils/  # Test mocks and integration test helpers
+    config.go
+    config_aws.go
+version.go           # Version information set via ldflags at build time.
 ```
 
 ## Additional Documentation
