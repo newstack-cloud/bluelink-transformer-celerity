@@ -224,10 +224,10 @@ func dbDatabaseNameKey(name string) string {
 // vpcReferences carries the shared VPC-derived references plus the subnet group
 // resource, resolved once and reused across every DB resource.
 type vpcReferences struct {
-	subnetGroupName string
-	subnetIdsRef    *core.MappingNode
-	securityGroups  *core.MappingNode
-	subnetGroup     *schema.Resource
+	subnetGroupNameRef *core.MappingNode
+	subnetIdsRef       *core.MappingNode
+	securityGroups     *core.MappingNode
+	subnetGroup        *schema.Resource
 }
 
 func resolveVPCRefs(r *ResolvedSQLDatabase, name string) (*vpcReferences, error) {
@@ -259,11 +259,19 @@ func resolveVPCRefs(r *ResolvedSQLDatabase, name string) (*vpcReferences, error)
 		Metadata: infraMeta(r.Name),
 	}
 
+	// Reference the emitted subnet group's name so a dependency edge is created,
+	// rather than repeating the plain string (which would leave no ordering edge).
+	subnetGroupNameRef, err := shared.SubstitutionMappingNode(
+		fmt.Sprintf("${resources.%s.spec.dbSubnetGroupName}", subnetGroupResourceName(r.Name)))
+	if err != nil {
+		return nil, err
+	}
+
 	return &vpcReferences{
-		subnetGroupName: subnetGroupName,
-		subnetIdsRef:    subnetIdsRef,
-		securityGroups:  sgRef,
-		subnetGroup:     subnetGroup,
+		subnetGroupNameRef: subnetGroupNameRef,
+		subnetIdsRef:       subnetIdsRef,
+		securityGroups:     sgRef,
+		subnetGroup:        subnetGroup,
 	}, nil
 }
 
@@ -285,7 +293,7 @@ func buildStandaloneInstance(
 	)
 	applyInstanceAuth(spec, r)
 	if vpcRefs != nil {
-		spec.Fields["dbSubnetGroupName"] = core.MappingNodeFromString(vpcRefs.subnetGroupName)
+		spec.Fields["dbSubnetGroupName"] = vpcRefs.subnetGroupNameRef
 		spec.Fields["vpcSecurityGroups"] = vpcRefs.securityGroups
 	}
 
@@ -326,7 +334,7 @@ func buildAuroraCluster(
 		spec.Fields["manageMasterUserPassword"] = core.MappingNodeFromBool(true)
 	}
 	if vpcRefs != nil {
-		spec.Fields["dbSubnetGroupName"] = core.MappingNodeFromString(vpcRefs.subnetGroupName)
+		spec.Fields["dbSubnetGroupName"] = vpcRefs.subnetGroupNameRef
 		spec.Fields["vpcSecurityGroupIds"] = vpcRefs.securityGroups
 	}
 
@@ -408,6 +416,13 @@ func buildProxyResources(
 		return nil, err
 	}
 
+	// Reference the emitted proxy's name so the target group depends on the proxy.
+	proxyNameRef, err := shared.SubstitutionMappingNode(
+		fmt.Sprintf("${resources.%s.spec.dbProxyName}", proxyResourceName(r.Name)))
+	if err != nil {
+		return nil, err
+	}
+
 	proxySpec := core.MappingNodeFields(
 		"dbProxyName", core.MappingNodeFromString(name),
 		"engineFamily", core.MappingNodeFromString(engineFamily(engine)),
@@ -453,7 +468,7 @@ func buildProxyResources(
 		proxyTargetGroupResourceName(r.Name): {
 			Type: &schema.ResourceTypeWrapper{Value: "aws/rds/dbProxyTargetGroup"},
 			Spec: core.MappingNodeFields(
-				"dbProxyName", core.MappingNodeFromString(name),
+				"dbProxyName", proxyNameRef,
 				"targetGroupName", core.MappingNodeFromString("default"),
 				"dbInstanceIdentifiers", core.MappingNodeItems(
 					instanceRef(r.Name, "dbInstanceIdentifier"),

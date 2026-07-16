@@ -42,7 +42,9 @@ func (s *SQLDatabaseTransformTestSuite) Test_database_in_a_managed_vpc_emits_ins
 	// Password mode -> RDS manages the master-user secret itself.
 	s.True(core.BoolValue(inst.Spec.Fields["manageMasterUserPassword"]))
 	s.Nil(inst.Spec.Fields["enableIAMDatabaseAuthentication"])
-	s.Equal("orders-db-subnets", core.StringValue(inst.Spec.Fields["dbSubnetGroupName"]))
+	// dbSubnetGroupName references the emitted subnet group so a dependency edge
+	// is created (rather than a plain string that would leave no ordering edge).
+	s.Equal("myDb_rds_subnet_group", resourceRefName(inst.Spec.Fields["dbSubnetGroupName"]))
 	s.Require().NotNil(inst.Spec.Fields["vpcSecurityGroups"])
 	s.Equal("orders", inst.Metadata.Labels.Values["app"])
 
@@ -73,10 +75,12 @@ func (s *SQLDatabaseTransformTestSuite) Test_database_in_a_managed_vpc_emits_ins
 	s.Equal("myDb_rds_proxy_role", core.StringValue(role.Spec.Fields["roleName"]))
 	s.Require().NotNil(role.Spec.Fields["policies"], "password mode grants secret access")
 
-	// A target group registers the instance behind the proxy.
+	// A target group registers the instance behind the proxy. dbProxyName
+	// references the proxy so the target group depends on it.
 	tg := resources["myDb_rds_proxy_target_group"]
 	s.Require().NotNil(tg)
 	s.Equal("aws/rds/dbProxyTargetGroup", tg.Type.Value)
+	s.Equal("myDb_rds_proxy", resourceRefName(tg.Spec.Fields["dbProxyName"]))
 }
 
 func (s *SQLDatabaseTransformTestSuite) Test_iam_auth_proxy_uses_iam_auth_and_role_without_secret_policy() {
