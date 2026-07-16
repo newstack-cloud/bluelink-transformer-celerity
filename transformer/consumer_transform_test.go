@@ -4,6 +4,7 @@ package transformer
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/newstack-cloud/bluelink-transformer-celerity/shared"
@@ -679,6 +680,60 @@ func (s *ConsumerTransformTestSuite) transformTwoQueueConsumers(batchA, batchB i
 			edge("consumerB", "orderHandler", "celerity/consumer", "celerity/handler"),
 		),
 	)
+}
+
+// Two consumers on one handler that set the same label to different values cannot
+// both be honoured on the single function, so a conflict warning is surfaced.
+func (s *ConsumerTransformTestSuite) Test_conflicting_consumer_labels_warn() {
+	handlerRes := &schema.Resource{
+		Type: &schema.ResourceTypeWrapper{Value: "celerity/handler"},
+		Spec: core.MappingNodeFields(
+			"handlerName", core.MappingNodeFromString("orderHandler"),
+			"handler", core.MappingNodeFromString("handlers.process"),
+			"runtime", core.MappingNodeFromString("nodejs24.x"),
+		),
+		Metadata: &schema.Metadata{Annotations: annotationMap("celerity.handler.consumer", "true")},
+	}
+	queueRes := func(role string) *schema.Resource {
+		return &schema.Resource{
+			Type:         &schema.ResourceTypeWrapper{Value: "celerity/queue"},
+			Spec:         core.MappingNodeFields("name", core.MappingNodeFromString(role)),
+			LinkSelector: &schema.LinkSelector{ByLabel: &schema.StringMap{Values: map[string]string{"role": role}}},
+		}
+	}
+	consumerRes := func(role, eventVal string) *schema.Resource {
+		return &schema.Resource{
+			Type: &schema.ResourceTypeWrapper{Value: "celerity/consumer"},
+			Metadata: &schema.Metadata{
+				Labels: &schema.StringMap{Values: map[string]string{"role": role, "event": eventVal}},
+			},
+		}
+	}
+
+	out := s.transformOutput(
+		map[string]*schema.Resource{
+			"orderHandler": handlerRes,
+			"queueA":       queueRes("queue-a"),
+			"queueB":       queueRes("queue-b"),
+			"consumerA":    consumerRes("queue-a", "orders"),
+			"consumerB":    consumerRes("queue-b", "payments"),
+		},
+		edges(
+			edge("queueA", "consumerA", "celerity/queue", "celerity/consumer"),
+			edge("queueB", "consumerB", "celerity/queue", "celerity/consumer"),
+			edge("consumerA", "orderHandler", "celerity/consumer", "celerity/handler"),
+			edge("consumerB", "orderHandler", "celerity/consumer", "celerity/handler"),
+		),
+	)
+
+	found := false
+	for _, d := range out.Diagnostics {
+		if d.Level == core.DiagnosticLevelWarning &&
+			strings.Contains(d.Message, "conflicting values") && strings.Contains(d.Message, "event") {
+			found = true
+		}
+	}
+	s.True(found, "expected a warning about conflicting consumer label values")
 }
 
 // When a consumer matches multiple same-type sources, the disambiguation annotation
