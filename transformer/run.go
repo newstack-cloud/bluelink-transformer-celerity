@@ -15,9 +15,8 @@ func createRunHook(deps *shared.Dependencies) func(ctx context.Context, run *tra
 			shared.BuildManifestContextVarKey,
 		)
 		if !hasPath {
-			// No build manifest path available in context, which is
-			// possible in validation contexts.
-			// Skip loading the build manifest in this case.
+			// No build manifest path in context (possible in validation
+			// contexts), so skip loading it.
 			return nil
 		}
 
@@ -34,10 +33,8 @@ func createRunHook(deps *shared.Dependencies) func(ctx context.Context, run *tra
 			)
 		}
 
-		// Make the loaded build manifest available in the run so it is available
-		// at key stages of the transform pipeline.
-		// The key to access the manifest with transformutils.Use will be the *build.Manifest type
-		// as the type parameter.
+		// Provide the manifest to the run; transformutils.Use retrieves it later
+		// keyed by the *build.Manifest type.
 		transformutils.Provide(run, manifest)
 		return nil
 	}

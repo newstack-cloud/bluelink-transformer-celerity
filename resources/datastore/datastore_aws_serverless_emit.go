@@ -64,7 +64,7 @@ func emitDatastore(
 		spec.Fields["timeToLiveSpecification"] = ttl
 	}
 
-	// Deploy-config-sourced settings (per-datastore only, no global; §2.1).
+	// Deploy-config-sourced settings (per-datastore only, no global).
 	applyBillingConfig(spec, run, r)
 
 	// aws/dynamodb/table.tags is a list of {key, value} objects.
@@ -125,9 +125,8 @@ func buildGlobalSecondaryIndexes(r *ResolvedDatastore, attrNames *orderedSet) []
 	return gsis
 }
 
-// applyBillingConfig maps the per-datastore aws.dynamodb.<datastore>.* deploy
-// config onto the table's billingMode and throughput. Capacity units apply only
-// under PROVISIONED, on-demand request-unit ceilings only under PAY_PER_REQUEST.
+// Capacity units apply only under PROVISIONED, on-demand request-unit ceilings
+// only under PAY_PER_REQUEST.
 func applyBillingConfig(spec *core.MappingNode, run *transformutils.Run, r *ResolvedDatastore) {
 	ctx := run.TransformContext
 	name := core.StringValue(mustGet("$.name", r))

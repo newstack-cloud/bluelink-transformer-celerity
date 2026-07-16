@@ -25,8 +25,8 @@ func (c *ResolvedConsumer) ResourceType() string {
 	return "celerity/consumer"
 }
 
-// resolveConsumer is a thin pass-through: the source-to-handler wiring is resolved
-// on the handler side (which owns the link graph and emits the triggers).
+// A thin pass-through: the source-to-handler wiring is resolved on the handler
+// side, which owns the link graph and emits the triggers.
 func resolveConsumer(
 	_ context.Context,
 	_ *transformutils.Run,

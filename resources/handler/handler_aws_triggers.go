@@ -69,10 +69,10 @@ const (
 	annConsumerTopicPollPrefix = "celerity.consumer.topicPoll."
 )
 
-// applyLambdaLabels sets the emitted function's labels to the union of the
-// handler's own labels and every absorbed consumer's labels (handler wins on key
-// conflicts). This lets an inbound source/api/subscription link that selected the
-// consumer by label now resolve against the concrete function.
+// Sets the emitted function's labels to the union of the handler's own labels and
+// every absorbed consumer's labels (handler wins on key conflicts). This lets an
+// inbound source/api/subscription link that selected the consumer by label now
+// resolve against the concrete function.
 func applyLambdaLabels(r *ResolvedHandler, lambda *schema.Resource) {
 	labels := consumerLabelUnion(r)
 	if r.Resource.Metadata != nil && r.Resource.Metadata.Labels != nil {
@@ -86,9 +86,9 @@ func applyLambdaLabels(r *ResolvedHandler, lambda *schema.Resource) {
 	lambda.Metadata.Labels = &schema.StringMap{Values: labels}
 }
 
-// stampTriggerAnnotations layers the VPC-placement and consumer event-source link
-// annotations onto the emitted function's metadata. It returns diagnostics for any
-// consumer source that could not be fully wired on aws-serverless.
+// Layers the VPC-placement and consumer event-source link annotations onto the
+// emitted function's metadata. Returns diagnostics for any consumer source that
+// could not be fully wired on aws-serverless.
 func stampTriggerAnnotations(r *ResolvedHandler, lambda *schema.Resource) []*core.Diagnostic {
 	if r.VPC != nil {
 		setStringAnnotation(lambda.Metadata, annVPCSubnetType, r.VPCSubnetType)
@@ -104,11 +104,11 @@ func stampTriggerAnnotations(r *ResolvedHandler, lambda *schema.Resource) []*cor
 	return diagnostics
 }
 
-// routingKeyDeferred warns when a consumer sets a non-default routingKey while its
-// handler activates routing (the celerity.handler.consumer.route annotation). The
-// route tag reaches the runtime via the CELERITY_HANDLER_TAG environment variable,
-// but the routing key (the payload field to route on) is not propagated to the
-// function, so a non-default value would be silently ignored at runtime.
+// Warns when a consumer sets a non-default routingKey while its handler activates
+// routing (the celerity.handler.consumer.route annotation). The route tag reaches
+// the runtime via the CELERITY_HANDLER_TAG environment variable, but the routing
+// key (the payload field to route on) is not propagated to the function, so a
+// non-default value would be silently ignored at runtime.
 func routingKeyDeferred(r *ResolvedHandler, binding *ConsumerBinding) *core.Diagnostic {
 	if !r.HasRoutingTag {
 		return nil
@@ -194,7 +194,7 @@ func stampBucketBinding(lambda *schema.Resource, binding *ConsumerBinding) []*co
 	return diagnostics
 }
 
-// stampTopicBinding stamps the SQS event-source-mapping annotations (read by the
+// Stamps the SQS event-source-mapping annotations (read by the
 // aws/sqs/queue::aws/lambda/function link on the topic fan-out queue) and the
 // synthetic poll label that makes the queue's linkSelector resolve to the function.
 func stampTopicBinding(lambda *schema.Resource, binding *ConsumerBinding) {
@@ -220,10 +220,10 @@ func startingPosition(binding *ConsumerBinding) string {
 	return streamStartLatest
 }
 
-// bucketEvents maps the abstract celerity.consumer.bucket.events annotation
-// (comma-separated created|deleted|metadataUpdated) to concrete S3 event strings.
-// It returns the mapped events and any consumer events with no S3 equivalent
-// (metadataUpdated) so the caller can warn rather than drop them silently.
+// Maps the abstract celerity.consumer.bucket.events annotation (comma-separated
+// created|deleted|metadataUpdated) to concrete S3 event strings. Returns the
+// mapped events and any consumer events with no S3 equivalent (metadataUpdated) so
+// the caller can warn rather than drop them silently.
 func bucketEvents(binding *ConsumerBinding) (mapped []string, unsupported []string) {
 	value, ok := transformutils.GetAnnotation(
 		binding.ConsumerResource,
@@ -266,10 +266,10 @@ func s3EventForConsumerEvent(consumerEvent string) (string, bool) {
 	}
 }
 
-// emitScheduleRules builds one aws/events/rule per absorbed schedule, targeting the
-// emitted function. Setting targets[].arn to the function reference activates the
-// provider's aws/events/rule::aws/lambda/function link (which creates the invoke
-// permission), so no permission is emitted here.
+// Builds one aws/events/rule per absorbed schedule, targeting the emitted function.
+// Setting targets[].arn to the function reference activates the provider's
+// aws/events/rule::aws/lambda/function link (which creates the invoke permission),
+// so no permission is emitted here.
 func emitScheduleRules(
 	r *ResolvedHandler,
 	funcResourceName string,
@@ -333,8 +333,8 @@ func scheduleExpression(scheduleResource *schema.Resource) *core.MappingNode {
 	return core.MappingNodeFromString(core.StringValue(node))
 }
 
-// scheduleInput returns the schedule's spec.input JSON-encoded as a string, as
-// required by the aws/events/rule target input field.
+// Returns the schedule's spec.input JSON-encoded as a string, as required by the
+// aws/events/rule target input field.
 func scheduleInput(scheduleResource *schema.Resource) (string, bool) {
 	if scheduleResource == nil {
 		return "", false
@@ -350,11 +350,10 @@ func scheduleInput(scheduleResource *schema.Resource) (string, bool) {
 	return string(encoded), true
 }
 
-// emitConsumerSubscriptions builds the concrete event-source resources that an
-// absorbed consumer needs beyond the function-side annotations: an SQS fan-out
-// queue + SNS subscription (+ optional dead-letter queue) for a Celerity-topic
-// source, and a standalone aws/lambda/eventSourceMapping for each external stream
-// or external SQS source.
+// Builds the concrete event-source resources that an absorbed consumer needs
+// beyond the function-side annotations: an SQS fan-out queue + SNS subscription
+// (+ optional dead-letter queue) for a Celerity-topic source, and a standalone
+// aws/lambda/eventSourceMapping for each external stream or external SQS source.
 func emitConsumerSubscriptions(
 	r *ResolvedHandler,
 	funcResourceName string,
@@ -375,10 +374,10 @@ func emitConsumerSubscriptions(
 	return resources, nil
 }
 
-// emitTopicFanout wires the SNS -> SQS -> Lambda fan-out for a Celerity-topic
-// consumer: an intermediary SQS queue subscribed to the topic (giving a reliable,
-// scalable fan-out and the subscriberId output), an SNS subscription (sqs protocol)
-// and, unless disabled, a dead-letter queue with a redrive policy.
+// Wires the SNS -> SQS -> Lambda fan-out for a Celerity-topic consumer: an
+// intermediary SQS queue subscribed to the topic (giving a reliable, scalable
+// fan-out and the subscriberId output), an SNS subscription (sqs protocol) and,
+// unless disabled, a dead-letter queue with a redrive policy.
 func emitTopicFanout(
 	resources map[string]*schema.Resource,
 	binding *ConsumerBinding,
@@ -401,10 +400,10 @@ func emitTopicFanout(
 	return nil
 }
 
-// topicFanoutQueue is the intermediary SQS queue subscribed to the topic. Its
-// linkSelector carries the synthetic poll label so the aws/sqs/queue::aws/lambda/
-// function link creates the event source mapping to the function; the same label
-// (plus a redrive annotation) links it to its dead-letter queue.
+// The intermediary SQS queue subscribed to the topic. Its linkSelector carries the
+// synthetic poll label so the aws/sqs/queue::aws/lambda/function link creates the
+// event source mapping to the function; the same label (plus a redrive annotation)
+// links it to its dead-letter queue.
 func topicFanoutQueue(binding *ConsumerBinding) *schema.Resource {
 	meta := &schema.Metadata{
 		Annotations: consumerBaseAnnotations(binding.ConsumerName),
@@ -472,10 +471,10 @@ func topicSnsSubscription(
 	}, nil
 }
 
-// emitExternalSources emits a standalone aws/lambda/eventSourceMapping for each
-// external stream (dbStream/dataStream) and for a raw external SQS sourceId. The
-// out-of-blueprint object storage sources are surfaced as warnings on the function
-// side (see externalObjectStorageDeferred).
+// Emits a standalone aws/lambda/eventSourceMapping for each external stream
+// (dbStream/dataStream) and for a raw external SQS sourceId. The out-of-blueprint
+// object storage sources are surfaced as warnings on the function side (see
+// externalObjectStorageDeferred).
 func emitExternalSources(
 	resources map[string]*schema.Resource,
 	binding *ConsumerBinding,
@@ -598,7 +597,7 @@ func deadLetterQueueEnabled(binding *ConsumerBinding) bool {
 		"",
 	)
 	if !ok {
-		return true // default true per the celerity/consumer spec.
+		return true // default true when the annotation is absent.
 	}
 	return core.BoolValue(value)
 }
@@ -728,12 +727,11 @@ func externalSQSESMResourceName(consumerName string) string {
 	return fmt.Sprintf("%s_sqs_esm", consumerName)
 }
 
-// consumerSubscriberRewriters returns one rewriter per absorbed topic-source
-// consumer that resolves ${<consumer>.spec.subscriberId} to the concrete SQS
-// fan-out queue created for that consumer (<consumer>_topic_queue). Per the
-// celerity/consumer schema, subscriberId is the ID of the subscription created
-// when a queue is used to subscribe to a topic; on aws-serverless that subscriber
-// is the intermediary fan-out queue, identified by its ARN (matching how
+// Returns one rewriter per absorbed topic-source consumer that resolves
+// ${<consumer>.spec.subscriberId} to the concrete SQS fan-out queue created for
+// that consumer (<consumer>_topic_queue). subscriberId is the ID of the
+// subscription created when a queue subscribes to a topic; on aws-serverless that
+// subscriber is the intermediary fan-out queue, identified by its ARN (matching how
 // celerity/queue.spec.id resolves to the concrete queue ARN).
 func consumerSubscriberRewriters(r *ResolvedHandler) []transformutils.ResourcePropertyRewriter {
 	rewriters := []transformutils.ResourcePropertyRewriter{}
@@ -759,12 +757,12 @@ func subscriberIDRewriter(consumerName string) transformutils.ResourcePropertyRe
 	}
 }
 
-// externalRoleSources collects the out-of-blueprint event sources every absorbed
-// consumer polls via a standalone event source mapping. These have no provider
-// link to inject source-read IAM, so the transformer seeds the statements onto the
-// handler's execution role (see awslambda.SeedRoleSpec). Returning them here also
-// folds them into the role fingerprint, so a handler with external sources never
-// shares a role with one that lacks them.
+// Collects the out-of-blueprint event sources every absorbed consumer polls via a
+// standalone event source mapping. These have no provider link to inject
+// source-read IAM, so the transformer seeds the statements onto the handler's
+// execution role (see awslambda.SeedRoleSpec). Returning them here also folds them
+// into the role fingerprint, so a handler with external sources never shares a role
+// with one that lacks them.
 func externalRoleSources(r *ResolvedHandler) []awslambda.ExternalEventSource {
 	sources := []awslambda.ExternalEventSource{}
 	for _, binding := range r.ConsumerBindings {
@@ -808,9 +806,9 @@ func streamRoleService(sourceType string) string {
 	}
 }
 
-// arnString renders an ARN MappingNode (a literal scalar or a ${...} substitution)
-// to its canonical string form, used both to fingerprint the role plan and to
-// embed the ARN in the seeded policy statement.
+// Renders an ARN MappingNode (a literal scalar or a ${...} substitution) to its
+// canonical string form, used both to fingerprint the role plan and to embed the
+// ARN in the seeded policy statement.
 func arnString(node *core.MappingNode) string {
 	if node == nil {
 		return ""
@@ -823,11 +821,10 @@ func arnString(node *core.MappingNode) string {
 	return core.StringValue(node)
 }
 
-// externalSQSResourceARN renders an external SQS sourceId to an ARN suitable for
-// scoping an IAM statement. A literal queue URL
-// (https://sqs.<region>.amazonaws.com/<account>/<name>) is converted to its
-// arn:aws:sqs:<region>:<account>:<name> form; a literal ARN or a substitution is
-// used verbatim.
+// Renders an external SQS sourceId to an ARN suitable for scoping an IAM statement.
+// A literal queue URL (https://sqs.<region>.amazonaws.com/<account>/<name>) is
+// converted to its arn:aws:sqs:<region>:<account>:<name> form; a literal ARN or a
+// substitution is used verbatim.
 func externalSQSResourceARN(node *core.MappingNode) string {
 	value := arnString(node)
 	if arn, ok := sqsURLToARN(value); ok {

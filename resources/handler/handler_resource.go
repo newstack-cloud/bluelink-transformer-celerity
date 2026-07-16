@@ -35,9 +35,8 @@ func Resource(deps *shared.Dependencies) *transformerv1.AbstractResourceDefiniti
 	}
 }
 
-// newHandlerRewriterRegistration registers the handler's rewriter for the
-// aws-serverless target. It composes two contributions onto the SAME
-// (target, *ResolvedHandler) registry slot:
+// Registers the handler's rewriter for the aws-serverless target. It composes two
+// contributions onto the SAME (target, *ResolvedHandler) registry slot:
 //
 //  1. the declarative PropertyMap rewriter (handler.spec.* -> concrete Lambda),
 //     which also seeds the capability matrix entry, and

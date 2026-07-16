@@ -74,10 +74,8 @@ func emitBucket(
 	}, nil
 }
 
-// buildEncryption maps the abstract encryption config to the S3
-// bucketEncryption.serverSideEncryptionConfiguration list. The SSE algorithm is
-// taken from encryptionAlgorithm when set, otherwise defaults to KMS when a key
-// is supplied and SSE-S3 (AES256) otherwise.
+// The SSE algorithm is taken from encryptionAlgorithm when set, otherwise
+// defaults to KMS when a key is supplied and SSE-S3 (AES256) otherwise.
 func buildEncryption(r *ResolvedBucket) *core.MappingNode {
 	enc, ok := pluginutils.GetValueByPath("$.encryption", r.Resource.Spec)
 	if !ok || enc == nil {
@@ -112,8 +110,6 @@ func buildEncryption(r *ResolvedBucket) *core.MappingNode {
 	)
 }
 
-// buildWebsite maps mainPageDocument/notFoundDocument onto the S3 website
-// index/error document fields.
 func buildWebsite(r *ResolvedBucket) *core.MappingNode {
 	web, ok := pluginutils.GetValueByPath("$.website", r.Resource.Spec)
 	if !ok || web == nil {
@@ -132,7 +128,6 @@ func buildWebsite(r *ResolvedBucket) *core.MappingNode {
 	return out
 }
 
-// buildLogging maps destinationBucket/logFilePrefix onto the S3 logging config.
 func buildLogging(r *ResolvedBucket) *core.MappingNode {
 	log, ok := pluginutils.GetValueByPath("$.logging", r.Resource.Spec)
 	if !ok || log == nil {

@@ -14,10 +14,9 @@ func createAWSPropertyMap() transformutils.PropertyMap {
 			"spec.port": {"spec", "port"},
 		},
 		ValueRefs: map[string]*transformutils.ValueRefSpec{
-			// spec.host is emitted as a transformer-derived value because the correct
-			// endpoint depends on cluster mode (configuration endpoint when clustered,
-			// primary endpoint otherwise); the emit builds the derived value keyed
-			// <replicationGroup>_host. See cacheHostKey / emitCache.
+			// spec.host is a transformer-derived value because the correct endpoint
+			// depends on cluster mode (configuration endpoint when clustered, primary
+			// endpoint otherwise); keyed <replicationGroup>_host.
 			"spec.host": {Suffix: "_host"},
 		},
 	}

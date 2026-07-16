@@ -376,8 +376,8 @@ func valueSourceConfigurationSchema() *provider.ResourceDefinitionsSchema {
 	}
 }
 
-// guardReferenceSchema models the recurring "string | array[string]" guard
-// reference union used by auth.defaultGuard and websocketConfig.authGuard.
+// Models the recurring "string | array[string]" guard reference union used by
+// auth.defaultGuard and websocketConfig.authGuard.
 func guardReferenceSchema(description string) *provider.ResourceDefinitionsSchema {
 	return &provider.ResourceDefinitionsSchema{
 		Type:        provider.ResourceDefinitionsSchemaTypeUnion,

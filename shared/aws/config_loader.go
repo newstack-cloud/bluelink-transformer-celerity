@@ -44,8 +44,7 @@ func (l *DefaultConfigLoader) LoadDefaultConfig(
 // aws.* config variables. All fields are optional; unset fields fall through
 // to the AWS SDK default chain.
 //
-// `env` is the process environment as a map (typically built once at plugin
-// startup with envMapFromStrings). It exists so the option helpers can
+// `env` is the process environment as a map. It exists so the option helpers can
 // override the SDK's env-fallback behaviour with the transformer config's
 // precedence rule (config > env > SDK default).
 //

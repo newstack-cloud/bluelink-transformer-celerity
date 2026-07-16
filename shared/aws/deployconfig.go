@@ -7,8 +7,8 @@ import (
 
 // ResolveDeployConfig resolves an aws-serverless deploy-config value keyed by a
 // prefix, an optional per-resource name, and a suffix, applying the standard
-// precedence from aws-serverless.md §2.1: the per-resource key
-// (`<prefix>.<name>.<suffix>`) wins over the global key (`<prefix>.<suffix>`).
+// precedence: the per-resource key (`<prefix>.<name>.<suffix>`) wins over the
+// global key (`<prefix>.<suffix>`).
 //
 // The prefix absorbs any fixed infix (e.g. "aws.sns.fifo") and the suffix
 // absorbs any post-name path (e.g. "statusLogging.0.protocol"), so this single

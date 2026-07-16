@@ -279,8 +279,7 @@ func createSourceLinkedResource(
 const environmentVariablesField = "environmentVariables"
 
 // The handler schema is built once so resolveInheritedSpec can read inheritance
-// defaults from the resource schema, the single source of truth for default
-// values (see handler_resource_schema.go).
+// defaults from the resource schema, the single source of truth for default values.
 var handlerSchema = handlerResourceSchema()
 
 // Fills the handler's spec with values inherited from a
@@ -547,7 +546,7 @@ func deriveVPCSubnetType(resolvedHandler *ResolvedHandler) string {
 		"",
 	)
 	if !ok {
-		return SubnetTypePrivate // Default to private subnets if not specified.
+		return SubnetTypePrivate
 	}
 
 	return core.StringValue(subnetType)

@@ -16,8 +16,8 @@ const policyDocVersion = "2012-10-17"
 // RolePlan decides which handlers may share an execution role.
 //
 // The provider's links inject their own resource-scoped IAM statements into
-// whichever role a function references (docs/contract/aws-serverless.md §8), so
-// the transformer never computes policy content for linked resources. A role may
+// whichever role a function references, so the transformer never computes policy
+// content for linked resources. A role may
 // therefore only be shared between handlers whose link sets are identical,
 // otherwise each handler would inherit the other's grants.
 type RolePlan struct {
