@@ -290,6 +290,39 @@ func (s *SQLDatabaseTransformTestSuite) Test_single_az_light_preset_is_rejected(
 	s.NotContains(out.TransformedBlueprint.Resources.Values, "myDb_rds_instance")
 }
 
+// A database with no VPC link cannot be placed, so the emit errors and produces
+// no database resources rather than an incomplete instance.
+func (s *SQLDatabaseTransformTestSuite) Test_missing_vpc_errors_and_emits_nothing() {
+	dbRes := &schema.Resource{
+		Type: &schema.ResourceTypeWrapper{Value: "celerity/sqlDatabase"},
+		Spec: core.MappingNodeFields(
+			"name", core.MappingNodeFromString("orders"),
+			"engine", core.MappingNodeFromString("postgres"),
+		),
+	}
+	bp := &schema.Blueprint{Resources: &schema.ResourceMap{Values: map[string]*schema.Resource{"myDb": dbRes}}}
+	out, err := NewTransformer(&shared.Dependencies{}).Transform(
+		context.Background(),
+		&transform.SpecTransformerTransformInput{
+			InputBlueprint:     bp,
+			LinkGraph:          emptyLinkGraph{},
+			TransformerContext: validationContext(),
+		},
+	)
+	s.Require().NoError(err)
+	s.Require().NotNil(out.TransformedBlueprint)
+
+	found := false
+	for _, d := range out.Diagnostics {
+		if d.Level == core.DiagnosticLevelError && strings.Contains(d.Message, "require VPC placement") {
+			found = true
+		}
+	}
+	s.True(found, "expected an error diagnostic about required VPC placement")
+	s.NotContains(out.TransformedBlueprint.Resources.Values, "myDb_rds_instance")
+	s.NotContains(out.TransformedBlueprint.Resources.Values, "myDb_rds_proxy")
+}
+
 func (s *SQLDatabaseTransformTestSuite) transformDBWithVPC(
 	dbSpec *core.MappingNode,
 	vpcPreset string,

@@ -527,10 +527,19 @@ func apiMapping(
 		return nil, err
 	}
 
+	// Reference the emitted stage's name so the mapping depends on the stage
+	// resource rather than repeating the literal stage name (which leaves no edge).
+	stageRef, err := shared.SubstitutionMappingNode(
+		fmt.Sprintf("${resources.%s.spec.stageName}", stageResourceName(r.Name, protocol)),
+	)
+	if err != nil {
+		return nil, err
+	}
+
 	spec := core.MappingNodeFields(
 		"apiId", apiIDRef,
 		"domainName", domainRef,
-		"stage", core.MappingNodeFromString(defaultStageName),
+		"stage", stageRef,
 	)
 	if mappingKey != "" {
 		spec.Fields["apiMappingKey"] = core.MappingNodeFromString(mappingKey)

@@ -98,6 +98,30 @@ func (s *BucketTransformTestSuite) Test_encryption_defaults_to_sse_s3_without_a_
 	s.Nil(byDefault.Fields["kmsMasterKeyID"])
 }
 
+// A key paired with a non-KMS algorithm is invalid on S3; the emit normalises to
+// KMS so kmsMasterKeyID is never attached to an AES256 default.
+func (s *BucketTransformTestSuite) Test_encryption_key_forces_kms_over_non_kms_algorithm() {
+	b := &schema.Resource{
+		Type: &schema.ResourceTypeWrapper{Value: "celerity/bucket"},
+		Spec: core.MappingNodeFields(
+			"name", core.MappingNodeFromString("uploads"),
+			"encryption", core.MappingNodeFields(
+				"encryptionKeyId", core.MappingNodeFromString("alias/uploads-key"),
+				"encryptionAlgorithm", core.MappingNodeFromString("AES256"),
+			),
+		),
+	}
+
+	out := s.transformBucket(map[string]*schema.Resource{"myBucket": b})
+	s3 := out.TransformedBlueprint.Resources.Values["myBucket_s3_bucket"]
+	byDefault := s3.Spec.Fields["bucketEncryption"].
+		Fields["serverSideEncryptionConfiguration"].Items[0].
+		Fields["serverSideEncryptionByDefault"]
+	s.Equal("aws:kms", core.StringValue(byDefault.Fields["sseAlgorithm"]),
+		"a key implies KMS even when AES256 is requested")
+	s.Equal("alias/uploads-key", core.StringValue(byDefault.Fields["kmsMasterKeyID"]))
+}
+
 func (s *BucketTransformTestSuite) Test_deferred_configs_raise_a_warning_and_are_not_emitted() {
 	b := &schema.Resource{
 		Type: &schema.ResourceTypeWrapper{Value: "celerity/bucket"},

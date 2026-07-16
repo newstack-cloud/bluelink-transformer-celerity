@@ -79,9 +79,14 @@ func stampRouteAuth(r *ResolvedHandler, lambda *schema.Resource) error {
 
 	authType := guardAuthorizationType(r, guard)
 	if authType == "" {
-		// Unknown guard type: cannot classify the authorizer, so leave the route
-		// unprotected rather than emit an invalid authorizationType.
-		return nil
+		// The handler is protected by a guard that does not resolve to a jwt or
+		// custom guard on the linked API. Emitting the route without an authorizer
+		// would silently expose it, so fail instead.
+		return fmt.Errorf(
+			"celerity/handler %q is protected by guard %q, which is not defined as a jwt or custom "+
+				"guard on the linked celerity/api; the route cannot be emitted with authorization",
+			r.Name, guard,
+		)
 	}
 
 	authorizerRef, err := shared.SubstitutionMappingNode(

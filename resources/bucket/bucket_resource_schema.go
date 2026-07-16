@@ -1,6 +1,9 @@
 package bucket
 
-import "github.com/newstack-cloud/bluelink/libs/blueprint/provider"
+import (
+	"github.com/newstack-cloud/bluelink/libs/blueprint/core"
+	"github.com/newstack-cloud/bluelink/libs/blueprint/provider"
+)
 
 func bucketResourceSchema() *provider.ResourceDefinitionsSchema {
 	return &provider.ResourceDefinitionsSchema{
@@ -20,14 +23,19 @@ func bucketResourceSchema() *provider.ResourceDefinitionsSchema {
 				Description: "Server-side encryption for objects stored in the bucket.",
 				Attributes: map[string]*provider.ResourceDefinitionsSchema{
 					"encryptionKeyId": {
-						Type:        provider.ResourceDefinitionsSchemaTypeString,
-						Description: "The ID of the KMS key used to encrypt objects. When set, KMS encryption is used.",
+						Type: provider.ResourceDefinitionsSchemaTypeString,
+						Description: "The ID of the KMS key used to encrypt objects. Requires KMS encryption: " +
+							"when set the algorithm is \"aws:kms\" regardless of encryptionAlgorithm, since a " +
+							"customer-managed key is not valid with \"AES256\".",
 					},
 					"encryptionAlgorithm": {
 						Type: provider.ResourceDefinitionsSchemaTypeString,
-						Description: "The encryption algorithm. On AWS this is the S3 SSE algorithm " +
-							"(for example \"AES256\" or \"aws:kms\"). Defaults to \"aws:kms\" when an " +
-							"encryptionKeyId is set, otherwise \"AES256\".",
+						Description: "The encryption algorithm. On AWS this is the S3 SSE algorithm. Defaults " +
+							"to \"aws:kms\" when an encryptionKeyId is set, otherwise \"AES256\".",
+						AllowedValues: []*core.MappingNode{
+							core.MappingNodeFromString("AES256"),
+							core.MappingNodeFromString("aws:kms"),
+						},
 					},
 				},
 			},
