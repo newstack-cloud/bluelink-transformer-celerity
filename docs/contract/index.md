@@ -199,7 +199,7 @@ This section lists the environment variables the runtime SDKs read that are **sh
 |---|---|---|---|
 | `CELERITY_PLATFORM` | ✅ always | target-specific literal (see the per-target contract) | Selects the target provider wiring in the SDK bootstrap. |
 | `CELERITY_RUNTIME` | ⛔ never | (unset) | Presence indicates long-lived runtime mode; serverless mode omits it. The transformer leaves it unset. |
-| `CELERITY_DEPLOY_TARGET` | ✅ always | (unset) | Set by the CLI, indicates the deploy target environment to help in resource backend selection (e.g. AWS DynamoDB to back a `celerity/datastore` in an AWS deployment) |
+| `CELERITY_DEPLOY_TARGET` | ✅ always | the deploy-target value from `EnvInput.DeployTarget` (e.g. `aws-serverless` on the AWS handler path) | Injected by the transformer; indicates the deploy target environment to help in resource backend selection (e.g. AWS DynamoDB to back a `celerity/datastore` in an AWS deployment) |
 
 #### Handler routing
 
@@ -213,16 +213,16 @@ These three vars are the contract between the transformer and the SDK adapter th
 
 #### Resource link discovery (runtime configuration store)
 
-All entries below depend on section 3. In Phase 1 none of them are set because no outbound links are resolved yet; the table nonetheless documents the final contract so Phase 2 onward has a fixed target.
+All entries below depend on section 3 and are populated from resolved outbound links; the table documents the final contract for the resource-link configuration store.
 
 The SDK discovers namespaces from the env-var names themselves (`celerity-node-sdk: packages/config/src/config-layer.ts`, `discoverNamespaces`). The transformer always uses the **per-namespace** `CELERITY_CONFIG_<NS>_*` form, including for the internal `resources` namespace, where `<NS>` is `RESOURCES`.
 
 | Env var | Injected by transformer | Source, value | Purpose |
 |---|---|---|---|
-| `CELERITY_CONFIG_RESOURCES_STORE_ID` | 🔗 on link | store identifier as a bluelink substitution | Points the SDK at the internal resource-links store. Namespace name resolves to `resources`, matching the SDK's `RESOURCE_CONFIG_NAMESPACE` (`packages/config/src/resource-links.ts`). |
-| `CELERITY_CONFIG_RESOURCES_STORE_KIND` | 🔗 on link | backend kind identifier (see 3.1) | Selects which backend the SDK's `ConfigService` instantiates for the `resources` namespace. **Must be set explicitly**: when unset the SDK defaults a namespace to `secrets-manager`, not to the target's default. |
-| `CELERITY_CONFIG_<NS>_STORE_ID` | 🔗 on link, per `celerity/config` | store identifier for namespace `<NS>` | User namespaces declared via `celerity/config` resources. |
-| `CELERITY_CONFIG_<NS>_STORE_KIND` | 🔗 on link, per `celerity/config` | backend kind for namespace `<NS>` | Per-namespace backend choice. There is **no inheritance** from any global value; unset means `secrets-manager`. |
+| `CELERITY_CONFIG_RESOURCES_STORE_ID` | 🔗 on link | **link-provided** store identifier (a bluelink substitution resolved from the link to the store resource) | Points the SDK at the internal resource-links store. Namespace name resolves to `resources`, matching the SDK's `RESOURCE_CONFIG_NAMESPACE` (`packages/config/src/resource-links.ts`). |
+| `CELERITY_CONFIG_RESOURCES_STORE_KIND` | 🔗 on link | **transformer-emitted literal** naming the backend kind (see 3.1), not a link-resolved value | Selects which backend the SDK's `ConfigService` instantiates for the `resources` namespace. **Must be set explicitly**: when unset the SDK defaults a namespace to `secrets-manager`, not to the target's default. |
+| `CELERITY_CONFIG_<NS>_STORE_ID` | 🔗 on link, per `celerity/config` | **link-provided** store identifier for namespace `<NS>` | User namespaces declared via `celerity/config` resources. |
+| `CELERITY_CONFIG_<NS>_STORE_KIND` | 🔗 on link, per `celerity/config` | **transformer-emitted literal** naming the backend kind for namespace `<NS>` | Per-namespace backend choice. There is **no inheritance** from any global value; unset means `secrets-manager`. |
 | `CELERITY_CONFIG_<NS>_NAMESPACE` | 🔗 on link, per `celerity/config` | namespace name | Namespace name override, defaulting to the lowercase env-key suffix. |
 | `CELERITY_CONFIG_<NS>_STORE_PREFIX` | 🔗 on link, per `celerity/config` | key prefix | Filters fetched keys to those under `<prefix>/`, stripping the prefix. Distinct from the store id: the id locates the store, the prefix selects keys **within** it. |
 

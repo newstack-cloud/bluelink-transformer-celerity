@@ -1709,8 +1709,8 @@ of the declarative shapes:
 
 | Phase / shape | Receives `transform.Context`? |
 |---|---|
-| `Resolver` | No — target-agnostic; sees only `(name, resource, linkGraph, blueprint)` |
-| `Aggregator` | No — sees only `[]ResolvedResource` |
+| `Resolver` | By convention, no — but it receives `*Run`, so `run.TransformContext` is reachable; resolvers are written target-agnostic and do not read it |
+| `Aggregator` | By convention, no — but it receives `*Run`, so `run.TransformContext` is reachable; aggregators are written not to read it |
 | `RewriterFactory` | No — sees only the resolved primary |
 | `PropertyMap.Renames` / `PropertyMap.ValueRefs` | No — pure data |
 | `PropertyMap.Patterns[i].Rewrite` | No — receives only `RewriteContext{AbstractName, ConcreteName}` |
@@ -1718,11 +1718,14 @@ of the declarative shapes:
 | `AbstractResourceDefinition.CustomValidate` | Yes — pre-transform, for validity checks only |
 | `RunTransformPipeline` entry (framework-internal) | Yes — reads `ctx.TransformerConfigVariable("deployTarget")` once via `getDeployTarget` to dispatch the aggregator/emitter set |
 
-The exclusion is deliberate. The resolver, aggregator, and rewriter
-chain are pure transformations of input shape; making them
-ctx-aware would couple their outputs to deploy-time values, complicate
-testing, and undermine the reviewability of `PropertyMap` as
-declarative data. The emitter is where concrete spec values are
+The convention is deliberate. The resolver and aggregator both receive
+`*Run` and could reach `run.TransformContext`, but they are written as
+pure transformations of input shape and do not; the rewriter chain is not
+handed context at all. Reading context in these phases would couple their
+outputs to deploy-time values, complicate testing, and undermine the
+reviewability of `PropertyMap` as declarative data. The APIs do not
+currently prevent access — the independence is enforced by convention and
+review, not by the type signatures. The emitter is where concrete spec values are
 written into the output blueprint, and it is the one normal place
 deploy-time configuration belongs.
 
