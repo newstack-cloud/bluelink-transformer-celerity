@@ -109,6 +109,107 @@ func (s *RolePlanTestSuite) Test_seed_role_spec_adds_xray_policy_as_a_list_entry
 	)
 }
 
+func (s *RolePlanTestSuite) Test_role_plan_fingerprint_changes_when_external_sources_change() {
+	// External event sources have no provider link to inject source-read IAM, so
+	// the seed depends on them; a handler with external sources must not share a
+	// role with one that lacks them.
+	withExternal := &RolePlan{
+		ExternalSources: []ExternalEventSource{
+			{Service: ExternalSourceServiceSQS, ARN: "arn:aws:sqs:us-east-1:123456789012:ext-queue"},
+		},
+	}
+	withoutExternal := &RolePlan{}
+
+	s.NotEqual(
+		withExternal.Fingerprint(),
+		withoutExternal.Fingerprint(),
+		"Expected external sources to change the role fingerprint",
+	)
+	s.Equal(
+		withExternal.Fingerprint(),
+		(&RolePlan{ExternalSources: []ExternalEventSource{
+			{Service: ExternalSourceServiceSQS, ARN: "arn:aws:sqs:us-east-1:123456789012:ext-queue"},
+		}}).Fingerprint(),
+		"Expected identical external sources to share a role",
+	)
+}
+
+func (s *RolePlanTestSuite) Test_seed_role_spec_adds_external_source_read_policies() {
+	spec := SeedRoleSpec("celerityLambdaExec_abc12345", &RolePlan{
+		ExternalSources: []ExternalEventSource{
+			{
+				Service: ExternalSourceServiceSQS,
+				ARN:     "arn:aws:sqs:us-east-1:123456789012:ext-queue",
+			},
+			{
+				Service: ExternalSourceServiceDynamoDBStream,
+				ARN:     "arn:aws:dynamodb:us-east-1:123456789012:table/orders/stream/2024",
+			},
+			{
+				Service: ExternalSourceServiceKinesisStream,
+				ARN:     "arn:aws:kinesis:us-east-1:123456789012:stream/events",
+			},
+		},
+	})
+
+	policies := spec.Fields["policies"].Items
+	s.Require().Len(policies, 1)
+	s.Equal("celerity-external-event-sources", core.StringValue(policies[0].Fields["policyName"]))
+
+	doc := policies[0].Fields["policyDocument"].Fields
+	s.Equal("2012-10-17", core.StringValue(doc["version"]))
+
+	statements := doc["statement"].Items
+	s.Require().Len(statements, 3)
+
+	sqsStmt := statements[0].Fields
+	s.Equal("Allow", core.StringValue(sqsStmt["effect"]))
+	s.Equal(
+		"arn:aws:sqs:us-east-1:123456789012:ext-queue",
+		core.StringValue(sqsStmt["resource"]),
+	)
+	s.Equal(
+		[]string{"sqs:ReceiveMessage", "sqs:DeleteMessage", "sqs:GetQueueAttributes"},
+		core.StringSliceValue(sqsStmt["action"]),
+	)
+
+	ddbStmt := statements[1].Fields
+	s.Equal(
+		[]string{
+			"dynamodb:GetRecords",
+			"dynamodb:GetShardIterator",
+			"dynamodb:DescribeStream",
+			"dynamodb:ListStreams",
+		},
+		core.StringSliceValue(ddbStmt["action"]),
+	)
+
+	kinesisStmt := statements[2].Fields
+	s.Equal(
+		[]string{
+			"kinesis:GetRecords",
+			"kinesis:GetShardIterator",
+			"kinesis:DescribeStream",
+			"kinesis:ListStreams",
+		},
+		core.StringSliceValue(kinesisStmt["action"]),
+	)
+}
+
+func (s *RolePlanTestSuite) Test_seed_role_spec_combines_xray_and_external_source_policies() {
+	spec := SeedRoleSpec("celerityLambdaExec_abc12345", &RolePlan{
+		Tracing: true,
+		ExternalSources: []ExternalEventSource{
+			{Service: ExternalSourceServiceSQS, ARN: "arn:aws:sqs:us-east-1:123456789012:ext-queue"},
+		},
+	})
+
+	policies := spec.Fields["policies"].Items
+	s.Require().Len(policies, 2)
+	s.Equal("celerity-xray", core.StringValue(policies[0].Fields["policyName"]))
+	s.Equal("celerity-external-event-sources", core.StringValue(policies[1].Fields["policyName"]))
+}
+
 func TestRolePlanTestSuite(t *testing.T) {
 	suite.Run(t, new(RolePlanTestSuite))
 }

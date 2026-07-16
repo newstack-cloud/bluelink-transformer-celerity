@@ -166,8 +166,34 @@ func (s *QueueTransformTestSuite) Test_handler_linkSelector_is_preserved_onto_th
 	s.Equal("orders", resources["myQueue_sqs_queue"].Metadata.Labels.Values["app"])
 }
 
+func (s *QueueTransformTestSuite) Test_deploy_config_sets_retention_and_max_size() {
+	q := &schema.Resource{
+		Type: &schema.ResourceTypeWrapper{Value: "celerity/queue"},
+		Spec: core.MappingNodeFields("name", core.MappingNodeFromString("orders")),
+	}
+
+	// Global retention; per-queue max size (keyed by spec.name "orders").
+	ctx := deployConfigContext(map[string]*core.ScalarValue{
+		"aws.sqs.messageRetentionPeriod": core.ScalarFromInt(600),
+		"aws.sqs.orders.maxMessageSize":  core.ScalarFromInt(1024),
+	})
+
+	resources := s.transformWith(map[string]*schema.Resource{"myQueue": q}, ctx)
+	sqs := resources["myQueue_sqs_queue"]
+	s.Require().NotNil(sqs)
+	s.Equal(600, core.IntValue(sqs.Spec.Fields["messageRetentionPeriod"]))
+	s.Equal(1024, core.IntValue(sqs.Spec.Fields["maximumMessageSize"]))
+}
+
 func (s *QueueTransformTestSuite) transform(
 	resources map[string]*schema.Resource,
+) map[string]*schema.Resource {
+	return s.transformWith(resources, validationContext())
+}
+
+func (s *QueueTransformTestSuite) transformWith(
+	resources map[string]*schema.Resource,
+	ctx transform.Context,
 ) map[string]*schema.Resource {
 	bp := &schema.Blueprint{
 		Resources: &schema.ResourceMap{Values: resources},
@@ -177,12 +203,24 @@ func (s *QueueTransformTestSuite) transform(
 		&transform.SpecTransformerTransformInput{
 			InputBlueprint:     bp,
 			LinkGraph:          emptyLinkGraph{},
-			TransformerContext: validationContext(),
+			TransformerContext: ctx,
 		},
 	)
 	s.Require().NoError(err)
 	s.Require().NotNil(out.TransformedBlueprint)
 	return out.TransformedBlueprint.Resources.Values
+}
+
+// deployConfigContext is a transform context carrying deploy-config variables
+// (plus the standard validation + deploy-target context vars).
+func deployConfigContext(configVars map[string]*core.ScalarValue) transform.Context {
+	return &fakeTransformContext{
+		configVars: configVars,
+		contextVars: map[string]*core.ScalarValue{
+			core.ValidationContextVariableName: core.ScalarFromBool(true),
+			"deployTarget":                     core.ScalarFromString(shared.AWSServerless),
+		},
+	}
 }
 
 func literalAnnotation(value string) *substitutions.StringOrSubstitutions {

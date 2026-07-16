@@ -1,0 +1,442 @@
+//go:build unit
+
+package transformer
+
+import (
+	"context"
+	"testing"
+
+	"github.com/newstack-cloud/bluelink-transformer-celerity/shared"
+	"github.com/newstack-cloud/bluelink/libs/blueprint/core"
+	"github.com/newstack-cloud/bluelink/libs/blueprint/linktypes"
+	"github.com/newstack-cloud/bluelink/libs/blueprint/schema"
+	"github.com/newstack-cloud/bluelink/libs/blueprint/transform"
+	"github.com/stretchr/testify/suite"
+)
+
+type APITransformTestSuite struct {
+	suite.Suite
+}
+
+func TestAPITransformTestSuite(t *testing.T) {
+	suite.Run(t, new(APITransformTestSuite))
+}
+
+// An http-only API emits a single HTTP API Gateway plus its stage, and the
+// concrete API preserves the abstract API's linkSelector so the provider's
+// api::function link (activated by a label selector on the source) resolves.
+func (s *APITransformTestSuite) Test_http_only_emits_api_and_stage() {
+	apiRes := &schema.Resource{
+		Type: &schema.ResourceTypeWrapper{Value: "celerity/api"},
+		Spec: core.MappingNodeFields(
+			"protocols", core.MappingNodeItems(core.MappingNodeFromString("http")),
+		),
+		LinkSelector: &schema.LinkSelector{
+			ByLabel: &schema.StringMap{Values: map[string]string{"application": "orders"}},
+		},
+	}
+
+	resources := s.transform(
+		map[string]*schema.Resource{"ordersApi": apiRes},
+		edges(),
+	)
+
+	api := resources["ordersApi_http_api"]
+	s.Require().NotNil(api)
+	s.Equal("aws/apigatewayv2/api", api.Type.Value)
+	s.Equal("HTTP", core.StringValue(api.Spec.Fields["protocolType"]))
+
+	// The concrete API preserves the abstract API's linkSelector.
+	s.Require().NotNil(api.LinkSelector)
+	s.Equal("orders", api.LinkSelector.ByLabel.Values["application"])
+
+	stage := resources["ordersApi_http_stage"]
+	s.Require().NotNil(stage)
+	s.Equal("aws/apigatewayv2/stage", stage.Type.Value)
+	s.Equal("$default", core.StringValue(stage.Spec.Fields["stageName"]))
+	s.True(core.BoolValue(stage.Spec.Fields["autoDeploy"]))
+	s.Equal("ordersApi_http_api", resourceRefName(stage.Spec.Fields["apiId"]))
+
+	// No WebSocket API for an http-only declaration.
+	s.NotContains(resources, "ordersApi_websocket_api")
+}
+
+// A hybrid API (http + websocket) emits two API Gateways and two stages, with the
+// WebSocket routeSelectionExpression derived from the websocketConfig routeKey.
+func (s *APITransformTestSuite) Test_hybrid_emits_two_apis() {
+	apiRes := &schema.Resource{
+		Type: &schema.ResourceTypeWrapper{Value: "celerity/api"},
+		Spec: core.MappingNodeFields(
+			"protocols", core.MappingNodeItems(
+				core.MappingNodeFromString("http"),
+				core.MappingNodeFields(
+					"websocketConfig", core.MappingNodeFields(
+						"routeKey", core.MappingNodeFromString("action"),
+					),
+				),
+			),
+		),
+	}
+
+	resources := s.transform(
+		map[string]*schema.Resource{"chatApi": apiRes},
+		edges(),
+	)
+
+	s.Require().NotNil(resources["chatApi_http_api"])
+	s.Require().NotNil(resources["chatApi_http_stage"])
+
+	ws := resources["chatApi_websocket_api"]
+	s.Require().NotNil(ws)
+	s.Equal("WEBSOCKET", core.StringValue(ws.Spec.Fields["protocolType"]))
+	s.Equal("$request.body.action", core.StringValue(ws.Spec.Fields["routeSelectionExpression"]))
+	s.Require().NotNil(resources["chatApi_websocket_stage"])
+}
+
+// A JWT guard emits an aws/apigatewayv2/authorizer with the issuer, audience and
+// an identitySource derived from the guard's tokenSource.
+func (s *APITransformTestSuite) Test_jwt_guard_emits_authorizer() {
+	apiRes := &schema.Resource{
+		Type: &schema.ResourceTypeWrapper{Value: "celerity/api"},
+		Spec: core.MappingNodeFields(
+			"protocols", core.MappingNodeItems(core.MappingNodeFromString("http")),
+			"auth", core.MappingNodeFields(
+				"defaultGuard", core.MappingNodeFromString("jwt"),
+				"guards", core.MappingNodeFields(
+					"jwt", core.MappingNodeFields(
+						"type", core.MappingNodeFromString("jwt"),
+						"issuer", core.MappingNodeFromString("https://identity.example.com/oauth2/v1/"),
+						"tokenSource", core.MappingNodeFromString("$.headers.Authorization"),
+						"audience", core.MappingNodeItems(
+							core.MappingNodeFromString("https://identity.example.com/api/v1/"),
+						),
+					),
+				),
+			),
+		),
+	}
+
+	resources := s.transform(
+		map[string]*schema.Resource{"ordersApi": apiRes},
+		edges(),
+	)
+
+	authorizer := resources["ordersApi_jwt_authorizer"]
+	s.Require().NotNil(authorizer)
+	s.Equal("aws/apigatewayv2/authorizer", authorizer.Type.Value)
+	s.Equal("JWT", core.StringValue(authorizer.Spec.Fields["authorizerType"]))
+	s.Equal("ordersApi_http_api", resourceRefName(authorizer.Spec.Fields["apiId"]))
+
+	jwtConfig := authorizer.Spec.Fields["jwtConfiguration"]
+	s.Require().NotNil(jwtConfig)
+	s.Equal("https://identity.example.com/oauth2/v1/", core.StringValue(jwtConfig.Fields["issuer"]))
+	s.Equal(
+		"https://identity.example.com/api/v1/",
+		core.StringValue(specItem(jwtConfig.Fields["audience"], 0)),
+	)
+
+	identity := authorizer.Spec.Fields["identitySource"]
+	s.Require().NotNil(identity)
+	s.Equal("$request.header.Authorization", core.StringValue(specItem(identity, 0)))
+}
+
+// A custom domain emits a domainName carrying the certificate ARN plus an
+// apiMapping per protocol.
+func (s *APITransformTestSuite) Test_domain_emits_domain_and_mapping() {
+	const certARN = "arn:aws:acm:us-east-1:123456789012:certificate/abc"
+
+	apiRes := &schema.Resource{
+		Type: &schema.ResourceTypeWrapper{Value: "celerity/api"},
+		Spec: core.MappingNodeFields(
+			"protocols", core.MappingNodeItems(core.MappingNodeFromString("http")),
+			"domain", core.MappingNodeFields(
+				"domainName", core.MappingNodeFromString("api.example.com"),
+				"certificateId", core.MappingNodeFromString(certARN),
+				"securityPolicy", core.MappingNodeFromString("TLS_1_2"),
+			),
+		),
+	}
+
+	resources := s.transform(
+		map[string]*schema.Resource{"ordersApi": apiRes},
+		edges(),
+	)
+
+	domain := resources["ordersApi_domain"]
+	s.Require().NotNil(domain)
+	s.Equal("aws/apigatewayv2/domainName", domain.Type.Value)
+	s.Equal("api.example.com", core.StringValue(domain.Spec.Fields["domainName"]))
+
+	config := specItem(domain.Spec.Fields["domainNameConfigurations"], 0)
+	s.Require().NotNil(config)
+	s.Equal(certARN, core.StringValue(config.Fields["certificateArn"]))
+	s.Equal("TLS_1_2", core.StringValue(config.Fields["securityPolicy"]))
+
+	mapping := resources["ordersApi_http_api_mapping_0"]
+	s.Require().NotNil(mapping)
+	s.Equal("aws/apigatewayv2/apiMapping", mapping.Type.Value)
+	s.Equal("ordersApi_http_api", resourceRefName(mapping.Spec.Fields["apiId"]))
+	s.Equal("ordersApi_domain", resourceRefName(mapping.Spec.Fields["domainName"]))
+}
+
+// CORS config is mapped onto the concrete HTTP API's corsConfiguration.
+func (s *APITransformTestSuite) Test_cors_mapped_onto_http_api() {
+	apiRes := &schema.Resource{
+		Type: &schema.ResourceTypeWrapper{Value: "celerity/api"},
+		Spec: core.MappingNodeFields(
+			"protocols", core.MappingNodeItems(core.MappingNodeFromString("http")),
+			"cors", core.MappingNodeFields(
+				"allowCredentials", core.MappingNodeFromBool(true),
+				"allowOrigins", core.MappingNodeItems(
+					core.MappingNodeFromString("https://example.com"),
+				),
+				"allowMethods", core.MappingNodeItems(
+					core.MappingNodeFromString("GET"),
+					core.MappingNodeFromString("POST"),
+				),
+				"maxAge", core.MappingNodeFromInt(3600),
+			),
+		),
+	}
+
+	resources := s.transform(
+		map[string]*schema.Resource{"ordersApi": apiRes},
+		edges(),
+	)
+
+	api := resources["ordersApi_http_api"]
+	s.Require().NotNil(api)
+	cors := api.Spec.Fields["corsConfiguration"]
+	s.Require().NotNil(cors)
+	s.True(core.BoolValue(cors.Fields["allowCredentials"]))
+	s.Equal("https://example.com", core.StringValue(specItem(cors.Fields["allowOrigins"], 0)))
+	s.Equal("GET", core.StringValue(specItem(cors.Fields["allowMethods"], 0)))
+	// The integer maxAge passes straight through to the provider's integer field.
+	s.Equal(3600, core.IntValue(cors.Fields["maxAge"]))
+}
+
+// A linked HTTP handler carries the provider route annotation derived from its
+// own method/path annotations, plus the JWT authorizer wiring from the default
+// guard.
+func (s *APITransformTestSuite) Test_linked_http_handler_carries_route_annotation() {
+	apiRes := &schema.Resource{
+		Type: &schema.ResourceTypeWrapper{Value: "celerity/api"},
+		Spec: core.MappingNodeFields(
+			"protocols", core.MappingNodeItems(core.MappingNodeFromString("http")),
+			"auth", core.MappingNodeFields(
+				"defaultGuard", core.MappingNodeFromString("jwt"),
+				"guards", core.MappingNodeFields(
+					"jwt", core.MappingNodeFields(
+						"type", core.MappingNodeFromString("jwt"),
+						"issuer", core.MappingNodeFromString("https://identity.example.com/oauth2/v1/"),
+						"tokenSource", core.MappingNodeFromString("$.headers.Authorization"),
+					),
+				),
+			),
+		),
+		LinkSelector: &schema.LinkSelector{
+			ByLabel: &schema.StringMap{Values: map[string]string{"application": "orders"}},
+		},
+	}
+	handlerRes := &schema.Resource{
+		Type: &schema.ResourceTypeWrapper{Value: "celerity/handler"},
+		Spec: core.MappingNodeFields(
+			"handlerName", core.MappingNodeFromString("createOrder"),
+			"handler", core.MappingNodeFromString("handlers.create"),
+			"runtime", core.MappingNodeFromString("nodejs24.x"),
+		),
+		Metadata: &schema.Metadata{
+			Annotations: annotationMap(
+				"celerity.handler.http", "true",
+				"celerity.handler.http.method", "POST",
+				"celerity.handler.http.path", "/orders",
+			),
+			Labels: &schema.StringMap{Values: map[string]string{"application": "orders"}},
+		},
+	}
+
+	resources := s.transform(
+		map[string]*schema.Resource{
+			"ordersApi":   apiRes,
+			"createOrder": handlerRes,
+		},
+		edges(edge("ordersApi", "createOrder", "celerity/api", "celerity/handler")),
+	)
+
+	lambda := resources["createOrder_lambda_func"]
+	s.Require().NotNil(lambda)
+	s.Equal("POST /orders", annotationLiteral(lambda.Metadata.Annotations, "aws.apigatewayv2.lambda.routeKey"))
+	s.Equal("JWT", annotationLiteral(lambda.Metadata.Annotations, "aws.apigatewayv2.lambda.authorizationType"))
+	// The authorizerId references the concrete authorizer emitted by the API.
+	s.Equal(
+		"ordersApi_jwt_authorizer",
+		resourceRefName(nodeFromAnnotation(lambda.Metadata.Annotations, "aws.apigatewayv2.lambda.authorizerId")),
+	)
+}
+
+// tracingEnabled raises a specific provider-limitation warning: API Gateway v2
+// (HTTP/WebSocket) stages expose no X-Ray active-tracing toggle, so tracing cannot
+// be wired at the stage on aws-serverless.
+func (s *APITransformTestSuite) Test_tracing_enabled_warns_about_apigatewayv2_limitation() {
+	apiRes := &schema.Resource{
+		Type: &schema.ResourceTypeWrapper{Value: "celerity/api"},
+		Spec: core.MappingNodeFields(
+			"protocols", core.MappingNodeItems(core.MappingNodeFromString("http")),
+			"tracingEnabled", core.MappingNodeFromBool(true),
+		),
+	}
+
+	resources, diagnostics := s.transformWithDiagnostics(
+		map[string]*schema.Resource{"ordersApi": apiRes},
+		edges(),
+	)
+
+	// No tracing/X-Ray field is set on the emitted stage.
+	stage := resources["ordersApi_http_stage"]
+	s.Require().NotNil(stage)
+	s.NotContains(stage.Spec.Fields, "tracingEnabled")
+
+	s.True(
+		hasWarningContaining(diagnostics, "do not support X-Ray active tracing"),
+		"expected a specific API Gateway v2 X-Ray limitation warning",
+	)
+}
+
+// A JWT guard using oauth2 discovery still emits an (OIDC) JWT authorizer but
+// raises a scoped warning that oauth2 discovery is unsupported on aws-serverless.
+func (s *APITransformTestSuite) Test_jwt_guard_oauth2_discovery_warns() {
+	apiRes := &schema.Resource{
+		Type: &schema.ResourceTypeWrapper{Value: "celerity/api"},
+		Spec: core.MappingNodeFields(
+			"protocols", core.MappingNodeItems(core.MappingNodeFromString("http")),
+			"auth", core.MappingNodeFields(
+				"guards", core.MappingNodeFields(
+					"jwt", core.MappingNodeFields(
+						"type", core.MappingNodeFromString("jwt"),
+						"issuer", core.MappingNodeFromString("https://identity.example.com/oauth2/v1/"),
+						"discoveryMode", core.MappingNodeFromString("oauth2"),
+						"tokenSource", core.MappingNodeFromString("$.headers.Authorization"),
+					),
+				),
+			),
+		),
+	}
+
+	resources, diagnostics := s.transformWithDiagnostics(
+		map[string]*schema.Resource{"ordersApi": apiRes},
+		edges(),
+	)
+
+	// The JWT authorizer is still emitted (downgraded to OIDC).
+	s.Require().NotNil(resources["ordersApi_jwt_authorizer"])
+	s.True(
+		hasWarningContaining(diagnostics, "oauth2"),
+		"expected a scoped oauth2 discovery warning",
+	)
+}
+
+// A guard using a non-bearer authScheme (basic/digest) raises a scoped warning
+// because API Gateway only applies the bearer scheme.
+func (s *APITransformTestSuite) Test_guard_non_bearer_auth_scheme_warns() {
+	apiRes := &schema.Resource{
+		Type: &schema.ResourceTypeWrapper{Value: "celerity/api"},
+		Spec: core.MappingNodeFields(
+			"protocols", core.MappingNodeItems(core.MappingNodeFromString("http")),
+			"auth", core.MappingNodeFields(
+				"guards", core.MappingNodeFields(
+					"jwt", core.MappingNodeFields(
+						"type", core.MappingNodeFromString("jwt"),
+						"issuer", core.MappingNodeFromString("https://identity.example.com/oauth2/v1/"),
+						"authScheme", core.MappingNodeFromString("basic"),
+						"tokenSource", core.MappingNodeFromString("$.headers.Authorization"),
+					),
+				),
+			),
+		),
+	}
+
+	_, diagnostics := s.transformWithDiagnostics(
+		map[string]*schema.Resource{"ordersApi": apiRes},
+		edges(),
+	)
+
+	s.True(
+		hasWarningContaining(diagnostics, "authScheme"),
+		"expected a scoped non-bearer authScheme warning",
+	)
+}
+
+// A websocketConfig using authStrategy "connect" raises a scoped warning because
+// serverless WebSocket APIs only support the authMessage strategy.
+func (s *APITransformTestSuite) Test_websocket_connect_auth_strategy_warns() {
+	apiRes := &schema.Resource{
+		Type: &schema.ResourceTypeWrapper{Value: "celerity/api"},
+		Spec: core.MappingNodeFields(
+			"protocols", core.MappingNodeItems(
+				core.MappingNodeFields(
+					"websocketConfig", core.MappingNodeFields(
+						"authStrategy", core.MappingNodeFromString("connect"),
+						"authGuard", core.MappingNodeFromString("jwt"),
+					),
+				),
+			),
+		),
+	}
+
+	_, diagnostics := s.transformWithDiagnostics(
+		map[string]*schema.Resource{"chatApi": apiRes},
+		edges(),
+	)
+
+	s.True(
+		hasWarningContaining(diagnostics, "connect"),
+		"expected a scoped WebSocket connect-strategy warning",
+	)
+}
+
+func (s *APITransformTestSuite) transform(
+	resources map[string]*schema.Resource,
+	lg linktypes.DeclaredLinkGraph,
+) map[string]*schema.Resource {
+	out, _ := s.transformWithDiagnostics(resources, lg)
+	return out
+}
+
+func (s *APITransformTestSuite) transformWithDiagnostics(
+	resources map[string]*schema.Resource,
+	lg linktypes.DeclaredLinkGraph,
+) (map[string]*schema.Resource, []*core.Diagnostic) {
+	bp := &schema.Blueprint{Resources: &schema.ResourceMap{Values: resources}}
+	out, err := NewTransformer(&shared.Dependencies{}).Transform(
+		context.Background(),
+		&transform.SpecTransformerTransformInput{
+			InputBlueprint:     bp,
+			LinkGraph:          lg,
+			TransformerContext: validationContext(),
+		},
+	)
+	s.Require().NoError(err)
+	s.Require().NotNil(out.TransformedBlueprint)
+	return out.TransformedBlueprint.Resources.Values, out.Diagnostics
+}
+
+// specItem returns the element at index i of an array MappingNode, or nil.
+func specItem(node *core.MappingNode, i int) *core.MappingNode {
+	if node == nil || i >= len(node.Items) {
+		return nil
+	}
+	return node.Items[i]
+}
+
+// nodeFromAnnotation wraps an annotation's substitution values in a MappingNode so
+// resourceRefName can extract a ${resources.*} reference set on an annotation.
+func nodeFromAnnotation(annos *schema.StringOrSubstitutionsMap, key string) *core.MappingNode {
+	if annos == nil {
+		return nil
+	}
+	value, ok := annos.Values[key]
+	if !ok {
+		return nil
+	}
+	return &core.MappingNode{StringWithSubstitutions: value}
+}
