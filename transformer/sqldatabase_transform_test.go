@@ -108,7 +108,34 @@ func (s *SQLDatabaseTransformTestSuite) Test_iam_auth_proxy_uses_iam_auth_and_ro
 
 	role := resources["myDb_rds_proxy_role"]
 	s.Require().NotNil(role)
-	s.Nil(role.Spec.Fields["policies"], "iam mode needs no secret-access policy")
+	// iam mode grants rds-db:connect (not secret access) so the proxy can
+	// authenticate to the database with IAM.
+	policies := role.Spec.Fields["policies"].Items
+	s.Require().Len(policies, 1)
+	stmt := policies[0].Fields["policyDocument"].Fields["statement"].Items[0].Fields
+	s.Equal("rds-db:connect", core.StringValue(stmt["action"]))
+
+	// The resource is a mixed ARN: literal segments around a substitution
+	// referencing the instance's computed dbiResourceId.
+	res := stmt["resource"]
+	s.Require().NotNil(res.StringWithSubstitutions)
+	var literal string
+	foundDbiResourceID := false
+	for _, v := range res.StringWithSubstitutions.Values {
+		if v.StringValue != nil {
+			literal += *v.StringValue
+		}
+		if v.SubstitutionValue != nil && v.SubstitutionValue.ResourceProperty != nil {
+			for _, p := range v.SubstitutionValue.ResourceProperty.Path {
+				if p.FieldName == "dbiResourceId" {
+					foundDbiResourceID = true
+				}
+			}
+		}
+	}
+	s.Contains(literal, "arn:aws:rds-db:*:*:dbuser:")
+	s.Contains(literal, "/celerity")
+	s.True(foundDbiResourceID, "the ARN references the instance's dbiResourceId")
 }
 
 func (s *SQLDatabaseTransformTestSuite) Test_aurora_serverless_v2_emits_cluster_and_serverless_instance() {
