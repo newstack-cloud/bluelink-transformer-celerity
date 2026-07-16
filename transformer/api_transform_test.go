@@ -394,6 +394,35 @@ func (s *APITransformTestSuite) Test_websocket_connect_auth_strategy_warns() {
 	)
 }
 
+func (s *APITransformTestSuite) Test_websocket_only_api_does_not_emit_authorizers() {
+	apiRes := &schema.Resource{
+		Type: &schema.ResourceTypeWrapper{Value: "celerity/api"},
+		Spec: core.MappingNodeFields(
+			"protocols", core.MappingNodeItems(core.MappingNodeFromString("websocket")),
+			"auth", core.MappingNodeFields(
+				"guards", core.MappingNodeFields(
+					"jwt", core.MappingNodeFields(
+						"type", core.MappingNodeFromString("jwt"),
+						"issuer", core.MappingNodeFromString("https://issuer.example.com"),
+					),
+				),
+			),
+		),
+	}
+
+	resources, diagnostics := s.transformWithDiagnostics(
+		map[string]*schema.Resource{"wsApi": apiRes},
+		edges(),
+	)
+
+	s.True(hasWarningContaining(diagnostics, "WebSocket-only"))
+	for name, res := range resources {
+		s.NotEqual("aws/apigatewayv2/authorizer", res.Type.Value,
+			"no authorizer should be emitted for a WebSocket-only API, found %s", name)
+	}
+	s.Require().NotNil(resources["wsApi_websocket_api"], "the WebSocket API itself is still emitted")
+}
+
 func (s *APITransformTestSuite) Test_no_protocol_warns_and_emits_nothing() {
 	apiRes := &schema.Resource{
 		Type: &schema.ResourceTypeWrapper{Value: "celerity/api"},
