@@ -177,7 +177,7 @@ Cross-resource references use bluelink substitution strings: the Lambda `role` f
 **The transformer must NOT emit** — the links own these, and hand-emitting them causes double-management:
 
 - `aws/lambda/permission` — created by `events/rule::function`, `apigatewayv2/api::function`, and `apigatewayv2/authorizer::function`.
-- `aws/lambda/eventSourceMapping` — the poll-source links (`sqs/queue::function`, `dynamodb/table::function`, `kinesis/stream::function`) create it via a direct Lambda SDK call; it is not a blueprint resource at all.
+- `aws/lambda/eventSourceMapping` **for in-blueprint poll sources** — when the source (`aws/sqs/queue`, `aws/dynamodb/table`, `aws/kinesis/stream`) is defined in the blueprint, its poll-source link (`sqs/queue::function`, `dynamodb/table::function`, `kinesis/stream::function`) owns the mapping via a direct Lambda SDK call, so the transformer must not emit one. **Exception:** an external event source with no in-blueprint resource — an `externalEvents` `dbStream`/`dataStream`, or a raw external SQS `sourceId` (URL or ARN) — has no link to own the mapping, so the transformer *does* emit a standalone `aws/lambda/eventSourceMapping` for it (with the queue URL normalised to its ARN).
 - `aws/apigatewayv2/{integration,route,integrationResponse,routeResponse}` — created by `apigatewayv2/api::function`.
 - **Per-link IAM statements** — injected into the execution role by the links (§8).
 - **Per-link environment variables** — the outbound links inject them live (`SQS_QUEUE_<name>`, `SNS_TOPIC_<name>`, `DYNAMODB_TABLE_<name>`, `SSM_PARAMETER_<name>`, `SECRET_<name>`), renameable via each link's `envVarName` annotation.

@@ -19,9 +19,10 @@ func cacheResourceSchema() *provider.ResourceDefinitionsSchema {
 			},
 			"clusterMode": {
 				Type: provider.ResourceDefinitionsSchemaTypeBoolean,
-				Description: "Whether to deploy the cache as a cluster with multiple shards and replicas " +
-					"(higher availability and throughput) or as a single instance. The SDK cache abstraction " +
-					"handles the connection difference transparently.",
+				Description: "Whether to deploy the cache as a multi-shard cluster (higher throughput and " +
+					"availability) or as a single instance. Replica count is configured separately and is " +
+					"not implied by enabling cluster mode. The SDK cache abstraction handles the connection " +
+					"difference transparently.",
 				Default: core.MappingNodeFromBool(false),
 			},
 			"engineVersion": {
