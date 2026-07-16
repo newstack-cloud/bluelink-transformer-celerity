@@ -122,6 +122,8 @@ func externalSourceActions(service string) []string {
 			"kinesis:GetRecords",
 			"kinesis:GetShardIterator",
 			"kinesis:DescribeStream",
+			"kinesis:DescribeStreamSummary",
+			"kinesis:ListShards",
 		}
 	default:
 		return nil

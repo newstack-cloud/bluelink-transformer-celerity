@@ -17,6 +17,10 @@ import (
 // Defaults for RDS fields the abstract spec does not carry. These become
 // deploy-config overrides (aws.rds.<db>.*) in a follow-up.
 const (
+	// resourceTypeDBInstance is the concrete RDS instance resource type emitted for
+	// standalone databases, Aurora writers and read replicas.
+	resourceTypeDBInstance = "aws/rds/dbInstance"
+
 	defaultInstanceClass    = "db.t3.micro"
 	defaultAllocatedStorage = 20
 	defaultMasterUsername   = "celerity"
@@ -84,17 +88,23 @@ func emitSQLDatabase(
 	if err != nil {
 		return nil, err
 	}
-	if vpcRefs != nil {
-		resources[subnetGroupResourceName(r.Name)] = vpcRefs.subnetGroup
-	} else {
-		diagnostics = append(diagnostics, &core.Diagnostic{
-			Level: core.DiagnosticLevelWarning,
-			Message: fmt.Sprintf(
-				"celerity/sqlDatabase %q is not linked to a celerity/vpc; databases require VPC placement",
-				name,
-			),
-		})
+	if vpcRefs == nil {
+		// SQL databases require VPC placement; without it the instance, subnet group
+		// and proxy cannot be wired, so emit nothing rather than incomplete resources.
+		return &transformutils.EmitResult{
+			Diagnostics: []*core.Diagnostic{
+				{
+					Level: core.DiagnosticLevelError,
+					Message: fmt.Sprintf(
+						"celerity/sqlDatabase %q is not linked to a celerity/vpc; databases require VPC "+
+							"placement on aws-serverless, so no database resources have been emitted",
+						name,
+					),
+				},
+			},
+		}, nil
 	}
+	resources[subnetGroupResourceName(r.Name)] = vpcRefs.subnetGroup
 
 	auroraEnabled := core.BoolValue(auroraConfig(run, name, "enabled"))
 	labels := dbLabels(r)
@@ -110,27 +120,15 @@ func emitSQLDatabase(
 	} else {
 		resources[instanceResourceName(r.Name)] = buildStandaloneInstance(r, name, engine, vpcRefs, labels)
 		// Standalone RDS: handlers pool connections through an RDS Proxy
-		// (aws/lambda/function::aws/rds/dbProxy). The proxy needs private subnets,
-		// so it is only emitted when the database is VPC-placed.
-		if vpcRefs != nil {
-			proxyResources, err := buildProxyResources(r, name, engine, vpcRefs, labels)
-			if err != nil {
-				return nil, err
-			}
-			for resName, res := range proxyResources {
-				resources[resName] = res
-			}
-			proxyEmitted = true
-		} else {
-			diagnostics = append(diagnostics, &core.Diagnostic{
-				Level: core.DiagnosticLevelWarning,
-				Message: fmt.Sprintf(
-					"celerity/sqlDatabase %q has no VPC placement, so no RDS Proxy is emitted; "+
-						"handlers cannot pool connections to it",
-					name,
-				),
-			})
+		// (aws/lambda/function::aws/rds/dbProxy).
+		proxyResources, err := buildProxyResources(r, name, engine, vpcRefs, labels)
+		if err != nil {
+			return nil, err
 		}
+		for resName, res := range proxyResources {
+			resources[resName] = res
+		}
+		proxyEmitted = true
 	}
 
 	// Read replicas: expose a reader instance (and the readHost output). For
@@ -300,7 +298,7 @@ func buildStandaloneInstance(
 	meta := infraMeta(r.Name)
 	meta.Labels = labels
 	return &schema.Resource{
-		Type:         &schema.ResourceTypeWrapper{Value: "aws/rds/dbInstance"},
+		Type:         &schema.ResourceTypeWrapper{Value: resourceTypeDBInstance},
 		Spec:         spec,
 		Metadata:     meta,
 		LinkSelector: r.Resource.LinkSelector,
@@ -362,7 +360,7 @@ func buildAuroraInstance(
 	meta := infraMeta(r.Name)
 	meta.Labels = labels
 	return &schema.Resource{
-		Type:     &schema.ResourceTypeWrapper{Value: "aws/rds/dbInstance"},
+		Type:     &schema.ResourceTypeWrapper{Value: resourceTypeDBInstance},
 		Spec:     spec,
 		Metadata: meta,
 	}
@@ -395,7 +393,7 @@ func buildReaderInstance(
 	meta := infraMeta(r.Name)
 	meta.Labels = labels
 	return &schema.Resource{
-		Type:     &schema.ResourceTypeWrapper{Value: "aws/rds/dbInstance"},
+		Type:     &schema.ResourceTypeWrapper{Value: resourceTypeDBInstance},
 		Spec:     spec,
 		Metadata: meta,
 	}

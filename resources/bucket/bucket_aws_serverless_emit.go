@@ -86,18 +86,20 @@ func buildEncryption(r *ResolvedBucket) *core.MappingNode {
 	hasKey := keyID != nil && core.StringValue(keyID) != ""
 
 	algorithm := core.StringValue(enc.Fields["encryptionAlgorithm"])
-	if algorithm == "" {
-		if hasKey {
-			algorithm = sseAlgorithmKMS
-		} else {
-			algorithm = sseAlgorithmAES
-		}
+	if hasKey {
+		// A customer-managed key only applies under KMS; an explicit non-KMS
+		// algorithm paired with a key is invalid on S3, so KMS is authoritative
+		// whenever a key is present.
+		algorithm = sseAlgorithmKMS
+	} else if algorithm == "" {
+		algorithm = sseAlgorithmAES
 	}
 
 	sseByDefault := core.MappingNodeFields(
 		"sseAlgorithm", core.MappingNodeFromString(algorithm),
 	)
-	if hasKey {
+	// kmsMasterKeyID is only valid under KMS; never emit it for non-KMS encryption.
+	if hasKey && algorithm == sseAlgorithmKMS {
 		sseByDefault.Fields["kmsMasterKeyID"] = keyID
 	}
 

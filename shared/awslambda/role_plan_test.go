@@ -200,6 +200,8 @@ func (s *RolePlanTestSuite) Test_seed_role_spec_adds_external_source_read_polici
 			"kinesis:GetRecords",
 			"kinesis:GetShardIterator",
 			"kinesis:DescribeStream",
+			"kinesis:DescribeStreamSummary",
+			"kinesis:ListShards",
 		},
 		core.StringSliceValue(kinesisStmt["action"]),
 	)
