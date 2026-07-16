@@ -60,6 +60,8 @@ func (s *DatastoreTransformTestSuite) Test_emits_a_dynamodb_table_with_key_schem
 	s.Require().Len(ad, 2)
 	s.Equal("id", core.StringValue(ad[0].Fields["attributeName"]))
 	s.Equal("S", core.StringValue(ad[0].Fields["attributeType"]))
+	s.Equal("createdAt", core.StringValue(ad[1].Fields["attributeName"]))
+	s.Equal("S", core.StringValue(ad[1].Fields["attributeType"]))
 
 	// timeToLiveSpecification maps fieldName -> attributeName.
 	ttl := table.Spec.Fields["timeToLiveSpecification"]
@@ -111,14 +113,17 @@ func (s *DatastoreTransformTestSuite) Test_index_fields_become_a_gsi_and_extra_a
 	s.Equal("RANGE", core.StringValue(gsiKeys[1].Fields["keyType"]))
 	s.Equal("ALL", core.StringValue(gsis[0].Fields["projection"].Fields["projectionType"]))
 
-	// attributeDefinitions covers the table key plus both index fields, once each.
+	// attributeDefinitions covers the table key plus both index fields, once each,
+	// all defaulting to the String type.
 	ad := table.Spec.Fields["attributeDefinitions"].Items
-	names := map[string]bool{}
+	types := map[string]string{}
 	for _, a := range ad {
-		names[core.StringValue(a.Fields["attributeName"])] = true
+		types[core.StringValue(a.Fields["attributeName"])] = core.StringValue(a.Fields["attributeType"])
 	}
 	s.Len(ad, 3)
-	s.True(names["id"] && names["customerId"] && names["createdAt"])
+	s.Equal("S", types["id"])
+	s.Equal("S", types["customerId"])
+	s.Equal("S", types["createdAt"])
 }
 
 func (s *DatastoreTransformTestSuite) Test_provisioned_billing_config_sets_capacity() {
