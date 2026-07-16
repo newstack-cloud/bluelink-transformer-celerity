@@ -59,9 +59,10 @@ func (e *awsServerlessEmitter) emit(
 
 	isValidationCtx := transformutils.IsValidationContext(run.TransformContext)
 	memory, _ := pluginutils.GetValueByPath("$.memory", r.Resource.Spec)
-	codeLocationInfo, err := e.loadCodeLocationInfo(
+	codeLocationInfo, codeDiag, err := e.loadCodeLocationInfo(
 		run,
 		isValidationCtx,
+		r.Name,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("failed to load code location info: %w", err)
@@ -94,6 +95,11 @@ func (e *awsServerlessEmitter) emit(
 			r.Resource.Metadata,
 		),
 	)
+	if codeLocationInfo.codeSpec == nil {
+		// No build manifest: omit the code asset (see loadCodeLocationInfo). The
+		// empty handler entry point is left in place for downstream validation.
+		delete(spec.Fields, "code")
+	}
 
 	if r.TracingEnabled {
 		spec.Fields["tracingConfig"] = core.MappingNodeFields(
@@ -120,7 +126,7 @@ func (e *awsServerlessEmitter) emit(
 	}
 	spec.Fields["role"] = roleRef
 
-	err = e.wireLayerForHandler(run, name, isValidationCtx, spec)
+	layerDiag, err := e.wireLayerForHandler(run, name, isValidationCtx, spec)
 	if err != nil {
 		return nil, err
 	}
@@ -151,10 +157,17 @@ func (e *awsServerlessEmitter) emit(
 
 	// Carry the union of the handler's and every absorbed consumer's labels so
 	// inbound source/api/subscription links resolve against the function.
-	applyLambdaLabels(r, lambdaResource)
+	labelDiagnostics := applyLambdaLabels(r, lambdaResource)
 
 	// Stamp VPC-placement and consumer event-source link annotations.
 	diagnostics := stampTriggerAnnotations(r, lambdaResource)
+	diagnostics = append(diagnostics, labelDiagnostics...)
+	if codeDiag != nil {
+		diagnostics = append(diagnostics, codeDiag)
+	}
+	if layerDiag != nil {
+		diagnostics = append(diagnostics, layerDiag)
+	}
 
 	// Stamp the API Gateway route/auth link annotations for HTTP/WebSocket
 	// handlers so the aws/apigatewayv2/api::function link creates the route.
@@ -261,16 +274,29 @@ type codeLocationInfo struct {
 func (e *awsServerlessEmitter) loadCodeLocationInfo(
 	run *transformutils.Run,
 	isValidationCtx bool,
-) (*codeLocationInfo, error) {
+	handlerName string,
+) (*codeLocationInfo, *core.Diagnostic, error) {
 	if isValidationCtx {
 		// During validation, a build manifest won't be provided or available,
 		// so we return a placeholder code location.
-		return placeholderCodeLocationInfo(), nil
+		return placeholderCodeLocationInfo(), nil, nil
 	}
 
 	manifest, hasManifest := transformutils.Use[*build.Manifest](run)
-	if !hasManifest {
-		return nil, fmt.Errorf("no build manifest available in context")
+	if !hasManifest || manifest.Lambda == nil {
+		// Per the build-manifest fallback contract, a missing manifest does not
+		// fail the transform: the function is emitted without code-asset references
+		// or an entry point, a warning is logged, and downstream validation rejects
+		// the output unless the deploy is a dry run.
+		return &codeLocationInfo{}, &core.Diagnostic{
+			Level: core.DiagnosticLevelWarning,
+			Message: fmt.Sprintf(
+				"no build manifest available for celerity/handler %q; the function is emitted without a "+
+					"code asset or entry point. Run \"celerity build\" before deploying (a dry run/plan is "+
+					"still valid)",
+				handlerName,
+			),
+		}, nil
 	}
 
 	return &codeLocationInfo{
@@ -279,7 +305,7 @@ func (e *awsServerlessEmitter) loadCodeLocationInfo(
 			"s3Bucket", core.MappingNodeFromString(manifest.Lambda.AppCode.S3Bucket),
 			"s3Key", core.MappingNodeFromString(manifest.Lambda.AppCode.S3Key),
 		),
-	}, nil
+	}, nil, nil
 }
 
 func placeholderCodeLocationInfo() *codeLocationInfo {
@@ -297,16 +323,18 @@ func (e *awsServerlessEmitter) wireLayerForHandler(
 	handlerName *core.MappingNode,
 	isValidationCtx bool,
 	targetSpec *core.MappingNode,
-) error {
+) (*core.Diagnostic, error) {
 	if isValidationCtx {
 		// During validation, a build manifest won't be provided or available,
 		// so we skip wiring the layer for the handler.
-		return nil
+		return nil, nil
 	}
 
 	manifest, hasManifest := transformutils.Use[*build.Manifest](run)
-	if !hasManifest {
-		return fmt.Errorf("no build manifest available in context")
+	if !hasManifest || manifest.Lambda == nil {
+		// No build manifest: skip the layer rather than failing. The missing-code
+		// warning from loadCodeLocationInfo already covers this handler.
+		return nil, nil
 	}
 
 	hash, _ := awslambda.SelectLayerForHandler(
@@ -317,12 +345,12 @@ func (e *awsServerlessEmitter) wireLayerForHandler(
 		layerRef, err := shared.SubstitutionMappingNode(
 			fmt.Sprintf("${resources.%s.spec.layerVersionArn}", lambdaLayerResourceName(hash)))
 		if err != nil {
-			return err
+			return nil, err
 		}
 		targetSpec.Fields["layers"] = core.MappingNodeItems(layerRef)
 	}
 
-	return nil
+	return nil, nil
 }
 
 func lambdaFuncResourceName(handlerName string) string {

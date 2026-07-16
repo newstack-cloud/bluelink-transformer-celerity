@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"fmt"
 	"sort"
 	"strings"
 
@@ -394,8 +395,10 @@ func objectStorageBucketRef(key string, config *core.MappingNode) string {
 // them. A source's linkSelector selected the consumer by label; propagating those
 // labels onto the function re-establishes the concrete source -> function event
 // source once the consumer is absorbed.
-func consumerLabelUnion(r *ResolvedHandler) map[string]string {
+func consumerLabelUnion(r *ResolvedHandler) (map[string]string, []*core.Diagnostic) {
 	labels := map[string]string{}
+	origin := map[string]string{}
+	var diagnostics []*core.Diagnostic
 	for _, consumer := range r.Consumers {
 		if consumer.Resource == nil || consumer.Resource.Metadata == nil {
 			continue
@@ -404,8 +407,24 @@ func consumerLabelUnion(r *ResolvedHandler) map[string]string {
 			continue
 		}
 		for key, value := range consumer.Resource.Metadata.Labels.Values {
+			if existing, ok := labels[key]; ok && existing != value {
+				// Two consumers disagree on the same label; the function can only
+				// carry one value, so the conflict is surfaced rather than silently
+				// resolved. Identical duplicate values are fine and never warn.
+				diagnostics = append(diagnostics, &core.Diagnostic{
+					Level: core.DiagnosticLevelWarning,
+					Message: fmt.Sprintf(
+						"celerity/handler %q absorbs consumers %q and %q that set label %q to conflicting "+
+							"values (%q vs %q); the function keeps %q. Give the consumers matching labels to "+
+							"avoid ambiguous link resolution",
+						r.Name, origin[key], consumer.Name, key, existing, value, existing,
+					),
+				})
+				continue
+			}
 			labels[key] = value
+			origin[key] = consumer.Name
 		}
 	}
-	return labels
+	return labels, diagnostics
 }

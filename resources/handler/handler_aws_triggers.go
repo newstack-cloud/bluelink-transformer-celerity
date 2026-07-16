@@ -34,6 +34,9 @@ const (
 	// S3 object-event notification link annotation (AppliesTo the function).
 	annS3Event = "aws.s3.lambda.event.%d"
 
+	// batchSizePath is the consumer spec path for the poll batch size.
+	batchSizePath = "$.batchSize"
+
 	// redriveMaxReceiveCountAnnotation is the aws/sqs/queue::aws/sqs/queue link
 	// annotation (set on the source queue) that maps to the redrive policy's
 	// maxReceiveCount, reused here for a topic fan-out queue's dead-letter queue.
@@ -73,17 +76,18 @@ const (
 // every absorbed consumer's labels (handler wins on key conflicts). This lets an
 // inbound source/api/subscription link that selected the consumer by label now
 // resolve against the concrete function.
-func applyLambdaLabels(r *ResolvedHandler, lambda *schema.Resource) {
-	labels := consumerLabelUnion(r)
+func applyLambdaLabels(r *ResolvedHandler, lambda *schema.Resource) []*core.Diagnostic {
+	labels, diagnostics := consumerLabelUnion(r)
 	if r.Resource.Metadata != nil && r.Resource.Metadata.Labels != nil {
 		for key, value := range r.Resource.Metadata.Labels.Values {
 			labels[key] = value
 		}
 	}
 	if len(labels) == 0 {
-		return
+		return diagnostics
 	}
 	lambda.Metadata.Labels = &schema.StringMap{Values: labels}
+	return diagnostics
 }
 
 // Layers the VPC-placement and consumer event-source link annotations onto the
@@ -159,7 +163,7 @@ func batchOrFailuresConflict(bindings []*ConsumerBinding) bool {
 	var seenPF, seenNoPF bool
 	for _, binding := range bindings {
 		spec := consumerSpec(binding)
-		if node, ok := pluginutils.GetValueByPath("$.batchSize", spec); ok {
+		if node, ok := pluginutils.GetValueByPath(batchSizePath, spec); ok {
 			batchSizes[core.IntValue(node)] = true
 		}
 		if partialFailures(spec) {
@@ -298,7 +302,7 @@ func stampConsumerBinding(
 
 func stampQueueBinding(lambda *schema.Resource, binding *ConsumerBinding) {
 	spec := consumerSpec(binding)
-	if node, ok := pluginutils.GetValueByPath("$.batchSize", spec); ok {
+	if node, ok := pluginutils.GetValueByPath(batchSizePath, spec); ok {
 		setIntAnnotation(lambda.Metadata, annSQSBatchSize, core.IntValue(node))
 	}
 	if partialFailures(spec) {
@@ -312,7 +316,7 @@ func stampDatastoreBinding(lambda *schema.Resource, binding *ConsumerBinding) {
 	setStringAnnotation(lambda.Metadata, annDDBStartingPosition, startingPosition(binding))
 
 	spec := consumerSpec(binding)
-	if node, ok := pluginutils.GetValueByPath("$.batchSize", spec); ok {
+	if node, ok := pluginutils.GetValueByPath(batchSizePath, spec); ok {
 		setIntAnnotation(lambda.Metadata, annDDBBatchSize, core.IntValue(node))
 	}
 	if partialFailures(spec) {
@@ -341,7 +345,7 @@ func stampBucketBinding(lambda *schema.Resource, binding *ConsumerBinding, baseI
 // synthetic poll label that makes the queue's linkSelector resolve to the function.
 func stampTopicBinding(lambda *schema.Resource, binding *ConsumerBinding) {
 	spec := consumerSpec(binding)
-	if node, ok := pluginutils.GetValueByPath("$.batchSize", spec); ok {
+	if node, ok := pluginutils.GetValueByPath(batchSizePath, spec); ok {
 		setIntAnnotation(lambda.Metadata, annSQSBatchSize, core.IntValue(node))
 	}
 	if partialFailures(spec) {
@@ -678,7 +682,7 @@ func externalSQSEventSourceMapping(
 	}
 
 	consumerSpec := consumerSpec(binding)
-	if node, ok := pluginutils.GetValueByPath("$.batchSize", consumerSpec); ok {
+	if node, ok := pluginutils.GetValueByPath(batchSizePath, consumerSpec); ok {
 		spec.Fields["batchSize"] = node
 	}
 	if partialFailures(consumerSpec) {
