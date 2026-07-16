@@ -208,10 +208,15 @@ func buildTimeToLive(r *ResolvedDatastore) *core.MappingNode {
 		return nil
 	}
 
-	out := &core.MappingNode{Fields: map[string]*core.MappingNode{}}
-	if fieldName := core.StringValue(ttl.Fields["fieldName"]); fieldName != "" {
-		out.Fields["attributeName"] = core.MappingNodeFromString(fieldName)
+	// attributeName is required by DynamoDB whenever a TTL spec is present; the
+	// schema requires fieldName, so a missing one means nothing to emit.
+	fieldName := core.StringValue(ttl.Fields["fieldName"])
+	if fieldName == "" {
+		return nil
 	}
+
+	out := &core.MappingNode{Fields: map[string]*core.MappingNode{}}
+	out.Fields["attributeName"] = core.MappingNodeFromString(fieldName)
 	// enabled is required on the concrete timeToLiveSpecification; default to
 	// false when the field is absent.
 	enabled := ttl.Fields["enabled"]

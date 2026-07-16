@@ -61,10 +61,13 @@ func datastoreResourceSchema() *provider.ResourceDefinitionsSchema {
 			"timeToLive": {
 				Type:        provider.ResourceDefinitionsSchemaTypeObject,
 				Description: "Configures automatic expiry of items based on a timestamp field.",
+				Required:    []string{"fieldName"},
 				Attributes: map[string]*provider.ResourceDefinitionsSchema{
 					"fieldName": {
-						Type:        provider.ResourceDefinitionsSchemaTypeString,
-						Description: "The item field holding the expiry timestamp (epoch seconds).",
+						Type: provider.ResourceDefinitionsSchemaTypeString,
+						Description: "The item field holding the expiry timestamp (epoch seconds). Required " +
+							"whenever timeToLive is set; on AWS it becomes the DynamoDB TTL attribute name, " +
+							"which the service requires to enable TTL.",
 					},
 					"enabled": {
 						Type:        provider.ResourceDefinitionsSchemaTypeBoolean,
