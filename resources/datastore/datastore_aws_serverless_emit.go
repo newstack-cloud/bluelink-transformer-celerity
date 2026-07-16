@@ -152,6 +152,10 @@ func applyBillingConfig(spec *core.MappingNode, run *transformutils.Run, r *Reso
 		}
 		if len(throughput.Fields) > 0 {
 			spec.Fields["provisionedThroughput"] = throughput
+			// DynamoDB requires provisionedThroughput on every GSI under
+			// PROVISIONED billing; the abstract index carries no capacity, so each
+			// index inherits the table's.
+			applyGSIProvisionedThroughput(spec, throughput)
 		}
 		return
 	}
@@ -166,6 +170,19 @@ func applyBillingConfig(spec *core.MappingNode, run *transformutils.Run, r *Reso
 	}
 	if len(onDemand.Fields) > 0 {
 		spec.Fields["onDemandThroughput"] = onDemand
+	}
+}
+
+func applyGSIProvisionedThroughput(spec *core.MappingNode, throughput *core.MappingNode) {
+	gsis := spec.Fields["globalSecondaryIndexes"]
+	if gsis == nil {
+		return
+	}
+	for _, gsi := range gsis.Items {
+		if gsi.Fields == nil {
+			continue
+		}
+		gsi.Fields["provisionedThroughput"] = throughput
 	}
 }
 

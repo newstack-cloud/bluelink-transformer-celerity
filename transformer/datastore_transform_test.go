@@ -145,6 +145,41 @@ func (s *DatastoreTransformTestSuite) Test_provisioned_billing_config_sets_capac
 	s.Nil(table.Spec.Fields["onDemandThroughput"])
 }
 
+// Under PROVISIONED billing DynamoDB requires provisionedThroughput on every
+// GSI, so each emitted index inherits the table's capacity.
+func (s *DatastoreTransformTestSuite) Test_provisioned_billing_applies_throughput_to_gsis() {
+	ds := &schema.Resource{
+		Type: &schema.ResourceTypeWrapper{Value: "celerity/datastore"},
+		Spec: core.MappingNodeFields(
+			"keys", core.MappingNodeFields("partitionKey", core.MappingNodeFromString("id")),
+			"indexes", &core.MappingNode{
+				Items: []*core.MappingNode{
+					core.MappingNodeFields(
+						"name", core.MappingNodeFromString("byCustomer"),
+						"fields", &core.MappingNode{
+							Items: []*core.MappingNode{core.MappingNodeFromString("customerId")},
+						},
+					),
+				},
+			},
+		),
+	}
+	ctx := deployConfigContext(map[string]*core.ScalarValue{
+		"aws.dynamodb.orders.billingMode":        core.ScalarFromString("PROVISIONED"),
+		"aws.dynamodb.orders.readCapacityUnits":  core.ScalarFromInt(5),
+		"aws.dynamodb.orders.writeCapacityUnits": core.ScalarFromInt(3),
+	})
+
+	table := s.transformWith(map[string]*schema.Resource{"orders": ds}, ctx)["orders_dynamodb_table"]
+	s.Require().NotNil(table)
+	gsis := table.Spec.Fields["globalSecondaryIndexes"].Items
+	s.Require().Len(gsis, 1)
+	gsiPT := gsis[0].Fields["provisionedThroughput"]
+	s.Require().NotNil(gsiPT, "PROVISIONED GSIs must carry provisionedThroughput")
+	s.Equal(5, core.IntValue(gsiPT.Fields["readCapacityUnits"]))
+	s.Equal(3, core.IntValue(gsiPT.Fields["writeCapacityUnits"]))
+}
+
 func (s *DatastoreTransformTestSuite) Test_pay_per_request_applies_on_demand_ceilings() {
 	ds := &schema.Resource{
 		Type: &schema.ResourceTypeWrapper{Value: "celerity/datastore"},
