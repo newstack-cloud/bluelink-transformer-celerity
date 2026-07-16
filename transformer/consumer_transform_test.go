@@ -212,6 +212,43 @@ func (s *ConsumerTransformTestSuite) Test_topic_consumer_dead_letter_queue_toggl
 	s.Equal("", annotationLiteral(q.Metadata.Annotations, "aws.sqs.redrive.maxReceiveCount"))
 }
 
+// An enabled DLQ with a non-default deadLetterQueueMaxAttempts emits the DLQ and
+// drives the fan-out queue's redrive maxReceiveCount annotation.
+func (s *ConsumerTransformTestSuite) Test_topic_consumer_enabled_dlq_sets_max_receive_count() {
+	const topicARN = "arn:aws:sns:us-east-1:123456789012:orders-topic"
+
+	handlerRes := &schema.Resource{
+		Type: &schema.ResourceTypeWrapper{Value: "celerity/handler"},
+		Spec: core.MappingNodeFields(
+			"handlerName", core.MappingNodeFromString("notifyHandler"),
+			"handler", core.MappingNodeFromString("handlers.notify"),
+			"runtime", core.MappingNodeFromString("nodejs24.x"),
+		),
+		Metadata: &schema.Metadata{Annotations: annotationMap("celerity.handler.consumer", "true")},
+	}
+	consumerRes := &schema.Resource{
+		Type: &schema.ResourceTypeWrapper{Value: "celerity/consumer"},
+		Spec: core.MappingNodeFields("sourceId", core.MappingNodeFromString("celerity::topic::"+topicARN)),
+		Metadata: &schema.Metadata{
+			Annotations: annotationMap("celerity.consumer.deadLetterQueueMaxAttempts", "7"),
+		},
+	}
+
+	resources := s.transform(
+		map[string]*schema.Resource{
+			"notifyHandler": handlerRes,
+			"topicConsumer": consumerRes,
+		},
+		edges(edge("topicConsumer", "notifyHandler", "celerity/consumer", "celerity/handler")),
+	)
+
+	s.Contains(resources, "topicConsumer_topic_dlq", "an enabled DLQ is emitted by default")
+	q := resources["topicConsumer_topic_queue"]
+	s.Require().NotNil(q)
+	s.Equal("7", annotationLiteral(q.Metadata.Annotations, "aws.sqs.redrive.maxReceiveCount"),
+		"the configured max attempts drives the redrive maxReceiveCount")
+}
+
 // When the sourceId is a substitution referencing an in-blueprint celerity/topic,
 // the same fan-out is wired, and the subscription's topicArn is rewritten (like the
 // Lambda spec) from the abstract topic reference to the concrete <topic>_sns_topic.
