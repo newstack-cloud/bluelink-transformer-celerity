@@ -80,9 +80,11 @@ func emitAPI(
 	}
 	diagnostics = append(diagnostics, authDiags...)
 
-	if err := emitDomain(r, info, resources); err != nil {
+	domainDiags, err := emitDomain(r, info, resources)
+	if err != nil {
 		return nil, err
 	}
+	diagnostics = append(diagnostics, domainDiags...)
 
 	if core.BoolValue(specNode(r.Resource.Spec, "$.tracingEnabled")) {
 		// AWS API Gateway v2 (HTTP and WebSocket) APIs do not expose an X-Ray
@@ -388,10 +390,10 @@ func emitDomain(
 	r *ResolvedAPI,
 	info protocolInfo,
 	resources map[string]*schema.Resource,
-) error {
+) ([]*core.Diagnostic, error) {
 	domain, ok := pluginutils.GetValueByPath("$.domain", r.Resource.Spec)
 	if !ok || domain == nil {
-		return nil
+		return nil, nil
 	}
 
 	domainName := specNode(domain, "$.domainName")
@@ -420,12 +422,35 @@ func emitAPIMappings(
 	info protocolInfo,
 	domain *core.MappingNode,
 	resources map[string]*schema.Resource,
-) error {
+) ([]*core.Diagnostic, error) {
+	// A hybrid (HTTP + WebSocket) API maps both protocols onto the single
+	// aws/apigatewayv2/domainName. On aws-serverless a custom domain cannot host
+	// both protocols at the same base path, so the base paths must be distinct
+	// per protocol. Emit an error and skip the mappings when they would collide.
+	if info.hasHTTP && info.hasWS {
+		httpKeys := mappingKeysForProtocol(domain, protocolHTTP)
+		wsKeys := mappingKeysForProtocol(domain, protocolWebSocket)
+		if keysCollide(httpKeys, wsKeys) {
+			return []*core.Diagnostic{
+				{
+					Level: core.DiagnosticLevelError,
+					Message: fmt.Sprintf(
+						"celerity/api %q configures a custom domain for both HTTP and WebSocket protocols, but "+
+							"their base paths collide: on aws-serverless a single API Gateway v2 custom domain "+
+							"cannot map both protocols at the same base path. Configure protocol-specific base "+
+							"paths (a domain.basePaths entry per protocol) or a separate custom domain per protocol",
+						r.Name,
+					),
+				},
+			}, nil
+		}
+	}
+
 	domainRef, err := shared.SubstitutionMappingNode(
 		fmt.Sprintf("${resources.%s.spec.domainName}", domainResourceName(r.Name)),
 	)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	for _, protocol := range presentProtocols(info) {
@@ -433,12 +458,27 @@ func emitAPIMappings(
 		for index, key := range keys {
 			mapping, err := apiMapping(r, protocol, key, domainRef)
 			if err != nil {
-				return err
+				return nil, err
 			}
 			resources[apiMappingResourceName(r.Name, protocol, index)] = mapping
 		}
 	}
-	return nil
+	return nil, nil
+}
+
+// keysCollide reports whether any mapping key appears in both protocols' key
+// sets — a single custom domain cannot map two APIs at the same base path.
+func keysCollide(a, b []string) bool {
+	set := make(map[string]struct{}, len(a))
+	for _, k := range a {
+		set[k] = struct{}{}
+	}
+	for _, k := range b {
+		if _, ok := set[k]; ok {
+			return true
+		}
+	}
+	return false
 }
 
 func apiMapping(

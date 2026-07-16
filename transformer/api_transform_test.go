@@ -4,6 +4,7 @@ package transformer
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/newstack-cloud/bluelink-transformer-celerity/shared"
@@ -177,6 +178,82 @@ func (s *APITransformTestSuite) Test_domain_emits_domain_and_mapping() {
 	s.Equal("aws/apigatewayv2/apiMapping", mapping.Type.Value)
 	s.Equal("ordersApi_http_api", resourceRefName(mapping.Spec.Fields["apiId"]))
 	s.Equal("ordersApi_domain", resourceRefName(mapping.Spec.Fields["domainName"]))
+}
+
+func (s *APITransformTestSuite) Test_hybrid_domain_with_colliding_base_paths_errors() {
+	apiRes := &schema.Resource{
+		Type: &schema.ResourceTypeWrapper{Value: "celerity/api"},
+		Spec: core.MappingNodeFields(
+			"protocols", core.MappingNodeItems(
+				core.MappingNodeFromString("http"),
+				core.MappingNodeFromString("websocket"),
+			),
+			"domain", core.MappingNodeFields(
+				// No protocol-specific basePaths: both protocols map the root path.
+				"domainName", core.MappingNodeFromString("api.example.com"),
+				"certificateId", core.MappingNodeFromString("arn:aws:acm:us-east-1:123456789012:certificate/abc"),
+			),
+		),
+	}
+
+	resources, diagnostics := s.transformWithDiagnostics(
+		map[string]*schema.Resource{"chatApi": apiRes},
+		edges(),
+	)
+
+	found := false
+	for _, d := range diagnostics {
+		if d.Level == core.DiagnosticLevelError && strings.Contains(d.Message, "base paths collide") {
+			found = true
+		}
+	}
+	s.True(found, "expected an error diagnostic about colliding hybrid base paths")
+
+	for name, res := range resources {
+		s.NotEqual("aws/apigatewayv2/apiMapping", res.Type.Value,
+			"no api mapping should be emitted on collision, found %s", name)
+	}
+	// The APIs and the domain itself are still emitted; only the mappings are skipped.
+	s.Require().NotNil(resources["chatApi_http_api"])
+	s.Require().NotNil(resources["chatApi_websocket_api"])
+	s.Require().NotNil(resources["chatApi_domain"])
+}
+
+func (s *APITransformTestSuite) Test_hybrid_domain_with_protocol_specific_base_paths_emits_both() {
+	apiRes := &schema.Resource{
+		Type: &schema.ResourceTypeWrapper{Value: "celerity/api"},
+		Spec: core.MappingNodeFields(
+			"protocols", core.MappingNodeItems(
+				core.MappingNodeFromString("http"),
+				core.MappingNodeFromString("websocket"),
+			),
+			"domain", core.MappingNodeFields(
+				"domainName", core.MappingNodeFromString("api.example.com"),
+				"certificateId", core.MappingNodeFromString("arn:aws:acm:us-east-1:123456789012:certificate/abc"),
+				"basePaths", core.MappingNodeItems(
+					core.MappingNodeFields(
+						"protocol", core.MappingNodeFromString("http"),
+						"basePath", core.MappingNodeFromString("/"),
+					),
+					core.MappingNodeFields(
+						"protocol", core.MappingNodeFromString("websocket"),
+						"basePath", core.MappingNodeFromString("/ws"),
+					),
+				),
+			),
+		),
+	}
+
+	resources, diagnostics := s.transformWithDiagnostics(
+		map[string]*schema.Resource{"chatApi": apiRes},
+		edges(),
+	)
+
+	for _, d := range diagnostics {
+		s.NotEqual(core.DiagnosticLevelError, d.Level, "protocol-specific base paths must not error: %s", d.Message)
+	}
+	s.Require().NotNil(resources["chatApi_http_api_mapping_0"], "http mapping emitted")
+	s.Require().NotNil(resources["chatApi_websocket_api_mapping_0"], "websocket mapping emitted")
 }
 
 // CORS config is mapped onto the concrete HTTP API's corsConfiguration.
