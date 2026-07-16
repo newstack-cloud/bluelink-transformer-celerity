@@ -1,31 +1,33 @@
 package api
 
 import (
-	"github.com/newstack-cloud/bluelink/libs/blueprint/schema"
-	"github.com/newstack-cloud/bluelink/libs/blueprint/transform"
+	"github.com/newstack-cloud/bluelink-transformer-celerity/shared"
 	"github.com/newstack-cloud/bluelink/libs/plugin-framework/sdk/transformerv1"
+	"github.com/newstack-cloud/bluelink/libs/plugin-framework/sdk/transformutils"
 )
 
 // Resource defines the abstract resource for the Celerity API.
 func Resource() *transformerv1.AbstractResourceDefinition {
-	return &transformerv1.AbstractResourceDefinition{
-		Type:                 "celerity/api",
-		Label:                "Celerity API",
-		PlainTextSummary:     "",
-		FormattedSummary:     "",
-		PlainTextDescription: "",
-		FormattedDescription: "",
-		Schema:               apiResourceSchema(),
-	}
-}
+	awsPropertyMap := createAWSPropertyMap()
 
-// TransformResource implements the transformation logic for the Celerity API resource.
-func TransformResource(
-	resourceName string,
-	resource *schema.Resource,
-	targetResources *schema.ResourceMap,
-	transformerContext transform.Context,
-) {
-	// TODO: implement transformation logic
-	targetResources.Values[resourceName] = resource
+	return &transformerv1.AbstractResourceDefinition{
+		Type:    "celerity/api",
+		Label:   "Celerity API",
+		Schema:  apiResourceSchema(),
+		Resolve: resolveAPI,
+		Emitters: map[string]transformutils.EmitterRegistration{
+			shared.AWSServerless: transformutils.TypedEmitter(emitAPI),
+		},
+		PropertyMaps: map[string]transformutils.PropertyMap{
+			shared.AWSServerless: awsPropertyMap,
+		},
+		Rewriters: map[string]transformutils.RewriterRegistration{
+			shared.AWSServerless: transformutils.RewriterFromPropertyMap(
+				&awsPropertyMap,
+				func(r *ResolvedAPI) string {
+					return primaryConcreteName(r, parseProtocols(r.Resource.Spec))
+				},
+			),
+		},
+	}
 }

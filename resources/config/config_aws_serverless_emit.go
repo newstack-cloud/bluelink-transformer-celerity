@@ -7,6 +7,7 @@ import (
 	"strconv"
 
 	"github.com/newstack-cloud/bluelink-transformer-celerity/shared"
+	sharedaws "github.com/newstack-cloud/bluelink-transformer-celerity/shared/aws"
 	"github.com/newstack-cloud/bluelink/libs/blueprint/core"
 	"github.com/newstack-cloud/bluelink/libs/blueprint/schema"
 	"github.com/newstack-cloud/bluelink/libs/blueprint/substitutions"
@@ -114,7 +115,7 @@ func emitSecretsManagerResource(
 		spec.Fields["kmsKeyId"] = kms
 	}
 	// aws/secretsmanager/secret.tags is a list of {key, value} objects.
-	if tags := shared.AWSSpecTagsFromResourceMetadata(r.Resource.Metadata); tags != nil {
+	if tags := sharedaws.SpecTagsFromResourceMetadata(r.Resource.Metadata); tags != nil {
 		spec.Fields["tags"] = tags
 	}
 
@@ -176,7 +177,7 @@ func emitParameterTreeResource(
 	}
 	// aws/ssm/parameterTree.tags is a map of string -> string, applied to every
 	// parameter in the tree.
-	if tags := shared.AWSMapTagsFromResourceMetadata(r.Resource.Metadata); tags != nil {
+	if tags := sharedaws.MapTagsFromResourceMetadata(r.Resource.Metadata); tags != nil {
 		spec.Fields["tags"] = tags
 	}
 

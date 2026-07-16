@@ -1,27 +1,33 @@
 package cache
 
 import (
-	"github.com/newstack-cloud/bluelink/libs/blueprint/schema"
-	"github.com/newstack-cloud/bluelink/libs/blueprint/transform"
+	"github.com/newstack-cloud/bluelink-transformer-celerity/shared"
 	"github.com/newstack-cloud/bluelink/libs/plugin-framework/sdk/transformerv1"
+	"github.com/newstack-cloud/bluelink/libs/plugin-framework/sdk/transformutils"
 )
 
 // Resource defines the abstract resource for the Celerity Cache.
 func Resource() *transformerv1.AbstractResourceDefinition {
-	return &transformerv1.AbstractResourceDefinition{
-		Type:   "celerity/cache",
-		Label:  "Celerity Cache",
-		Schema: cacheResourceSchema(),
-	}
-}
+	awsPropertyMap := createAWSPropertyMap()
 
-// TransformResource implements the transformation logic for the Celerity cache resource.
-func TransformResource(
-	resourceName string,
-	resource *schema.Resource,
-	targetResources *schema.ResourceMap,
-	transformerContext transform.Context,
-) {
-	// TODO: implement transformation logic
-	targetResources.Values[resourceName] = resource
+	return &transformerv1.AbstractResourceDefinition{
+		Type:    "celerity/cache",
+		Label:   "Celerity Cache",
+		Schema:  cacheResourceSchema(),
+		Resolve: resolveCache,
+		Emitters: map[string]transformutils.EmitterRegistration{
+			shared.AWSServerless: transformutils.TypedEmitter(emitCache),
+		},
+		PropertyMaps: map[string]transformutils.PropertyMap{
+			shared.AWSServerless: awsPropertyMap,
+		},
+		Rewriters: map[string]transformutils.RewriterRegistration{
+			shared.AWSServerless: transformutils.RewriterFromPropertyMap(
+				&awsPropertyMap,
+				func(r *ResolvedCache) string {
+					return replicationGroupResourceName(r.Name)
+				},
+			),
+		},
+	}
 }

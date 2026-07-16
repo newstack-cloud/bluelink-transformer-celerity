@@ -3,6 +3,7 @@ package transformer
 import (
 	"context"
 
+	"github.com/newstack-cloud/bluelink-transformer-celerity/resources/consumer"
 	"github.com/newstack-cloud/bluelink-transformer-celerity/resources/handler"
 	"github.com/newstack-cloud/bluelink-transformer-celerity/resources/handlerconfig"
 	"github.com/newstack-cloud/bluelink-transformer-celerity/resources/schedule"
@@ -20,9 +21,8 @@ func createAWSServerlessAggregator() transformutils.Aggregator {
 		for _, r := range resolved {
 			switch r.(type) {
 			case *handlerconfig.ResolvedHandlerConfig,
-				*schedule.ResolvedSchedule:
-				// *consumer.ResolvedConsumer,
-				// *vpc.ResolvedVPC:
+				*schedule.ResolvedSchedule,
+				*consumer.ResolvedConsumer:
 				// Contributor-only resources.
 				continue
 			default:

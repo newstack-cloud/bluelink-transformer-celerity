@@ -48,6 +48,9 @@ type ResolvedHandler struct {
 	SQLDatabases []*types.LinkedResource
 	// Absorbed inbound consumers linked to this handler.
 	Consumers []*types.LinkedResource
+	// Classified event-source bindings for each absorbed consumer, resolved from
+	// the link graph and the consumers' specs.
+	ConsumerBindings []*ConsumerBinding
 	// Absorbed inbound schedules linked to this handler.
 	Schedules []*types.LinkedResource
 	// Absorbed inbound API link to this handler.
@@ -120,6 +123,10 @@ func buildAWSRolePlan(r *ResolvedHandler) awslambda.RolePlan {
 		Links:   links,
 		Tracing: r.TracingEnabled,
 		VPC:     subnetType,
+		// External event sources (standalone ESMs) have no provider link to inject
+		// source-read IAM, so the seed grants it. Folding them into the plan also
+		// keeps the fingerprint (hence role sharing) sensitive to them.
+		ExternalSources: externalRoleSources(r),
 	}
 }
 
@@ -143,6 +150,10 @@ func resolveHandler(
 	for _, edge := range linkGraph.EdgesTo(name) {
 		addInboundLinkToResolvedHandler(resolved, edge, blueprint)
 	}
+
+	// Classify each absorbed consumer's event source now that all inbound consumer
+	// links are collected; the emit reads these bindings to wire the triggers.
+	resolveConsumerBindings(resolved, linkGraph, blueprint)
 
 	err := resolveInheritedSpec(resolved, blueprint)
 	if err != nil {
