@@ -3,8 +3,10 @@ package handler
 import (
 	"context"
 	"fmt"
+	"maps"
 
 	"github.com/newstack-cloud/bluelink-transformer-celerity/shared"
+	sharedaws "github.com/newstack-cloud/bluelink-transformer-celerity/shared/aws"
 	"github.com/newstack-cloud/bluelink-transformer-celerity/shared/awslambda"
 	"github.com/newstack-cloud/bluelink-transformer-celerity/shared/build"
 	"github.com/newstack-cloud/bluelink/libs/blueprint/core"
@@ -89,7 +91,7 @@ func (e *awsServerlessEmitter) emit(
 			"variables",
 			awslambda.BuildEnvironmentVariables(envInput),
 		),
-		"tags", shared.AWSSpecTagsFromResourceMetadata(
+		"tags", sharedaws.SpecTagsFromResourceMetadata(
 			r.Resource.Metadata,
 		),
 	)
@@ -100,7 +102,10 @@ func (e *awsServerlessEmitter) emit(
 			core.MappingNodeFromString("Active"),
 		)
 	}
-	// Later:    "vpcConfig" when r.VPC != nil (needs VPC subnet/SG resolution, not available yet).
+	// vpcConfig is intentionally NOT emitted: the aws/flex/vpc::aws/lambda/function
+	// link populates it from the VPC's resolved subnets/security group. The
+	// transformer only stamps the subnet-type placement annotation (see
+	// stampTriggerAnnotations).
 
 	plan := r.awsRolePlan()
 	fingerprint := plan.Fingerprint()
@@ -148,21 +153,72 @@ func (e *awsServerlessEmitter) emit(
 	// the concrete resources by label.
 	declareOutboundLinks(r, lambdaResource)
 
+	// Carry the union of the handler's and every absorbed consumer's labels so
+	// inbound source/api/subscription links resolve against the function.
+	applyLambdaLabels(r, lambdaResource)
+
+	// Stamp VPC-placement and consumer event-source link annotations.
+	diagnostics := stampTriggerAnnotations(r, lambdaResource)
+
+	// Stamp the API Gateway route/auth link annotations for HTTP/WebSocket
+	// handlers so the aws/apigatewayv2/api::function link creates the route.
+	if err := stampAPIRouteAnnotations(r, lambdaResource); err != nil {
+		return nil, err
+	}
+
+	resources := map[string]*schema.Resource{
+		funcResourceName: lambdaResource,
+	}
+
+	// Absorbed schedules emit an aws/events/rule targeting the function.
+	scheduleRules, err := emitScheduleRules(r, funcResourceName)
+	if err != nil {
+		return nil, err
+	}
+	rewriteTriggerSpecs(scheduleRules, resPropRewriter)
+	maps.Copy(resources, scheduleRules)
+
+	// Celerity-topic consumers emit an aws/sns/subscription delivering to the function.
+	subscriptions, err := emitConsumerSubscriptions(r, funcResourceName)
+	if err != nil {
+		return nil, err
+	}
+	rewriteTriggerSpecs(subscriptions, resPropRewriter)
+	maps.Copy(resources, subscriptions)
+
 	derivedValues := e.createDerivedValues(funcResourceName, handlerID, celerityRuntime, r)
 
 	result := &transformutils.EmitResult{
-		Resources: map[string]*schema.Resource{
-			funcResourceName: lambdaResource,
-		},
+		Resources:     resources,
 		DerivedValues: derivedValues,
 		// No shared-parent contributions: the IAM role seed is complete (provider
 		// links inject per-link statements), and the layer seed carries its full
 		// compatibleRuntimes union.
 		SharedParentContributions: map[string]*core.MappingNode{},
-		Diagnostics:               []*core.Diagnostic{},
+		Diagnostics:               diagnostics,
 	}
 
 	return result, nil
+}
+
+// rewriteTriggerSpecs walks each emitted trigger/fan-out/ESM resource's spec
+// through the chained resource-property rewriter, exactly as the handler's own
+// Lambda spec is rewritten. This resolves any abstract ${resources.<x>...}
+// reference an absorbed trigger carries into its concrete form — most importantly
+// a consumer whose topic source is an in-blueprint celerity/topic, whose SNS
+// subscription topicArn must point at the concrete <topic>_sns_topic rather than
+// the abstract topic name (which no resource in the transformed blueprint owns).
+func rewriteTriggerSpecs(
+	resources map[string]*schema.Resource,
+	resPropRewriter transformutils.ResourcePropertyRewriter,
+) {
+	visitor := transformutils.RewriteResourcePropertyRefs(resPropRewriter)
+	for _, resource := range resources {
+		if resource == nil || resource.Spec == nil {
+			continue
+		}
+		resource.Spec = subwalk.WalkMappingNode(resource.Spec, visitor)
+	}
 }
 
 func userEnvMap(r *ResolvedHandler) map[string]*core.MappingNode {

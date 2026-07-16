@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/newstack-cloud/bluelink-transformer-celerity/shared"
+	sharedaws "github.com/newstack-cloud/bluelink-transformer-celerity/shared/aws"
 	"github.com/newstack-cloud/bluelink/libs/blueprint/core"
 	"github.com/newstack-cloud/bluelink/libs/blueprint/schema"
 	"github.com/newstack-cloud/bluelink/libs/blueprint/subwalk"
@@ -25,7 +25,7 @@ const (
 
 func emitQueue(
 	_ context.Context,
-	_ *transformutils.Run,
+	run *transformutils.Run,
 	r *ResolvedQueue,
 	rw transformutils.ResourcePropertyRewriter,
 ) (*transformutils.EmitResult, error) {
@@ -47,8 +47,21 @@ func emitQueue(
 	if kms, ok := pluginutils.GetValueByPath("$.encryptionKeyId", r.Resource.Spec); ok {
 		spec.Fields["kmsMasterKeyId"] = kms
 	}
+
+	// Deploy-config-sourced settings (global + per-queue override, §2.1). These
+	// have no spec-field source.
+	deployName := core.StringValue(nameNode)
+	if deployName == "" {
+		deployName = r.Name
+	}
+	if v, ok := sharedaws.ResolveDeployConfigNode(run.TransformContext, "aws.sqs", deployName, "messageRetentionPeriod"); ok {
+		spec.Fields["messageRetentionPeriod"] = v
+	}
+	if v, ok := sharedaws.ResolveDeployConfigNode(run.TransformContext, "aws.sqs", deployName, "maxMessageSize"); ok {
+		spec.Fields["maximumMessageSize"] = v
+	}
 	// aws/sqs/queue.tags is a list of {key, value} objects.
-	if tags := shared.AWSSpecTagsFromResourceMetadata(r.Resource.Metadata); tags != nil {
+	if tags := sharedaws.SpecTagsFromResourceMetadata(r.Resource.Metadata); tags != nil {
 		spec.Fields["tags"] = tags
 	}
 

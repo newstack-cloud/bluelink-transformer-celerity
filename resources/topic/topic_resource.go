@@ -1,27 +1,33 @@
 package topic
 
 import (
-	"github.com/newstack-cloud/bluelink/libs/blueprint/schema"
-	"github.com/newstack-cloud/bluelink/libs/blueprint/transform"
+	"github.com/newstack-cloud/bluelink-transformer-celerity/shared"
 	"github.com/newstack-cloud/bluelink/libs/plugin-framework/sdk/transformerv1"
+	"github.com/newstack-cloud/bluelink/libs/plugin-framework/sdk/transformutils"
 )
 
 // Resource defines the abstract resource for the Celerity Topic.
 func Resource() *transformerv1.AbstractResourceDefinition {
-	return &transformerv1.AbstractResourceDefinition{
-		Type:   "celerity/topic",
-		Label:  "Celerity Topic",
-		Schema: topicResourceSchema(),
-	}
-}
+	awsPropertyMap := createAWSPropertyMap()
 
-// TransformResource implements the transformation logic for the Celerity topic resource.
-func TransformResource(
-	resourceName string,
-	resource *schema.Resource,
-	targetResources *schema.ResourceMap,
-	transformerContext transform.Context,
-) {
-	// TODO: implement transformation logic
-	targetResources.Values[resourceName] = resource
+	return &transformerv1.AbstractResourceDefinition{
+		Type:    "celerity/topic",
+		Label:   "Celerity Topic",
+		Schema:  topicResourceSchema(),
+		Resolve: resolveTopic,
+		Emitters: map[string]transformutils.EmitterRegistration{
+			shared.AWSServerless: transformutils.TypedEmitter(emitTopic),
+		},
+		PropertyMaps: map[string]transformutils.PropertyMap{
+			shared.AWSServerless: awsPropertyMap,
+		},
+		Rewriters: map[string]transformutils.RewriterRegistration{
+			shared.AWSServerless: transformutils.RewriterFromPropertyMap(
+				&awsPropertyMap,
+				func(r *ResolvedTopic) string {
+					return topicConcreteName(r.Name)
+				},
+			),
+		},
+	}
 }
