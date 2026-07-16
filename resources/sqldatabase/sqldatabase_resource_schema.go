@@ -10,8 +10,8 @@ func sqlDatabaseResourceSchema() *provider.ResourceDefinitionsSchema {
 		Type:  provider.ResourceDefinitionsSchemaTypeObject,
 		Label: "SqlDatabaseDefinition",
 		Description: "A managed relational (SQL) database that handlers connect to. Requires VPC " +
-			"placement. On aws-serverless this maps to an RDS instance (or Aurora cluster) fronted by an " +
-			"RDS Proxy.",
+			"placement. On AWS this maps to an RDS instance (or Aurora cluster); on aws-serverless a " +
+			"standalone instance is fronted by an RDS Proxy for Lambda connection pooling.",
 		Required: []string{"engine"},
 		Attributes: map[string]*provider.ResourceDefinitionsSchema{
 			"engine": {
@@ -25,7 +25,7 @@ func sqlDatabaseResourceSchema() *provider.ResourceDefinitionsSchema {
 			},
 			"name": {
 				Type: provider.ResourceDefinitionsSchemaTypeString,
-				Description: "The unique name of the database. On aws-serverless this maps to the RDS " +
+				Description: "The unique name of the database. On AWS this maps to the RDS " +
 					"instance/cluster identifier and initial database name.",
 			},
 			"schemaPath": {

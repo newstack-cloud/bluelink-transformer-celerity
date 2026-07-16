@@ -10,7 +10,7 @@ func topicResourceSchema() *provider.ResourceDefinitionsSchema {
 		Type:  provider.ResourceDefinitionsSchemaTypeObject,
 		Label: "TopicDefinition",
 		Description: "A managed publish/subscribe topic that handlers publish messages to and consumers " +
-			"subscribe to. On aws-serverless this maps to an SNS topic.",
+			"subscribe to. On AWS this maps to an SNS topic.",
 		Attributes: map[string]*provider.ResourceDefinitionsSchema{
 			"name": {
 				Type: provider.ResourceDefinitionsSchemaTypeString,
@@ -28,7 +28,7 @@ func topicResourceSchema() *provider.ResourceDefinitionsSchema {
 			"encryptionKeyId": {
 				Type: provider.ResourceDefinitionsSchemaTypeString,
 				Description: "The ID of the KMS key used to encrypt messages at rest. Optional; when " +
-					"omitted, the target environment's default encryption is used. On aws-serverless this " +
+					"omitted, the target environment's default encryption is used. On AWS this " +
 					"maps to the SNS topic's KMS master key id.",
 			},
 
@@ -36,7 +36,7 @@ func topicResourceSchema() *provider.ResourceDefinitionsSchema {
 			"id": {
 				Type:     provider.ResourceDefinitionsSchemaTypeString,
 				Computed: true,
-				Description: "The ID of the created topic in the target environment. On aws-serverless " +
+				Description: "The ID of the created topic in the target environment. On AWS " +
 					"this is the topic ARN.",
 			},
 		},
