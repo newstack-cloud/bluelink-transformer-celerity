@@ -185,10 +185,11 @@ func (e *awsServerlessEmitter) emit(
 	}
 
 	// Absorbed schedules emit an aws/events/rule targeting the function.
-	scheduleRules, err := emitScheduleRules(r, funcResourceName)
+	scheduleRules, scheduleDiags, err := emitScheduleRules(r, funcResourceName)
 	if err != nil {
 		return nil, err
 	}
+	diagnostics = append(diagnostics, scheduleDiags...)
 	rewriteTriggerSpecs(scheduleRules, resPropRewriter)
 	maps.Copy(resources, scheduleRules)
 

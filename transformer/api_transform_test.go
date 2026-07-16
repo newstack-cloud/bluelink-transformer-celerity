@@ -354,6 +354,63 @@ func (s *APITransformTestSuite) Test_linked_http_handler_carries_route_annotatio
 	)
 }
 
+// A guarded WebSocket handler on a WebSocket-only API must NOT stamp an
+// authorizer reference: the API emits no authorizer for WebSocket, so the
+// reference would dangle. WebSocket auth is handled in-message by the handler.
+func (s *APITransformTestSuite) Test_websocket_handler_does_not_stamp_authorizer() {
+	apiRes := &schema.Resource{
+		Type: &schema.ResourceTypeWrapper{Value: "celerity/api"},
+		Spec: core.MappingNodeFields(
+			"protocols", core.MappingNodeItems(core.MappingNodeFromString("websocket")),
+			"auth", core.MappingNodeFields(
+				"defaultGuard", core.MappingNodeFromString("jwt"),
+				"guards", core.MappingNodeFields(
+					"jwt", core.MappingNodeFields(
+						"type", core.MappingNodeFromString("jwt"),
+						"issuer", core.MappingNodeFromString("https://identity.example.com/oauth2/v1/"),
+						"tokenSource", core.MappingNodeFromString("$.headers.Authorization"),
+						"audience", core.MappingNodeItems(core.MappingNodeFromString("chat-api")),
+					),
+				),
+			),
+		),
+		LinkSelector: &schema.LinkSelector{
+			ByLabel: &schema.StringMap{Values: map[string]string{"application": "chat"}},
+		},
+	}
+	handlerRes := &schema.Resource{
+		Type: &schema.ResourceTypeWrapper{Value: "celerity/handler"},
+		Spec: core.MappingNodeFields(
+			"handlerName", core.MappingNodeFromString("onMessage"),
+			"handler", core.MappingNodeFromString("handlers.message"),
+			"runtime", core.MappingNodeFromString("nodejs24.x"),
+		),
+		Metadata: &schema.Metadata{
+			Annotations: annotationMap(
+				"celerity.handler.websocket", "true",
+				"celerity.handler.websocket.route", "sendMessage",
+			),
+			Labels: &schema.StringMap{Values: map[string]string{"application": "chat"}},
+		},
+	}
+
+	resources := s.transform(
+		map[string]*schema.Resource{
+			"chatApi":   apiRes,
+			"onMessage": handlerRes,
+		},
+		edges(edge("chatApi", "onMessage", "celerity/api", "celerity/handler")),
+	)
+
+	lambda := resources["onMessage_lambda_func"]
+	s.Require().NotNil(lambda)
+	// The route key is still stamped, but no authorizer/authorizationType is.
+	s.Equal("sendMessage", annotationLiteral(lambda.Metadata.Annotations, "aws.apigatewayv2.lambda.routeKey"))
+	s.Equal("", annotationLiteral(lambda.Metadata.Annotations, "aws.apigatewayv2.lambda.authorizerId"),
+		"a WebSocket handler must not reference an API Gateway authorizer")
+	s.Equal("", annotationLiteral(lambda.Metadata.Annotations, "aws.apigatewayv2.lambda.authorizationType"))
+}
+
 // tracingEnabled raises a specific provider-limitation warning: API Gateway v2
 // (HTTP/WebSocket) stages expose no X-Ray active-tracing toggle, so tracing cannot
 // be wired at the stage on aws-serverless.

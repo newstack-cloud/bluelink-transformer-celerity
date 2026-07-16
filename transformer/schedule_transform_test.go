@@ -4,6 +4,7 @@ package transformer
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/newstack-cloud/bluelink-transformer-celerity/shared"
@@ -72,6 +73,51 @@ func (s *ScheduleTransformTestSuite) Test_schedule_emits_events_rule_targeting_t
 
 	// The abstract schedule does not survive into the concrete output.
 	s.NotContains(resources, "dailyReport")
+}
+
+// A schedule with no expression must not emit an events/rule with an empty
+// scheduleExpression (invalid on AWS); an error diagnostic is surfaced instead.
+func (s *ScheduleTransformTestSuite) Test_schedule_without_expression_errors_and_emits_no_rule() {
+	handlerRes := &schema.Resource{
+		Type: &schema.ResourceTypeWrapper{Value: "celerity/handler"},
+		Spec: core.MappingNodeFields(
+			"handlerName", core.MappingNodeFromString("reportHandler"),
+			"handler", core.MappingNodeFromString("handlers.report"),
+			"runtime", core.MappingNodeFromString("nodejs24.x"),
+		),
+		Metadata: &schema.Metadata{Annotations: annotationMap("celerity.handler.schedule", "true")},
+	}
+	scheduleRes := &schema.Resource{
+		Type: &schema.ResourceTypeWrapper{Value: "celerity/schedule"},
+		Spec: core.MappingNodeFields(
+			"input", core.MappingNodeFields("detailType", core.MappingNodeFromString("report")),
+		),
+	}
+
+	bp := &schema.Blueprint{Resources: &schema.ResourceMap{Values: map[string]*schema.Resource{
+		"reportHandler": handlerRes,
+		"dailyReport":   scheduleRes,
+	}}}
+	out, err := NewTransformer(&shared.Dependencies{}).Transform(
+		context.Background(),
+		&transform.SpecTransformerTransformInput{
+			InputBlueprint:     bp,
+			LinkGraph:          edges(edge("dailyReport", "reportHandler", "celerity/schedule", "celerity/handler")),
+			TransformerContext: validationContext(),
+		},
+	)
+	s.Require().NoError(err)
+	s.Require().NotNil(out.TransformedBlueprint)
+
+	found := false
+	for _, d := range out.Diagnostics {
+		if d.Level == core.DiagnosticLevelError && strings.Contains(d.Message, "no schedule expression") {
+			found = true
+		}
+	}
+	s.True(found, "expected an error diagnostic about the missing schedule expression")
+	s.NotContains(out.TransformedBlueprint.Resources.Values, "dailyReport_events_rule",
+		"no events/rule should be emitted without a schedule expression")
 }
 
 func (s *ScheduleTransformTestSuite) transform(
