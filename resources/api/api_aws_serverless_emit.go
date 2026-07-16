@@ -214,6 +214,22 @@ func emitAuthorizers(
 
 	var diagnostics []*core.Diagnostic
 	for guardName, cfg := range guards.Fields {
+		if !info.hasHTTP {
+			// WebSocket-only API. API Gateway v2 WebSocket APIs don't support JWT
+			// authorizers, and a REQUEST authorizer there runs at $connect — the
+			// "connect" strategy aws-serverless doesn't support. Celerity WebSocket
+			// auth uses the in-message authMessage strategy (validated by the
+			// handler), so no gateway authorizer is emitted.
+			diagnostics = append(diagnostics, &core.Diagnostic{
+				Level: core.DiagnosticLevelWarning,
+				Message: fmt.Sprintf(
+					"celerity/api %q guard %q is not applied as an API Gateway authorizer on a WebSocket-only "+
+						"API; WebSocket APIs authenticate via the in-message authMessage strategy on aws-serverless",
+					r.Name, guardName,
+				),
+			})
+			continue
+		}
 		guardType := core.StringValue(specNode(cfg, "$.type"))
 		diagnostics = append(diagnostics, guardConfigWarnings(r.Name, guardName, cfg)...)
 		switch guardType {
