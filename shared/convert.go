@@ -15,7 +15,6 @@ func StringList(path string, value *core.MappingNode) []string {
 
 // StringSet retrieves a set of strings from the given
 // mapping node value at the specified path.
-// As Go does not have a built-in set type, the set is represented as a map[string]struct{}.
 func StringSet(path string, value *core.MappingNode) map[string]struct{} {
 	node, _ := pluginutils.GetValueByPath(path, value)
 	strings := core.StringSliceValue(node)

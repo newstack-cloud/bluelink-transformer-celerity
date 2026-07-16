@@ -8,8 +8,7 @@ import (
 	"github.com/newstack-cloud/bluelink/libs/plugin-framework/sdk/pluginutils"
 )
 
-// stampCacheAnnotations stamps the
-// aws/lambda/function::aws/elasticache/replicationGroup link's authMode
+// Stamps the aws/lambda/function::aws/elasticache/replicationGroup link's authMode
 // annotation for each linked cache that uses ElastiCache IAM/RBAC authentication.
 // The provider link creates the elasticache:Connect grant only when the function
 // carries aws.lambda.elasticache.<targetCache>.authMode=iam, where <targetCache>

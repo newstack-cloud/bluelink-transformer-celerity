@@ -24,8 +24,8 @@ const (
 	defaultStageName  = "$default"
 )
 
-// protocolInfo captures which protocols the abstract API declares and the
-// WebSocket route key used to build the WebSocket API's routeSelectionExpression.
+// Captures which protocols the abstract API declares and the WebSocket route
+// key used to build the WebSocket API's routeSelectionExpression.
 type protocolInfo struct {
 	hasHTTP    bool
 	hasWS      bool
@@ -115,10 +115,9 @@ func emitAPI(
 	}, nil
 }
 
-// emitProtocolAPI emits the aws/apigatewayv2/api and its aws/apigatewayv2/stage
-// for a single protocol. The provider's api::function link is activated by a
-// label selector on the source (the API), so the abstract API's linkSelector is
-// preserved onto each concrete API.
+// The provider's api::function link is activated by a label selector on the
+// source (the API), so the abstract API's linkSelector is preserved onto each
+// concrete API.
 func emitProtocolAPI(
 	r *ResolvedAPI,
 	info protocolInfo,
@@ -184,10 +183,9 @@ func stageResource(r *ResolvedAPI, apiResName string) (*schema.Resource, error) 
 	}, nil
 }
 
-// emitAuthorizers emits an aws/apigatewayv2/authorizer per auth guard: a JWT
-// authorizer for "jwt" guards and a REQUEST (Lambda) authorizer for "custom"
-// guards backed by the handler that implements the guard. Authorizers attach to
-// the HTTP API when present, otherwise the WebSocket API.
+// A JWT authorizer is emitted for "jwt" guards and a REQUEST (Lambda) authorizer
+// for "custom" guards backed by the handler that implements the guard.
+// Authorizers attach to the HTTP API when present, otherwise the WebSocket API.
 func emitAuthorizers(
 	ctx transform.Context,
 	r *ResolvedAPI,
@@ -226,9 +224,9 @@ func emitAuthorizers(
 	return diagnostics, nil
 }
 
-// guardConfigWarnings raises scoped warnings for guard configuration that
-// aws-serverless (API Gateway) cannot honour: oauth2 discovery (JWT authorizers
-// only support OIDC) and non-bearer auth schemes (only bearer is applied).
+// Raises scoped warnings for guard configuration that aws-serverless (API
+// Gateway) cannot honour: oauth2 discovery (JWT authorizers only support OIDC)
+// and non-bearer auth schemes (only bearer is applied).
 func guardConfigWarnings(apiName, guardName string, cfg *core.MappingNode) []*core.Diagnostic {
 	var diagnostics []*core.Diagnostic
 	if core.StringValue(specNode(cfg, "$.discoveryMode")) == "oauth2" {
@@ -344,8 +342,8 @@ func customAuthorizer(
 	}, nil
 }
 
-// customGuardHandler finds the linked handler that implements the named custom
-// guard via the celerity.handler.guard.custom annotation.
+// Finds the linked handler that implements the named custom guard via the
+// celerity.handler.guard.custom annotation.
 func customGuardHandler(r *ResolvedAPI, guardName string) (string, bool) {
 	for _, linked := range r.Handlers {
 		if linked.Resource == nil {
@@ -363,8 +361,6 @@ func customGuardHandler(r *ResolvedAPI, guardName string) (string, bool) {
 	return "", false
 }
 
-// emitDomain emits an aws/apigatewayv2/domainName plus an aws/apigatewayv2/apiMapping
-// per present protocol/base-path when the abstract API configures a custom domain.
 func emitDomain(
 	r *ResolvedAPI,
 	info protocolInfo,
@@ -451,15 +447,13 @@ func apiMapping(
 	}, nil
 }
 
-// mappingKeysForProtocol returns the API-mapping keys for one protocol: general
-// (plain-string) base paths plus protocol-specific ones for this protocol. A base
-// path of "/" (or empty) maps to the root key "".
+// A base path of "/" (or empty) maps to the root key "".
 //
 // domain.normalizeBasePath is intentionally not applied on aws-serverless: it is a
 // Celerity-runtime routing concern (stripping non-alphanumeric characters from the
 // framework's own base-path routing), whereas API Gateway apiMapping keys are used
 // verbatim (only leading/trailing slashes are trimmed here). It is therefore a
-// documented no-op for this target.
+// no-op for this target.
 func mappingKeysForProtocol(domain *core.MappingNode, protocol string) []string {
 	basePaths, ok := pluginutils.GetValueByPath("$.basePaths", domain)
 	if !ok || basePaths == nil || len(basePaths.Items) == 0 {
@@ -483,13 +477,12 @@ func mappingKeysForProtocol(domain *core.MappingNode, protocol string) []string 
 	return keys
 }
 
-// synthesizeIDValue builds the spec.id ARN as a derived value referenced by the
-// property map. The provider aws/apigatewayv2/api exposes no ARN attribute, so
-// the ID is composed as the documented API Gateway control-plane ARN
-// (arn:aws:apigateway:<region>::/apis/<apiId>), which needs only the deployment
-// region and the created API's apiId (API Gateway control-plane ARNs omit the
-// account id). When no region is configured the ARN is approximated with an empty
-// region segment and a warning is raised.
+// Builds the spec.id ARN as a derived value referenced by the property map. The
+// provider aws/apigatewayv2/api exposes no ARN attribute, so the ID is composed as
+// the API Gateway control-plane ARN (arn:aws:apigateway:<region>::/apis/<apiId>),
+// which needs only the deployment region and the created API's apiId (control-plane
+// ARNs omit the account id). When no region is configured the ARN is approximated
+// with an empty region segment and a warning is raised.
 func synthesizeIDValue(
 	ctx transform.Context,
 	r *ResolvedAPI,
@@ -553,9 +546,9 @@ func corsConfigNode(spec *core.MappingNode) *core.MappingNode {
 	return cors
 }
 
-// identitySourceNode converts a guard's tokenSource into the authorizer
-// identitySource array, mapping $.* paths onto API Gateway $request.* expressions
-// and selecting the HTTP source when tokenSource is a per-protocol array.
+// Converts a guard's tokenSource into the authorizer identitySource array, mapping
+// $.* paths onto API Gateway $request.* expressions and selecting the HTTP source
+// when tokenSource is a per-protocol array.
 func identitySourceNode(tokenSource *core.MappingNode) *core.MappingNode {
 	source, ok := selectHTTPTokenSource(tokenSource)
 	if !ok {
@@ -628,10 +621,10 @@ func parseProtocols(spec *core.MappingNode) protocolInfo {
 	return info
 }
 
-// websocketAuthWarnings raises scoped warnings when a websocketConfig declares
-// connection-level authorization (authStrategy/authGuard). WebSocket connection
-// authorization is not wired on aws-serverless, and the "connect" strategy is not
-// supported by serverless WebSocket APIs per the spec (only "authMessage" is).
+// Raises scoped warnings when a websocketConfig declares connection-level
+// authorization (authStrategy/authGuard). WebSocket connection authorization is
+// not wired on aws-serverless, and the "connect" strategy is not supported by
+// serverless WebSocket APIs (only "authMessage" is).
 func websocketAuthWarnings(r *ResolvedAPI) []*core.Diagnostic {
 	protocols, ok := pluginutils.GetValueByPath("$.protocols", r.Resource.Spec)
 	if !ok || protocols == nil {
@@ -740,8 +733,8 @@ func normalizeMappingKey(path string) string {
 	return strings.Trim(path, "/")
 }
 
-// primaryConcreteName is the concrete API that carries the spec.id / spec.baseUrl
-// outputs: the HTTP API when present, otherwise the WebSocket API.
+// The concrete API that carries the spec.id / spec.baseUrl outputs: the HTTP API
+// when present, otherwise the WebSocket API.
 func primaryConcreteName(r *ResolvedAPI, info protocolInfo) string {
 	if info.hasWS && !info.hasHTTP {
 		return apiResourceName(r.Name, protocolWebSocket)
@@ -764,9 +757,8 @@ func stageResourceName(apiName, protocol string) string {
 	return fmt.Sprintf("%s_%s_stage", apiName, protocol)
 }
 
-// authorizerResourceName is the concrete authorizer name shared with the handler
-// side, which references it via spec.authorizerId (see handler_api_annotations.go;
-// the two conventions must stay in sync).
+// The concrete authorizer name, shared with the handler side which references it
+// via spec.authorizerId; the two conventions must stay in sync.
 func authorizerResourceName(apiName, guardName string) string {
 	return fmt.Sprintf("%s_%s_authorizer", apiName, guardName)
 }

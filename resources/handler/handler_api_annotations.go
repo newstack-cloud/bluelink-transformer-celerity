@@ -12,13 +12,13 @@ import (
 )
 
 const (
-	// annAPIRouteKey is the aws/apigatewayv2/api::aws/lambda/function link
-	// annotation (AppliesTo the function) naming the route this handler serves,
-	// e.g. "GET /orders" for HTTP or "$connect"/"myAction" for WebSocket.
+	// The aws/apigatewayv2/api::aws/lambda/function link annotation (AppliesTo the
+	// function) naming the route this handler serves, e.g. "GET /orders" for HTTP
+	// or "$connect"/"myAction" for WebSocket.
 	annAPIRouteKey = "aws.apigatewayv2.lambda.routeKey"
-	// annAPIAuthorizerID references the authorizer that protects this route.
+	// References the authorizer that protects this route.
 	annAPIAuthorizerID = "aws.apigatewayv2.lambda.authorizerId"
-	// annAPIAuthorizationType is "JWT" or "CUSTOM" for the protected route.
+	// "JWT" or "CUSTOM" for the protected route.
 	annAPIAuthorizationType = "aws.apigatewayv2.lambda.authorizationType"
 )
 
@@ -40,11 +40,11 @@ func LambdaFuncResourceName(handlerName string) string {
 	return lambdaFuncResourceName(handlerName)
 }
 
-// stampAPIRouteAnnotations stamps the provider aws/apigatewayv2/api::function link
-// route/auth annotations onto an HTTP or WebSocket handler's Lambda, derived from
-// the handler's own route/guard annotations and the linked API's auth config. A
-// custom-guard handler (celerity.handler.guard.custom) is the authorizer target,
-// not a route, so it never reaches here (its event source is not http/websocket).
+// Stamps the provider aws/apigatewayv2/api::function link route/auth annotations
+// onto an HTTP or WebSocket handler's Lambda, derived from the handler's own
+// route/guard annotations and the linked API's auth config. A custom-guard handler
+// (celerity.handler.guard.custom) is the authorizer target, not a route, so it
+// never reaches here (its event source is not http/websocket).
 func stampAPIRouteAnnotations(r *ResolvedHandler, lambda *schema.Resource) error {
 	if r.EventSource != EventSourceHTTP && r.EventSource != EventSourceWebSocket {
 		return nil
@@ -103,10 +103,10 @@ func isPublicHandler(r *ResolvedHandler) bool {
 	return ok && core.BoolValue(value)
 }
 
-// effectiveGuard resolves the single guard that protects this route: the first
-// guard the handler is protectedBy, falling back to the API's defaultGuard. The
-// provider link takes one authorizer per route, so only the first guard of a
-// chain is wired on aws-serverless.
+// Resolves the single guard that protects this route: the first guard the handler
+// is protectedBy, falling back to the API's defaultGuard. The provider link takes
+// one authorizer per route, so only the first guard of a chain is wired on
+// aws-serverless.
 func effectiveGuard(r *ResolvedHandler) (string, bool) {
 	if guard, ok := firstGuard(annotationValue(r.Resource, AnnotationKeyGuardProtectedBy, "")); ok {
 		return guard, true
@@ -155,10 +155,9 @@ func annotationValue(resource *schema.Resource, key, fallback string) string {
 	return fallback
 }
 
-// apiAuthorizerResourceName mirrors the celerity/api emit's authorizer naming
-// (see resources/api/api_aws_serverless_emit.go authorizerResourceName); the two
-// conventions must stay in sync. It is duplicated here to avoid a handler->api
-// import cycle (the api emit imports this package for annotation keys).
+// Mirrors the celerity/api emit's authorizer naming; the two conventions must stay
+// in sync. Duplicated here to avoid a handler->api import cycle (the api emit
+// imports this package for annotation keys).
 func apiAuthorizerResourceName(apiName, guard string) string {
 	return fmt.Sprintf("%s_%s_authorizer", apiName, guard)
 }

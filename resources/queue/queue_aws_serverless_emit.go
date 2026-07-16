@@ -48,8 +48,8 @@ func emitQueue(
 		spec.Fields["kmsMasterKeyId"] = kms
 	}
 
-	// Deploy-config-sourced settings (global + per-queue override, §2.1). These
-	// have no spec-field source.
+	// Deploy-config-sourced settings (global + per-queue override). These have no
+	// spec-field source.
 	deployName := core.StringValue(nameNode)
 	if deployName == "" {
 		deployName = r.Name
@@ -86,10 +86,9 @@ func emitQueue(
 	}, nil
 }
 
-// This carries the abstract queue's labels through to the concrete
-// resource (so a handler's or parent queue's linkSelector can match it), stamps
-// the framework's base annotations, and translates the celerity dead-letter
-// annotation into the provider redrive annotation.
+// Carries the abstract queue's labels through to the concrete resource (so a
+// handler's or parent queue's linkSelector can match it) and translates the
+// celerity dead-letter annotation into the provider redrive annotation.
 func queueMetadata(r *ResolvedQueue) *schema.Metadata {
 	meta := &schema.Metadata{
 		Annotations: transformutils.TransformerBaseAnnotations(

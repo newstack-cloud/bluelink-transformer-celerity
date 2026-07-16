@@ -104,15 +104,15 @@ type ConsumerBinding struct {
 	Ambiguous bool
 }
 
-// linkedSourceEdge is one classified in-blueprint source edge into a consumer.
+// One classified in-blueprint source edge into a consumer.
 type linkedSourceEdge struct {
 	kind   ConsumerSourceKind
 	source string
 }
 
-// resolveConsumerBindings classifies each absorbed consumer's event source using
-// the link graph (for linked queue/datastore/bucket sources) and the consumer's
-// own spec (for Celerity-topic and external sources).
+// Classifies each absorbed consumer's event source using the link graph (for
+// linked queue/datastore/bucket sources) and the consumer's own spec (for
+// Celerity-topic and external sources).
 func resolveConsumerBindings(
 	target *ResolvedHandler,
 	linkGraph linktypes.DeclaredLinkGraph,
@@ -157,11 +157,11 @@ func collectLinkedSourceEdges(edges []*linktypes.ResolvedLink) []linkedSourceEdg
 	return linked
 }
 
-// selectLinkedSource picks the single source edge to bind. When multiple candidate
-// edges match (a consumer matching several same-type sources by label, §"Linked
-// From"), it honours a celerity.consumer.<queue|datastore|bucket> disambiguation
-// annotation naming the source; failing that it picks deterministically and flags
-// the binding as ambiguous so the emit can warn.
+// Picks the single source edge to bind. When multiple candidate edges match (a
+// consumer matching several same-type sources by label), it honours a
+// celerity.consumer.<queue|datastore|bucket> disambiguation annotation naming the
+// source; failing that it picks deterministically and flags the binding as
+// ambiguous so the emit can warn.
 func selectLinkedSource(
 	binding *ConsumerBinding,
 	resource *schema.Resource,
@@ -250,9 +250,9 @@ func classifyFromConsumerSpec(
 	}
 }
 
-// classifyFromSourceID classifies a consumer sourceId into a topic (literal ARN or
-// in-blueprint substitution) or a raw external SQS source. It reports whether it
-// consumed the sourceId.
+// Classifies a consumer sourceId into a topic (literal ARN or in-blueprint
+// substitution) or a raw external SQS source. Reports whether it consumed the
+// sourceId.
 func classifyFromSourceID(
 	binding *ConsumerBinding,
 	sourceID *core.MappingNode,
@@ -281,8 +281,8 @@ func classifyFromSourceID(
 	return false
 }
 
-// celerityTopicARN returns the topic ARN carried by a sourceId literal of the form
-// "celerity::topic::<arn>". It only handles literal string sourceIds; a sourceId
+// Returns the topic ARN carried by a sourceId literal of the form
+// "celerity::topic::<arn>". Only handles literal string sourceIds; a sourceId
 // expressed as a substitution cannot be classified as a topic here.
 func celerityTopicARN(sourceID *core.MappingNode) (string, bool) {
 	value := core.StringValue(sourceID)
@@ -292,10 +292,9 @@ func celerityTopicARN(sourceID *core.MappingNode) (string, bool) {
 	return strings.TrimPrefix(value, celerityTopicSourcePrefix), true
 }
 
-// inBlueprintTopicSourceID reports whether the sourceId is a substitution that
-// references an in-blueprint celerity/topic resource (e.g. ${ordersTopic.spec.arn}
-// or a variable resolved elsewhere). Only resource-property references can be
-// classified here.
+// Reports whether the sourceId is a substitution that references an in-blueprint
+// celerity/topic resource (e.g. ${ordersTopic.spec.arn}). Only resource-property
+// references can be classified here.
 func inBlueprintTopicSourceID(sourceID *core.MappingNode, blueprint *schema.Blueprint) bool {
 	if sourceID == nil || sourceID.StringWithSubstitutions == nil {
 		return false
@@ -313,8 +312,8 @@ func inBlueprintTopicSourceID(sourceID *core.MappingNode, blueprint *schema.Blue
 	return false
 }
 
-// externalSQSSourceID reports whether a literal sourceId is a raw external SQS URL
-// or ARN (an out-of-blueprint queue).
+// Reports whether a literal sourceId is a raw external SQS URL or ARN (an
+// out-of-blueprint queue).
 func externalSQSSourceID(sourceID *core.MappingNode) bool {
 	value := core.StringValue(sourceID)
 	return strings.HasPrefix(value, "https://sqs.") ||
@@ -391,10 +390,10 @@ func objectStorageBucketRef(key string, config *core.MappingNode) string {
 	return key
 }
 
-// consumerLabelUnion collects the labels of every absorbed consumer so the
-// emitted Lambda can carry them. A source's linkSelector selected the consumer by
-// label; propagating those labels onto the function re-establishes the concrete
-// source -> function event source once the consumer is absorbed.
+// Collects the labels of every absorbed consumer so the emitted Lambda can carry
+// them. A source's linkSelector selected the consumer by label; propagating those
+// labels onto the function re-establishes the concrete source -> function event
+// source once the consumer is absorbed.
 func consumerLabelUnion(r *ResolvedHandler) map[string]string {
 	labels := map[string]string{}
 	for _, consumer := range r.Consumers {

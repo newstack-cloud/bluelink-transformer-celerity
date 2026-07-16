@@ -17,11 +17,8 @@ func createAWSPropertyMap() transformutils.PropertyMap {
 			"spec.codeLocation": {
 				Suffix: "_code_location",
 			},
-			// The Celerity runtime will be referenceable via a derived value
-			// with the suffix "_celerity_runtime".
-			// As the lambda runtime will often be a different string value
-			// than the Celerity runtime, to retain references to the original
-			// value, we need to introduce a derived value.
+			// The lambda runtime is often a different string than the Celerity
+			// runtime, so a derived value retains a reference to the original.
 			"spec.runtime": {
 				Suffix: "_celerity_runtime",
 			},

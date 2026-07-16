@@ -42,9 +42,9 @@ func SeedRoleSpec(roleName string, plan *RolePlan) *core.MappingNode {
 	return spec
 }
 
-// inlinePolicies builds the inline policy list the transformer owns: the X-Ray
-// policy (no provider link grants it) and, for each external event source that
-// has no provider link, a scoped source-read policy statement.
+// Builds the inline policy list the transformer owns: the X-Ray policy (no
+// provider link grants it) and, for each external event source that has no
+// provider link, a scoped source-read policy statement.
 func inlinePolicies(plan *RolePlan) []*core.MappingNode {
 	policies := []*core.MappingNode{}
 	if plan.Tracing {
@@ -63,9 +63,9 @@ func policyEntry(name string, document *core.MappingNode) *core.MappingNode {
 	)
 }
 
-// externalSourcesPolicyDoc builds a single policy document with one statement per
-// external event source, each granting that service's source-read actions scoped to
-// the specific external ARN. Returns nil when there are no grantable sources.
+// Builds a single policy document with one statement per external event source,
+// each granting that service's source-read actions scoped to the specific
+// external ARN. Returns nil when there are no grantable sources.
 func externalSourcesPolicyDoc(sources []ExternalEventSource) *core.MappingNode {
 	statements := []*core.MappingNode{}
 	for _, source := range sources {
@@ -115,10 +115,10 @@ func externalSourceActions(service string) []string {
 	}
 }
 
-// policyResourceNode builds the policy statement's resource node from an ARN
-// string. A plain literal ARN becomes a scalar node; an ARN carrying a ${...}
-// substitution (a deploy-time-resolved external source) is parsed so it stays a
-// real reference the deploy engine resolves.
+// Builds the policy statement's resource node from an ARN string. A plain
+// literal ARN becomes a scalar node; an ARN carrying a ${...} substitution
+// (a deploy-time-resolved external source) is parsed so it stays a real
+// reference the deploy engine resolves.
 func policyResourceNode(arn string) *core.MappingNode {
 	if !strings.Contains(arn, "${") {
 		return core.MappingNodeFromString(arn)

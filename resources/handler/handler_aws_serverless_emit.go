@@ -33,9 +33,8 @@ func (e *awsServerlessEmitter) emit(
 	resPropRewriter transformutils.ResourcePropertyRewriter,
 ) (*transformutils.EmitResult, error) {
 	name, _ := pluginutils.GetValueByPath("$.handlerName", r.Resource.Spec)
-	// `spec.handler` is used as the ID at runtime to allow Celerity SDK
-	// implementations to correctly look up the correct handler to handle
-	// an event or request.
+	// `spec.handler` is used as the ID at runtime so Celerity SDK implementations
+	// can look up the handler to handle an event or request.
 	handlerID, _ := pluginutils.GetValueByPath("$.handler", r.Resource.Spec)
 	celerityRuntime, _ := pluginutils.GetValueByPath("$.runtime", r.Resource.Spec)
 	runtime, hasRuntime := getTargetRuntime(
@@ -148,9 +147,6 @@ func (e *awsServerlessEmitter) emit(
 	}
 	funcResourceName := lambdaFuncResourceName(r.Name)
 
-	// Preserve the handler's linkSelector onto the Lambda so the provider's
-	// outbound links (queue, topic, datastore, bucket, config) resolve against
-	// the concrete resources by label.
 	declareOutboundLinks(r, lambdaResource)
 
 	// Carry the union of the handler's and every absorbed consumer's labels so
@@ -206,13 +202,13 @@ func (e *awsServerlessEmitter) emit(
 	return result, nil
 }
 
-// rewriteTriggerSpecs walks each emitted trigger/fan-out/ESM resource's spec
-// through the chained resource-property rewriter, exactly as the handler's own
-// Lambda spec is rewritten. This resolves any abstract ${resources.<x>...}
-// reference an absorbed trigger carries into its concrete form — most importantly
-// a consumer whose topic source is an in-blueprint celerity/topic, whose SNS
-// subscription topicArn must point at the concrete <topic>_sns_topic rather than
-// the abstract topic name (which no resource in the transformed blueprint owns).
+// Walks each emitted trigger/fan-out/ESM resource's spec through the chained
+// resource-property rewriter, as the handler's own Lambda spec is rewritten. This
+// resolves any abstract ${resources.<x>...} reference an absorbed trigger carries
+// into its concrete form — most importantly a consumer whose topic source is an
+// in-blueprint celerity/topic, whose SNS subscription topicArn must point at the
+// concrete <topic>_sns_topic rather than the abstract topic name (which no resource
+// in the transformed blueprint owns).
 func rewriteTriggerSpecs(
 	resources map[string]*schema.Resource,
 	resPropRewriter transformutils.ResourcePropertyRewriter,

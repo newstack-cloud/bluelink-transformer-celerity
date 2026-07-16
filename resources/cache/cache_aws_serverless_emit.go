@@ -162,9 +162,9 @@ func emitCache(
 		})
 	}
 
-	// Authentication. transitEncryption is already set on the RG (required for
-	// Redis AUTH). Password mode is fully wired here; iam mode (ElastiCache
-	// RBAC user groups) remains a scoped deferral.
+	// transitEncryption is already set on the RG (required for both Redis AUTH and
+	// RBAC). password mode provisions an auth-token secret; iam mode provisions
+	// RBAC user groups.
 	rgLinkSelector := r.Resource.LinkSelector
 	if cacheAuthMode(r) == "iam" {
 		// iam mode: ElastiCache RBAC. Emit an IAM-authenticated user and a user
@@ -229,8 +229,6 @@ func emitCache(
 	}, nil
 }
 
-// elasticacheConfigInt resolves an aws.elasticache.<name>.<suffix> deploy-config
-// integer, falling back to the given default when unset.
 func elasticacheConfigInt(run *transformutils.Run, name, suffix string, fallback int) int {
 	if run != nil {
 		if node, ok := sharedaws.ResolveDeployConfigNode(run.TransformContext, "aws.elasticache", name, suffix); ok {
@@ -240,8 +238,6 @@ func elasticacheConfigInt(run *transformutils.Run, name, suffix string, fallback
 	return fallback
 }
 
-// cacheHostValue builds the derived host value: the configuration endpoint
-// address in cluster mode, the primary endpoint address otherwise.
 func cacheHostValue(name string, clusterMode bool) (*schema.Value, error) {
 	endpointField := "primaryEndPoint"
 	if clusterMode {
@@ -252,8 +248,8 @@ func cacheHostValue(name string, clusterMode bool) (*schema.Value, error) {
 	)
 }
 
-// cacheHostKey is the derived-value name the property map's "spec.host" ValueRef
-// (concreteName + "_host") resolves to; it must equal <rg>_host.
+// Must equal <rg>_host: the property map's "spec.host" ValueRef resolves to
+// concreteName + "_host".
 func cacheHostKey(name string) string {
 	return replicationGroupResourceName(name) + "_host"
 }
@@ -267,7 +263,6 @@ func cacheAuthMode(r *ResolvedCache) string {
 }
 
 func infraMeta(abstractName string) *schema.Metadata {
-	// Labels are set from the cache's own metadata (preserved for handler links).
 	return &schema.Metadata{
 		Annotations: transformutils.TransformerBaseAnnotations(
 			&transformutils.TransformerBaseAnnotationsInput{
@@ -284,13 +279,11 @@ func specGet(r *ResolvedCache, path string) *core.MappingNode {
 	return node
 }
 
-// buildAuthSecret emits the Secrets Manager secret whose generated random value
-// becomes the cache's Redis AUTH token. The token is Redis-AUTH-safe (length,
-// excluded characters) and stored as the raw secret string, which is what the
-// replicationGroup::secret link reads. The secret carries the cache's own labels
-// so a handler that links to the cache also links to the secret via the
-// aws/lambda/function::aws/secretsmanager/secret link (injecting it as a
-// SECRET_<name> env var), plus the distinctive auth label the RG selects on.
+// The secret's generated random value is stored as the raw secret string, which
+// is what the replicationGroup::secret link reads as the Redis AUTH token. The
+// secret carries the cache's own labels so a handler that links to the cache
+// also links to the secret (injecting it as a SECRET_<name> env var), plus the
+// distinctive auth label the RG selects on.
 func buildAuthSecret(r *ResolvedCache, name string) *schema.Resource {
 	labels := map[string]string{cacheAuthLabelKey: name}
 	if r.Resource.Metadata != nil && r.Resource.Metadata.Labels != nil {
@@ -314,10 +307,8 @@ func buildAuthSecret(r *ResolvedCache, name string) *schema.Resource {
 	}
 }
 
-// mergeLinkSelectorLabel returns a link selector that carries the given byLabel
-// entry in addition to any existing selector labels. byLabel semantics are a
-// union across labels, so appending the auth label preserves every existing
-// edge while adding the RG -> auth-secret edge.
+// byLabel semantics are a union across labels, so appending the auth label
+// preserves every existing edge while adding the RG -> auth-secret edge.
 func mergeLinkSelectorLabel(existing *schema.LinkSelector, key, value string) *schema.LinkSelector {
 	values := map[string]string{key: value}
 	var exclude *schema.StringList
@@ -337,10 +328,8 @@ func authSecretResourceName(name string) string {
 	return fmt.Sprintf("%s_cache_auth_secret", name)
 }
 
-// buildIAMUserAndGroup emits the ElastiCache RBAC user (IAM-authenticated) and
-// the user group that backs iam auth mode. The user group must contain the
-// managed "default" user in addition to the IAM user. The replication group
-// references the group via userGroupIds (set by the caller).
+// The RBAC user group must contain the managed "default" user in addition to
+// the IAM user.
 func buildIAMUserAndGroup(r *ResolvedCache, name, engine string) (*schema.Resource, *schema.Resource, error) {
 	userID := fmt.Sprintf("%s-iam", name)
 	user := &schema.Resource{

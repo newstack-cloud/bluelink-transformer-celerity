@@ -39,7 +39,6 @@ func BuildEnvironmentVariables(input *EnvInput) *core.MappingNode {
 
 	maps.Copy(vars, input.UserEnv)
 	if !userSetLogFormat {
-		// default unless user has overridden
 		vars["CELERITY_LOG_FORMAT"] = core.MappingNodeFromString("json")
 	}
 

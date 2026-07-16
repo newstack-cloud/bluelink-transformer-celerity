@@ -157,16 +157,14 @@ func emitSQLDatabase(
 	}, nil
 }
 
-// dbDerivedValues builds the endpoint-dependent outputs the property map's
-// ValueRefs resolve to. host and readHost cannot be static renames because the
-// correct endpoint branches on proxy-presence and Aurora; databaseName is a
-// literal that both the standalone and Aurora paths agree on.
+// host and readHost cannot be static renames because the correct endpoint
+// branches on proxy-presence and Aurora:
 //
 //   - host      -> proxy endpoint when a proxy is emitted; else the Aurora cluster
 //     writer endpoint; else the standalone instance endpoint.
 //   - readHost  -> Aurora cluster reader endpoint (load-balanced) when Aurora;
 //     else the standalone reader-instance endpoint. Only emitted when
-//     readReplicas is enabled (spec: readHost is present only then).
+//     readReplicas is enabled.
 //   - databaseName -> the database name (known at emit time).
 func dbDerivedValues(
 	r *ResolvedSQLDatabase,
@@ -209,10 +207,8 @@ func dbDerivedValues(
 	return values, nil
 }
 
-// dbHostKey / dbReadHostKey / dbDatabaseNameKey are the derived-value names the
-// property map's ValueRefs (concreteName + suffix, concreteName = the RDS
-// instance) resolve to; they must equal <instance>_host / _read_host /
-// _database_name.
+// Must equal <instance>_host / _read_host / _database_name: the property map's
+// ValueRefs resolve to concreteName (the RDS instance) + suffix.
 func dbHostKey(name string) string {
 	return instanceResourceName(name) + "_host"
 }
@@ -226,7 +222,7 @@ func dbDatabaseNameKey(name string) string {
 }
 
 // vpcReferences carries the shared VPC-derived references plus the subnet group
-// resource to emit, resolved once and reused across every DB resource.
+// resource, resolved once and reused across every DB resource.
 type vpcReferences struct {
 	subnetGroupName string
 	subnetIdsRef    *core.MappingNode
@@ -271,8 +267,7 @@ func resolveVPCRefs(r *ResolvedSQLDatabase, name string) (*vpcReferences, error)
 	}, nil
 }
 
-// buildStandaloneInstance emits the single RDS DB instance for the non-Aurora
-// path. Password mode -> RDS manages the master-user secret itself (exposing the
+// Password mode -> RDS manages the master-user secret itself (exposing the
 // computed masterUserSecret); iam mode -> IAM database authentication.
 func buildStandaloneInstance(
 	r *ResolvedSQLDatabase,
@@ -304,9 +299,8 @@ func buildStandaloneInstance(
 	}
 }
 
-// buildAuroraCluster emits the Aurora Serverless v2 cluster. It carries the
-// database's labels so a handler that links to the sqlDatabase resolves to the
-// cluster via aws/lambda/function::aws/rds/dbCluster.
+// The cluster carries the database's labels so a handler that links to the
+// sqlDatabase resolves to the cluster.
 func buildAuroraCluster(
 	r *ResolvedSQLDatabase,
 	run *transformutils.Run,
@@ -346,8 +340,6 @@ func buildAuroraCluster(
 	}
 }
 
-// buildAuroraInstance emits the db.serverless writer instance bound to the
-// Aurora cluster.
 func buildAuroraInstance(
 	r *ResolvedSQLDatabase,
 	name, engine string,
@@ -368,9 +360,8 @@ func buildAuroraInstance(
 	}
 }
 
-// buildReaderInstance emits the reader endpoint bearer for readReplicas. For
-// Aurora it is a db.serverless reader in the cluster; for standalone RDS it is a
-// read replica of the primary instance.
+// For Aurora the reader is a db.serverless reader in the cluster; for standalone
+// RDS it is a read replica of the primary instance.
 func buildReaderInstance(
 	r *ResolvedSQLDatabase,
 	name, engine string,
@@ -402,10 +393,9 @@ func buildReaderInstance(
 	}
 }
 
-// buildProxyResources emits the RDS Proxy, its IAM role and the target group
-// registering the primary instance. Handlers pool through the proxy via
-// aws/lambda/function::aws/rds/dbProxy, activated by the proxy carrying the
-// database's labels (the function selects the sqlDatabase by label).
+// Emits the RDS Proxy, its IAM role and the target group registering the primary
+// instance. The proxy carries the database's labels so handlers that select the
+// sqlDatabase by label pool through it.
 func buildProxyResources(
 	r *ResolvedSQLDatabase,
 	name, engine string,
@@ -474,9 +464,9 @@ func buildProxyResources(
 	}, nil
 }
 
-// buildProxyRole emits the IAM role the RDS Proxy assumes. It trusts
-// rds.amazonaws.com; in password mode it also grants secretsmanager:GetSecretValue
-// on the instance's RDS-managed master secret so the proxy can read credentials.
+// The IAM role trusts rds.amazonaws.com; in password mode it also grants
+// secretsmanager:GetSecretValue on the instance's RDS-managed master secret so
+// the proxy can read credentials.
 func buildProxyRole(r *ResolvedSQLDatabase, name string, iamMode bool) (*schema.Resource, error) {
 	roleName := proxyRoleResourceName(r.Name)
 	spec := core.MappingNodeFields(
@@ -521,7 +511,6 @@ func buildProxyRole(r *ResolvedSQLDatabase, name string, iamMode bool) (*schema.
 	}, nil
 }
 
-// applyInstanceAuth stamps the auth mode onto a standalone instance spec.
 func applyInstanceAuth(spec *core.MappingNode, r *ResolvedSQLDatabase) {
 	if sqlAuthMode(r) == "iam" {
 		spec.Fields["enableIAMDatabaseAuthentication"] = core.MappingNodeFromBool(true)
@@ -530,7 +519,6 @@ func applyInstanceAuth(spec *core.MappingNode, r *ResolvedSQLDatabase) {
 	}
 }
 
-// auroraConfig resolves an aws.aurora.<db>.<suffix> deploy-config scalar.
 func auroraConfig(run *transformutils.Run, name, suffix string) *core.MappingNode {
 	if run == nil {
 		return nil
@@ -539,7 +527,6 @@ func auroraConfig(run *transformutils.Run, name, suffix string) *core.MappingNod
 	return node
 }
 
-// auroraCapacity resolves an ACU capacity override, falling back to a default.
 func auroraCapacity(run *transformutils.Run, name, suffix string, fallback float64) *core.MappingNode {
 	if node := auroraConfig(run, name, suffix); node != nil {
 		return node

@@ -6,16 +6,15 @@ import (
 	"github.com/newstack-cloud/bluelink/libs/plugin-framework/sdk/transformutils"
 )
 
-// emitConsumer is deliberately a no-op.
+// Deliberately a no-op.
 //
-// A celerity/consumer is a contributory-only resource: the handler it links to
-// absorbs it and emits the concrete event-source wiring (an SQS/DynamoDB/Kinesis
-// event source mapping, an S3 notification or an SNS subscription) for the
-// handler's Lambda function. The consumer therefore produces no concrete resources
-// of its own, and the aggregator filters it out of the primaries entirely.
-//
-// The emitter exists only because the framework requires at least one Emitters
-// entry wherever a declarative pipeline field such as Resolve is set.
+// A celerity/consumer is contributory-only: the handler it links to absorbs it
+// and emits the concrete event-source wiring (an SQS/DynamoDB/Kinesis event source
+// mapping, an S3 notification or an SNS subscription) for the handler's Lambda
+// function, so the consumer produces no concrete resources of its own and the
+// aggregator drops it from the primaries. The emitter exists only because the
+// framework requires an Emitters entry wherever a pipeline field such as Resolve
+// is set.
 func emitConsumer(
 	_ context.Context,
 	_ *transformutils.Run,

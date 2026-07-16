@@ -22,14 +22,11 @@ func scheduleResourceSchema() *provider.ResourceDefinitionsSchema {
 	}
 }
 
-// scheduleInputSchema models the optional spec.input field, whose value is a static
-// JSON value delivered to the schedule handler on every trigger. Its spec type is
-// object | string | number | boolean | array | null. The provider schema has no
-// free-form "any" type, so it is modelled as the most permissive representation the
-// framework allows: a union of every scalar plus recursively-permissive array and
-// map (object) members. On aws-serverless this value is JSON-encoded and delivered
-// via the EventBridge rule target's input; it reaches the handler in the message
-// body.
+// Models the optional spec.input field, a static JSON value delivered to the
+// schedule handler on every trigger (spec type object | string | number | boolean
+// | array | null). The provider schema has no free-form "any" type, so it is
+// modelled as the most permissive representation the framework allows: a union of
+// every scalar plus recursively-permissive array and map (object) members.
 func scheduleInputSchema() *provider.ResourceDefinitionsSchema {
 	// anyJSON is self-referential so nested arrays and objects accept arbitrary
 	// JSON to any depth (bounded by the framework's traversal depth limit).
