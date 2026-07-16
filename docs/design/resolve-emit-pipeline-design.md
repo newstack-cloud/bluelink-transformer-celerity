@@ -446,7 +446,7 @@ Absorption is target-specific, not structural. Under `aws-serverless`, each hand
 
 To keep that decision out of the structural traversal, the pipeline is split into three phases. Resolve is target-agnostic; aggregate is target-specific and decides which resolved structs become emit primaries; emit walks the resulting plan.
 
-```
+```text
 transformBlueprint(ctx, input)
   |
   +-- Phase 1: Resolve   (target-agnostic)
@@ -461,9 +461,11 @@ transformBlueprint(ctx, input)
   +-- Phase 2: Aggregate (target-specific)
   |     Input: []ResolvedResource, deployTarget
   |     Output: EmitPlan — ordered list of primaries to emit
-  |     - aws-serverless: filter pass — drops handlerConfig/consumer/schedule/vpc resolved structs
-  |       (their data lives inside ResolvedHandler.Consumers/Schedules/VPC/HandlerConfig);
-  |       handler/api/queue/topic/etc. become primaries
+  |     - aws-serverless: filter pass — drops handlerConfig/consumer/schedule resolved structs
+  |       (their data lives inside ResolvedHandler.Consumers/Schedules/HandlerConfig);
+  |       VPC stays a primary (it emits the concrete VPC that handlers, caches and
+  |       databases reference for subnet placement), and its data is also attached to
+  |       ResolvedHandler.VPC; handler/api/queue/topic/etc. become primaries
   |     - aws (v1): fold pass — collects every ResolvedHandler + ResolvedAPI into a single
   |       ResolvedService primary; queues/topics/datastores/etc. remain primaries unchanged
   |
@@ -525,13 +527,13 @@ Both sides of a link CAN see the edge, but they extract different information. F
 
 The convention: `*_resolve.go` files are target-agnostic. Emit and rewriter files are target-suffixed (`_aws_serverless.go`, `_aws.go`). Resources that emit identically across targets (queue/topic/datastore in aws-serverless and aws v1) keep a single shared `_aws.go`. The `service/` package is aws-v1-only and exists solely to hold `ResolvedService` and its emit/rewriter — it has no `*_resolve.go` because it's constructed by `aggregate_aws.go`, not from raw blueprint resources.
 
-```
+```text
 transformer/
   transformer.go               -- NewTransformer() (unchanged); transformBlueprint() calls resolve -> aggregate -> emit
   resolve.go                   -- resolveBlueprint(blueprint, linkGraph) -> []ResolvedResource (target-agnostic)
   resolved_types.go            -- ResolvedResource interface (no Emits() method), per-resource resolved structs, LinkedResource
   aggregate.go                 -- aggregate([]ResolvedResource, deployTarget) -> EmitPlan; dispatches per target
-  aggregate_aws_serverless.go  -- filter pass: drops handlerConfig/consumer/schedule/vpc from primaries
+  aggregate_aws_serverless.go  -- filter pass: drops handlerConfig/consumer/schedule from primaries (VPC stays a primary)
   aggregate_aws.go             -- fold pass: handlers + APIs -> single ResolvedService primary
   emit.go                      -- emitResources(blueprint, EmitPlan, deployTarget, ctx) -> output
 
