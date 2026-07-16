@@ -646,11 +646,17 @@ shape.
 **Panic propagation.** Cases the validation table classifies as "Panic"
 (mixed Layer-1 + Layer-2, duplicate registration in `Registry` overlay)
 panic inside `buildRegistry` and therefore inside `deriveOnce.Do`.
-`sync.Once` records the panic and re-panics on every subsequent call —
-so a misconfigured plugin keeps panicking instead of silently advancing
-to no-op mode. This is intentional: a panic on first `Transform` is
-already a programmer error; converting it to a one-shot panic followed
-by silent no-ops would mask the bug.
+`sync.Once` does **not** re-panic on later calls: when the function it
+runs panics, `Do` still marks the `Once` as done via its deferred store,
+so the function is never re-run and subsequent calls return without
+panicking — which would let a misconfigured plugin fall through to
+zero-value/no-op state. To preserve consistent fail-fast behaviour,
+`buildRegistry` recovers the panic on the first attempt and caches the
+recovered value, and `effectiveRegistry` re-raises that cached value on
+every later `Transform` call. This is intentional: a panic on first
+`Transform` is already a programmer error, and re-raising it each time
+keeps the plugin failing loudly instead of silently advancing to no-op
+mode.
 
 **No constructor required.** All of this state has useful zero values
 (zero `sync.Once`, nil registry, false `hasPipeline`, nil error), so
@@ -708,11 +714,12 @@ func (p *TransformerPluginDefinition) Transform(
     if hasPipeline {
         target := transformutils.Target(getDeployTarget(input.TransformerContext))
         return transformutils.RunTransformPipeline(
+            ctx,  // request context, threaded to OnRun and every phase
             input.InputBlueprint,
             input.LinkGraph,
             target,
             reg,
-            p.OnRun,  // threaded so pipeline step 0 can run OnRun to load run-scoped state (e.g. the build manifest)
+            p.OnRun,  // run before resolution (pipeline step 0) with ctx, to load run-scoped state (e.g. the build manifest)
             input.TransformerContext,
         )
     }
@@ -880,7 +887,7 @@ func RunTransformPipeline(
 
 ### Phase Diagram
 
-```
+```text
 RunTransformPipeline
   |
   +-- 0. Allocate Run; optionally populate via OnRun

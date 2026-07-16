@@ -563,7 +563,17 @@ func (p *TransformerPluginDefinition) ValidateLinks(
 
     // 1. Per-edge pass: type compatibility, annotations, custom validation.
     for _, edge := range input.LinkGraph.Edges() {
-        // 1a. Cross-boundary check: abstract source must not link to concrete.
+        // 1a. Ownership filter: only edges that involve an abstract resource type
+        //     this transformer owns are ours to validate. Concrete-to-concrete
+        //     edges and edges whose abstract type belongs to another transformer
+        //     are skipped, so we never flag them as an unknown edge class. Edges
+        //     where one side is our abstract type still pass (including the
+        //     cross-boundary case below, where the other side is concrete).
+        if !p.ownsAbstractType(edge.SourceType) && !p.ownsAbstractType(edge.TargetType) {
+            continue
+        }
+
+        // 1b. Cross-boundary check: abstract source must not link to concrete.
         //     If source is abstract and target is concrete (or vice versa),
         //     emit a diagnostic telling the user to use a substitution ref.
         //     This check is automatic — not something the rule author writes.
@@ -572,7 +582,7 @@ func (p *TransformerPluginDefinition) ValidateLinks(
             continue
         }
 
-        // 1b. Look up the edge class definition.
+        // 1c. Look up the edge class definition.
         key := core.LinkType(edge.SourceType, edge.TargetType)
         def, ok := p.AbstractLinks[key]
         if !ok {
@@ -580,7 +590,7 @@ func (p *TransformerPluginDefinition) ValidateLinks(
             continue
         }
 
-        // 1c. Annotation validation — delegates to the framework helper
+        // 1d. Annotation validation — delegates to the framework helper
         //     ValidateAnnotationValue, so behaviour is identical to
         //     concrete-link annotation validation.
         for name, def := range def.AnnotationDefinitions {
