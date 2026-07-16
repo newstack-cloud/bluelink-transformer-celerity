@@ -526,6 +526,8 @@ func (s *APITransformTestSuite) Test_websocket_only_api_does_not_emit_authorizer
 					"jwt", core.MappingNodeFields(
 						"type", core.MappingNodeFromString("jwt"),
 						"issuer", core.MappingNodeFromString("https://issuer.example.com"),
+						"audience", core.MappingNodeItems(core.MappingNodeFromString("chat-api")),
+						"tokenSource", core.MappingNodeFromString("$.headers.Authorization"),
 					),
 				),
 			),
@@ -537,6 +539,11 @@ func (s *APITransformTestSuite) Test_websocket_only_api_does_not_emit_authorizer
 		edges(),
 	)
 
+	// The guard is complete, so no error must be raised that would mask the
+	// WebSocket-only behavior under test.
+	for _, d := range diagnostics {
+		s.NotEqual(core.DiagnosticLevelError, d.Level, "unexpected error diagnostic: %s", d.Message)
+	}
 	s.True(hasWarningContaining(diagnostics, "WebSocket-only"))
 	for name, res := range resources {
 		s.NotEqual("aws/apigatewayv2/authorizer", res.Type.Value,
@@ -548,13 +555,15 @@ func (s *APITransformTestSuite) Test_websocket_only_api_does_not_emit_authorizer
 func (s *APITransformTestSuite) Test_no_protocol_warns_and_emits_nothing() {
 	apiRes := &schema.Resource{
 		Type: &schema.ResourceTypeWrapper{Value: "celerity/api"},
-		// No protocols; a guard is set to prove no dangling authorizer is emitted.
+		// No protocols; a complete guard is set to prove no dangling authorizer is emitted.
 		Spec: core.MappingNodeFields(
 			"auth", core.MappingNodeFields(
 				"guards", core.MappingNodeFields(
 					"jwt", core.MappingNodeFields(
 						"type", core.MappingNodeFromString("jwt"),
 						"issuer", core.MappingNodeFromString("https://issuer.example.com"),
+						"audience", core.MappingNodeItems(core.MappingNodeFromString("orders-api")),
+						"tokenSource", core.MappingNodeFromString("$.headers.Authorization"),
 					),
 				),
 			),
@@ -566,6 +575,11 @@ func (s *APITransformTestSuite) Test_no_protocol_warns_and_emits_nothing() {
 		edges(),
 	)
 
+	// The guard is complete, so no error must be raised that would mask the
+	// no-protocol behavior under test.
+	for _, d := range diagnostics {
+		s.NotEqual(core.DiagnosticLevelError, d.Level, "unexpected error diagnostic: %s", d.Message)
+	}
 	s.True(hasWarningContaining(diagnostics, "no recognised protocol"))
 	for name, res := range resources {
 		s.NotContains(res.Type.Value, "apigatewayv2",
