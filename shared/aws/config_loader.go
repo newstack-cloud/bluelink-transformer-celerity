@@ -214,9 +214,10 @@ func httpClientOptions(transformCtx transform.Context) []func(*config.LoadOption
 	// The AWS SDK already picks up HTTP_PROXY and HTTPS_PROXY env vars on its
 	// own, so we only attach a custom client when the transformer config
 	// explicitly set one of these — matching the AWS provider's behaviour.
-	if !((hasInsecure && insecure) ||
+	usesCustomProxy := (hasInsecure && insecure) ||
 		(hasHTTPProxy && !core.IsScalarNil(httpProxyScalar)) ||
-		(hasHTTPSProxy && !core.IsScalarNil(httpsProxyScalar))) {
+		(hasHTTPSProxy && !core.IsScalarNil(httpsProxyScalar))
+	if !usesCustomProxy {
 		return nil
 	}
 

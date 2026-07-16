@@ -105,7 +105,7 @@ func (m *manifestLoaderHub) loadManifest(
 	if err != nil {
 		return nil, err
 	}
-	defer reader.Close()
+	defer func() { _ = reader.Close() }()
 
 	var manifest Manifest
 	if err := json.NewDecoder(reader).Decode(&manifest); err != nil {
