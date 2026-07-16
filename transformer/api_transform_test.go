@@ -394,6 +394,34 @@ func (s *APITransformTestSuite) Test_websocket_connect_auth_strategy_warns() {
 	)
 }
 
+func (s *APITransformTestSuite) Test_no_protocol_warns_and_emits_nothing() {
+	apiRes := &schema.Resource{
+		Type: &schema.ResourceTypeWrapper{Value: "celerity/api"},
+		// No protocols; a guard is set to prove no dangling authorizer is emitted.
+		Spec: core.MappingNodeFields(
+			"auth", core.MappingNodeFields(
+				"guards", core.MappingNodeFields(
+					"jwt", core.MappingNodeFields(
+						"type", core.MappingNodeFromString("jwt"),
+						"issuer", core.MappingNodeFromString("https://issuer.example.com"),
+					),
+				),
+			),
+		),
+	}
+
+	resources, diagnostics := s.transformWithDiagnostics(
+		map[string]*schema.Resource{"noProtoApi": apiRes},
+		edges(),
+	)
+
+	s.True(hasWarningContaining(diagnostics, "no recognised protocol"))
+	for name, res := range resources {
+		s.NotContains(res.Type.Value, "apigatewayv2",
+			"no apigatewayv2 resource should be emitted without a protocol, found %s (%s)", name, res.Type.Value)
+	}
+}
+
 func (s *APITransformTestSuite) transform(
 	resources map[string]*schema.Resource,
 	lg linktypes.DeclaredLinkGraph,

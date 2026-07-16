@@ -55,14 +55,21 @@ func emitAPI(
 		}
 	}
 	if !info.hasHTTP && !info.hasWS {
-		diagnostics = append(diagnostics, &core.Diagnostic{
-			Level: core.DiagnosticLevelWarning,
-			Message: fmt.Sprintf(
-				"celerity/api %q declares no recognised protocol; expected \"http\", \"websocket\" or a "+
-					"websocketConfig object in spec.protocols",
-				r.Name,
-			),
-		})
+		// No concrete API is emitted, so authorizer/domain/id emission below would
+		// reference a non-existent API resource (primaryConcreteName falls back to
+		// the HTTP api name). Warn and emit nothing.
+		return &transformutils.EmitResult{
+			Diagnostics: []*core.Diagnostic{
+				{
+					Level: core.DiagnosticLevelWarning,
+					Message: fmt.Sprintf(
+						"celerity/api %q declares no recognised protocol; expected \"http\", \"websocket\" or a "+
+							"websocketConfig object in spec.protocols",
+						r.Name,
+					),
+				},
+			},
+		}, nil
 	}
 
 	diagnostics = append(diagnostics, websocketAuthWarnings(r)...)
