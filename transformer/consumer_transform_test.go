@@ -447,6 +447,46 @@ func (s *ConsumerTransformTestSuite) Test_external_dataStream_consumer_emits_eve
 	s.Nil(esm.Spec.Fields["functionResponseTypes"], "partialFailures was not set")
 }
 
+// An external SQS sourceId given as a queue URL must emit an eventSourceArn in
+// ARN form, since AWS's event source mapping rejects a queue URL.
+func (s *ConsumerTransformTestSuite) Test_external_sqs_url_sourceId_emits_arn_event_source() {
+	handlerRes := &schema.Resource{
+		Type: &schema.ResourceTypeWrapper{Value: "celerity/handler"},
+		Spec: core.MappingNodeFields(
+			"handlerName", core.MappingNodeFromString("extHandler"),
+			"handler", core.MappingNodeFromString("handlers.ext"),
+			"runtime", core.MappingNodeFromString("nodejs24.x"),
+		),
+		Metadata: &schema.Metadata{
+			Annotations: annotationMap("celerity.handler.consumer", "true"),
+		},
+	}
+	consumerRes := &schema.Resource{
+		Type: &schema.ResourceTypeWrapper{Value: "celerity/consumer"},
+		Spec: core.MappingNodeFields(
+			"sourceId", core.MappingNodeFromString(
+				"https://sqs.us-east-1.amazonaws.com/123456789012/ext-queue"),
+		),
+	}
+
+	resources := s.transform(
+		map[string]*schema.Resource{
+			"extHandler":  handlerRes,
+			"extConsumer": consumerRes,
+		},
+		edges(edge("extConsumer", "extHandler", "celerity/consumer", "celerity/handler")),
+	)
+
+	esm := resources["extConsumer_sqs_esm"]
+	s.Require().NotNil(esm, "expected an event source mapping for the external SQS source")
+	s.Equal(
+		"arn:aws:sqs:us-east-1:123456789012:ext-queue",
+		core.StringValue(esm.Spec.Fields["eventSourceArn"]),
+		"the queue URL must be normalised to its ARN",
+	)
+	s.Equal("extHandler_lambda_func", resourceRefName(esm.Spec.Fields["functionName"]))
+}
+
 // A metadataUpdated bucket event has no S3 equivalent and is surfaced as a warning
 // rather than dropped silently (L1).
 func (s *ConsumerTransformTestSuite) Test_bucket_metadata_updated_event_warns() {

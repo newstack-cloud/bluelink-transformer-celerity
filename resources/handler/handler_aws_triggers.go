@@ -669,7 +669,10 @@ func externalSQSEventSourceMapping(
 	binding *ConsumerBinding,
 	funcResourceName string,
 ) (*schema.Resource, error) {
-	spec, err := eventSourceMappingSpec(binding.ExternalSQSArn, funcResourceName)
+	// eventSourceArn requires a queue ARN; a sourceId given as a queue URL is
+	// normalised to its ARN the same way as for IAM scoping.
+	eventSourceArn := core.MappingNodeFromString(externalSQSResourceARN(binding.ExternalSQSArn))
+	spec, err := eventSourceMappingSpec(eventSourceArn, funcResourceName)
 	if err != nil {
 		return nil, err
 	}
