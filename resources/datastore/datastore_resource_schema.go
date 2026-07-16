@@ -47,8 +47,10 @@ func datastoreResourceSchema() *provider.ResourceDefinitionsSchema {
 						},
 						"fields": {
 							Type: provider.ResourceDefinitionsSchemaTypeArray,
-							Description: "The fields the index covers. On aws-serverless the first field is " +
-								"the index HASH key and the second (if present) the RANGE key.",
+							Description: "The one or two fields the index covers. On aws-serverless the first " +
+								"field is the index HASH key and the second (if present) the RANGE key.",
+							MinLength: 1,
+							MaxLength: 2,
 							Items: &provider.ResourceDefinitionsSchema{
 								Type: provider.ResourceDefinitionsSchemaTypeString,
 							},

@@ -50,7 +50,8 @@ func emitDatastore(
 	}
 	spec.Fields["keySchema"] = &core.MappingNode{Items: keySchema}
 
-	if gsis := buildGlobalSecondaryIndexes(r, attrNames); len(gsis) > 0 {
+	gsis, gsiDiagnostics := buildGlobalSecondaryIndexes(r, attrNames)
+	if len(gsis) > 0 {
 		spec.Fields["globalSecondaryIndexes"] = &core.MappingNode{Items: gsis}
 	}
 
@@ -86,29 +87,44 @@ func emitDatastore(
 		Resources: map[string]*schema.Resource{
 			datastoreConcreteName(r.Name): res,
 		},
+		Diagnostics: gsiDiagnostics,
 	}, nil
 }
 
-func buildGlobalSecondaryIndexes(r *ResolvedDatastore, attrNames *orderedSet) []*core.MappingNode {
+// A DynamoDB index key schema is one HASH key and an optional RANGE key, so the
+// abstract index must carry one or two fields. The schema enforces this, but an
+// index whose cardinality is still wrong is reported and skipped rather than
+// silently dropped or truncated to the first two fields.
+func buildGlobalSecondaryIndexes(r *ResolvedDatastore, attrNames *orderedSet) ([]*core.MappingNode, []*core.Diagnostic) {
 	indexes, _ := pluginutils.GetValueByPath("$.indexes", r.Resource.Spec)
 	if indexes == nil {
-		return nil
+		return nil, nil
 	}
 
+	keyTypes := []string{"HASH", "RANGE"}
 	gsis := make([]*core.MappingNode, 0, len(indexes.Items))
+	var diagnostics []*core.Diagnostic
 	for _, index := range indexes.Items {
 		name := core.StringValue(index.Fields["name"])
 		fields := index.Fields["fields"]
-		if fields == nil || len(fields.Items) == 0 {
+		fieldCount := 0
+		if fields != nil {
+			fieldCount = len(fields.Items)
+		}
+		if fieldCount < 1 || fieldCount > len(keyTypes) {
+			diagnostics = append(diagnostics, &core.Diagnostic{
+				Level: core.DiagnosticLevelError,
+				Message: fmt.Sprintf(
+					"celerity/datastore %q index %q must cover one or two fields (a partition key and an "+
+						"optional sort key) but has %d; the index has been skipped",
+					r.Name, name, fieldCount,
+				),
+			})
 			continue
 		}
 
-		keyTypes := []string{"HASH", "RANGE"}
-		gsiKeySchema := make([]*core.MappingNode, 0, len(fields.Items))
+		gsiKeySchema := make([]*core.MappingNode, 0, fieldCount)
 		for i, field := range fields.Items {
-			if i >= len(keyTypes) {
-				break // DynamoDB indexes have at most a partition and a sort key.
-			}
 			fieldName := core.StringValue(field)
 			gsiKeySchema = append(gsiKeySchema, keySchemaEntry(fieldName, keyTypes[i]))
 			attrNames.add(fieldName)
@@ -122,7 +138,7 @@ func buildGlobalSecondaryIndexes(r *ResolvedDatastore, attrNames *orderedSet) []
 			),
 		))
 	}
-	return gsis
+	return gsis, diagnostics
 }
 
 // Capacity units apply only under PROVISIONED, on-demand request-unit ceilings
