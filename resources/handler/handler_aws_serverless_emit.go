@@ -166,6 +166,11 @@ func (e *awsServerlessEmitter) emit(
 		return nil, err
 	}
 
+	// Stamp the ElastiCache authMode annotation for iam-mode caches so the
+	// aws/lambda/function::aws/elasticache/replicationGroup link grants
+	// elasticache:Connect.
+	stampCacheAnnotations(r, lambdaResource)
+
 	resources := map[string]*schema.Resource{
 		funcResourceName: lambdaResource,
 	}

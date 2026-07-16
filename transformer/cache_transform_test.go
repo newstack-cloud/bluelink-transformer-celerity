@@ -76,7 +76,7 @@ func (s *CacheTransformTestSuite) Test_cache_in_a_managed_vpc_emits_rg_and_subne
 	s.False(hasWarningContaining(out.Diagnostics, "authMode"), "no auth-deferred warning in password mode")
 }
 
-func (s *CacheTransformTestSuite) Test_iam_auth_mode_defers_with_a_scoped_warning() {
+func (s *CacheTransformTestSuite) Test_iam_auth_mode_emits_user_and_user_group() {
 	out := s.transformCacheWithVPC(
 		core.MappingNodeFields(
 			"name", core.MappingNodeFromString("sessions"),
@@ -87,12 +87,26 @@ func (s *CacheTransformTestSuite) Test_iam_auth_mode_defers_with_a_scoped_warnin
 	)
 	resources := out.TransformedBlueprint.Resources.Values
 
-	// No secret in iam mode; the RG carries no auth selector.
+	// iam mode uses ElastiCache RBAC, not a stored secret.
 	s.NotContains(resources, "myCache_cache_auth_secret")
+	s.False(hasWarningContaining(out.Diagnostics, "authMode"), "iam mode is implemented, not deferred")
+
+	user := resources["myCache_cache_iam_user"]
+	s.Require().NotNil(user)
+	s.Equal("aws/elasticache/user", user.Type.Value)
+	s.Equal("iam", core.StringValue(user.Spec.Fields["authenticationMode"].Fields["type"]))
+
+	group := resources["myCache_cache_user_group"]
+	s.Require().NotNil(group)
+	s.Equal("aws/elasticache/userGroup", group.Type.Value)
+	userIDs := group.Spec.Fields["userIds"].Items
+	s.Require().Len(userIDs, 2)
+	s.Equal("default", core.StringValue(userIDs[0]), "the managed default user is required in the group")
+
 	rg := resources["myCache_elasticache_rg"]
 	s.Require().NotNil(rg)
 	s.True(core.BoolValue(rg.Spec.Fields["transitEncryptionEnabled"]))
-	s.True(hasWarningContaining(out.Diagnostics, "authMode"), "iam mode raises a scoped deferral warning")
+	s.Require().NotNil(rg.Spec.Fields["userGroupIds"], "the RG references the user group")
 }
 
 func (s *CacheTransformTestSuite) Test_cluster_mode_uses_multiple_node_groups() {
