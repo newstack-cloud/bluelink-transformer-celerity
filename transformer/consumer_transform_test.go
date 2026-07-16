@@ -495,6 +495,69 @@ func (s *ConsumerTransformTestSuite) Test_bucket_metadata_updated_event_warns() 
 	)
 }
 
+// Two bucket consumers absorbed by one handler must occupy distinct
+// aws.s3.lambda.event.<index> slots; a per-binding index reset would overwrite
+// the first bucket's events with the second's.
+func (s *ConsumerTransformTestSuite) Test_two_bucket_consumers_use_unique_s3_event_indices() {
+	handlerRes := &schema.Resource{
+		Type: &schema.ResourceTypeWrapper{Value: "celerity/handler"},
+		Spec: core.MappingNodeFields(
+			"handlerName", core.MappingNodeFromString("bucketHandler"),
+			"handler", core.MappingNodeFromString("handlers.bucket"),
+			"runtime", core.MappingNodeFromString("nodejs24.x"),
+		),
+		Metadata: &schema.Metadata{
+			Annotations: annotationMap("celerity.handler.consumer", "true"),
+		},
+	}
+	bucketRes := func(name, role string) *schema.Resource {
+		return &schema.Resource{
+			Type:         &schema.ResourceTypeWrapper{Value: "celerity/bucket"},
+			Spec:         core.MappingNodeFields("name", core.MappingNodeFromString(name)),
+			LinkSelector: &schema.LinkSelector{ByLabel: &schema.StringMap{Values: map[string]string{"role": role}}},
+		}
+	}
+	consumerRes := func(events, role string) *schema.Resource {
+		return &schema.Resource{
+			Type: &schema.ResourceTypeWrapper{Value: "celerity/consumer"},
+			Metadata: &schema.Metadata{
+				Annotations: annotationMap("celerity.consumer.bucket.events", events),
+				Labels:      &schema.StringMap{Values: map[string]string{"role": role}},
+			},
+		}
+	}
+
+	out := s.transformOutput(
+		map[string]*schema.Resource{
+			"bucketHandler":  handlerRes,
+			"invoicesBucket": bucketRes("invoices", "invoice-consumer"),
+			"receiptsBucket": bucketRes("receipts", "receipt-consumer"),
+			"invoiceConsumer": consumerRes("created", "invoice-consumer"),
+			"receiptConsumer": consumerRes("deleted", "receipt-consumer"),
+		},
+		edges(
+			edge("invoicesBucket", "invoiceConsumer", "celerity/bucket", "celerity/consumer"),
+			edge("receiptsBucket", "receiptConsumer", "celerity/bucket", "celerity/consumer"),
+			edge("invoiceConsumer", "bucketHandler", "celerity/consumer", "celerity/handler"),
+			edge("receiptConsumer", "bucketHandler", "celerity/consumer", "celerity/handler"),
+		),
+	)
+
+	lambda := out.TransformedBlueprint.Resources.Values["bucketHandler_lambda_func"]
+	s.Require().NotNil(lambda)
+
+	// Both bindings' events survive on distinct indices (order follows binding order).
+	got := []string{
+		annotationLiteral(lambda.Metadata.Annotations, "aws.s3.lambda.event.0"),
+		annotationLiteral(lambda.Metadata.Annotations, "aws.s3.lambda.event.1"),
+	}
+	s.ElementsMatch(
+		[]string{"s3:ObjectCreated:*", "s3:ObjectRemoved:*"},
+		got,
+		"each bucket consumer's event must occupy its own index, not overwrite the other",
+	)
+}
+
 // When a consumer matches multiple same-type sources, the disambiguation annotation
 // selects the named source (L2).
 func (s *ConsumerTransformTestSuite) Test_multiple_queue_sources_honour_disambiguation_annotation() {

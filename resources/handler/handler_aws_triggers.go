@@ -95,8 +95,14 @@ func stampTriggerAnnotations(r *ResolvedHandler, lambda *schema.Resource) []*cor
 	}
 
 	diagnostics := []*core.Diagnostic{}
+	// The aws.s3.lambda.event.<index> annotations form a single flat list read
+	// off the function, so the index must run across all bucket bindings; a
+	// per-binding reset would overwrite earlier bindings' events.
+	s3EventBase := 0
 	for _, binding := range r.ConsumerBindings {
-		diagnostics = append(diagnostics, stampConsumerBinding(lambda, binding)...)
+		stamped, diags := stampConsumerBinding(lambda, binding, s3EventBase)
+		diagnostics = append(diagnostics, diags...)
+		s3EventBase += stamped
 		if diag := routingKeyDeferred(r, binding); diag != nil {
 			diagnostics = append(diagnostics, diag)
 		}
@@ -134,7 +140,14 @@ func routingKeyDeferred(r *ResolvedHandler, binding *ConsumerBinding) *core.Diag
 	}
 }
 
-func stampConsumerBinding(lambda *schema.Resource, binding *ConsumerBinding) []*core.Diagnostic {
+// stampConsumerBinding stamps one binding's trigger annotations and returns the
+// number of S3 event annotations it stamped (0 for non-bucket sources) so the
+// caller can keep the aws.s3.lambda.event.<index> list unique across bindings.
+func stampConsumerBinding(
+	lambda *schema.Resource,
+	binding *ConsumerBinding,
+	s3EventBase int,
+) (int, []*core.Diagnostic) {
 	diagnostics := []*core.Diagnostic{}
 	if binding.Ambiguous {
 		diagnostics = append(diagnostics, ambiguousSourceWarning(binding))
@@ -146,7 +159,8 @@ func stampConsumerBinding(lambda *schema.Resource, binding *ConsumerBinding) []*
 	case ConsumerSourceDatastore:
 		stampDatastoreBinding(lambda, binding)
 	case ConsumerSourceBucket:
-		diagnostics = append(diagnostics, stampBucketBinding(lambda, binding)...)
+		stamped, diags := stampBucketBinding(lambda, binding, s3EventBase)
+		return stamped, append(diagnostics, diags...)
 	case ConsumerSourceTopic:
 		stampTopicBinding(lambda, binding)
 	case ConsumerSourceExternal:
@@ -154,7 +168,7 @@ func stampConsumerBinding(lambda *schema.Resource, binding *ConsumerBinding) []*
 	case ConsumerSourceUnknown:
 		diagnostics = append(diagnostics, unknownSourceDeferred(binding))
 	}
-	return diagnostics
+	return 0, diagnostics
 }
 
 func stampQueueBinding(lambda *schema.Resource, binding *ConsumerBinding) {
@@ -181,17 +195,20 @@ func stampDatastoreBinding(lambda *schema.Resource, binding *ConsumerBinding) {
 	}
 }
 
-func stampBucketBinding(lambda *schema.Resource, binding *ConsumerBinding) []*core.Diagnostic {
+// stampBucketBinding stamps the S3 notification event annotations starting at
+// baseIndex (so successive bucket bindings occupy distinct indices in the
+// function's flat event list) and returns how many it stamped.
+func stampBucketBinding(lambda *schema.Resource, binding *ConsumerBinding, baseIndex int) (int, []*core.Diagnostic) {
 	events, unsupported := bucketEvents(binding)
-	for index, event := range events {
-		setStringAnnotation(lambda.Metadata, fmt.Sprintf(annS3Event, index), event)
+	for offset, event := range events {
+		setStringAnnotation(lambda.Metadata, fmt.Sprintf(annS3Event, baseIndex+offset), event)
 	}
 
 	diagnostics := []*core.Diagnostic{}
 	for _, raw := range unsupported {
 		diagnostics = append(diagnostics, bucketEventUnsupported(binding, raw))
 	}
-	return diagnostics
+	return len(events), diagnostics
 }
 
 // Stamps the SQS event-source-mapping annotations (read by the
