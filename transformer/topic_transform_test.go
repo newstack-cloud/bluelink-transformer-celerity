@@ -42,8 +42,6 @@ func (s *TopicTransformTestSuite) Test_emits_an_sns_topic_from_the_topic_spec() 
 	s.Equal("events", core.StringValue(sns.Spec.Fields["topicName"]))
 	s.Equal("alias/events-key", core.StringValue(sns.Spec.Fields["kmsMasterKeyId"]))
 	s.Nil(sns.Spec.Fields["fifoTopic"], "a standard topic does not set fifoTopic")
-	// The spec explicitly forbids contentBasedDeduplication for FIFO topics.
-	s.Nil(sns.Spec.Fields["contentBasedDeduplication"])
 
 	// tags is a LIST of {key, value} for aws/sns/topic.
 	tags := sns.Spec.Fields["tags"]
@@ -73,6 +71,8 @@ func (s *TopicTransformTestSuite) Test_fifo_topic_appends_the_fifo_suffix() {
 	s.Require().NotNil(sns)
 	s.True(core.BoolValue(sns.Spec.Fields["fifoTopic"]))
 	s.Equal("events.fifo", core.StringValue(sns.Spec.Fields["topicName"]))
+	// The spec explicitly forbids contentBasedDeduplication for FIFO topics.
+	s.Nil(sns.Spec.Fields["contentBasedDeduplication"])
 }
 
 func (s *TopicTransformTestSuite) transformTopic(

@@ -122,8 +122,9 @@ func corsSchema() *provider.ResourceDefinitionsSchema {
 			"protocol on aws-serverless.",
 		OneOf: []*provider.ResourceDefinitionsSchema{
 			{
-				Type:        provider.ResourceDefinitionsSchemaTypeString,
-				Description: "A shorthand allowing all origins, expressed as \"*\".",
+				Type:          provider.ResourceDefinitionsSchemaTypeString,
+				Description:   "A shorthand allowing all origins, expressed as \"*\".",
+				AllowedValues: []*core.MappingNode{core.MappingNodeFromString("*")},
 			},
 			corsConfigurationSchema(),
 		},
@@ -250,8 +251,10 @@ func basePathConfigurationSchema() *provider.ResourceDefinitionsSchema {
 func tracingEnabledSchema() *provider.ResourceDefinitionsSchema {
 	return &provider.ResourceDefinitionsSchema{
 		Type: provider.ResourceDefinitionsSchemaTypeBoolean,
-		Description: "Whether tracing is enabled for the API. On aws-serverless this enables AWS X-Ray " +
-			"tracing on the API Gateway stage.",
+		Description: "Whether tracing is enabled for the API. On aws-serverless this cannot be honoured: " +
+			"AWS API Gateway v2 (HTTP and WebSocket) APIs do not support X-Ray active tracing on the " +
+			"stage, so a warning is emitted and no stage-level tracing is enabled. Enable X-Ray tracing " +
+			"on the linked Lambda handlers to trace requests instead.",
 	}
 }
 

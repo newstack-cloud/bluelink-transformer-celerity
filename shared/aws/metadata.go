@@ -1,6 +1,8 @@
 package aws
 
 import (
+	"sort"
+
 	"github.com/newstack-cloud/bluelink/libs/blueprint/core"
 	"github.com/newstack-cloud/bluelink/libs/blueprint/schema"
 )
@@ -16,13 +18,19 @@ func SpecTagsFromResourceMetadata(metadata *schema.Metadata) *core.MappingNode {
 		return nil
 	}
 
+	keys := make([]string, 0, len(metadata.Labels.Values))
+	for key := range metadata.Labels.Values {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+
 	tags := core.MappingNodeItems()
-	for key, value := range metadata.Labels.Values {
+	for _, key := range keys {
 		tags.Items = append(
 			tags.Items,
 			core.MappingNodeFields(
 				"key", core.MappingNodeFromString(key),
-				"value", core.MappingNodeFromString(value),
+				"value", core.MappingNodeFromString(metadata.Labels.Values[key]),
 			),
 		)
 	}

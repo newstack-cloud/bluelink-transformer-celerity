@@ -125,11 +125,16 @@ func (s *CacheTransformTestSuite) Test_iam_auth_mode_emits_user_and_user_group()
 	userIDs := group.Spec.Fields["userIds"].Items
 	s.Require().Len(userIDs, 2)
 	s.Equal("default", core.StringValue(userIDs[0]), "the managed default user is required in the group")
+	s.Equal("myCache_cache_iam_user", resourceRefName(userIDs[1]),
+		"the group references the emitted IAM user")
 
 	rg := resources["myCache_elasticache_rg"]
 	s.Require().NotNil(rg)
 	s.True(core.BoolValue(rg.Spec.Fields["transitEncryptionEnabled"]))
-	s.Require().NotNil(rg.Spec.Fields["userGroupIds"], "the RG references the user group")
+	userGroupIds := rg.Spec.Fields["userGroupIds"].Items
+	s.Require().Len(userGroupIds, 1)
+	s.Equal("myCache_cache_user_group", resourceRefName(userGroupIds[0]),
+		"the RG references the emitted user group")
 }
 
 func (s *CacheTransformTestSuite) Test_cluster_mode_uses_multiple_node_groups() {
