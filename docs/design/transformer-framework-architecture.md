@@ -131,9 +131,9 @@ this doc):
   `TransformFunc` field becomes the explicit Layer 1 escape hatch;
   existing `AbstractResources` / `AbstractLinks` / `TransformerConfigDefinition`
   fields are unchanged.
-- `pluginutils.RunTransformPipeline(blueprint, linkGraph, target, reg, ctx)`
+- `pluginutils.RunTransformPipeline(blueprint, linkGraph, target, reg, onRun, ctx)`
   — the engine that the existing `Transform` method calls when `Registry`
-  is set.
+  is set; `onRun` is propagated from `TransformerPluginDefinition.OnRun`.
 - `TransformerRegistry` (Pillar 1) — (target, resolved-type) → behavior.
 - `EmitPlan` + `EmitResult` (Pillar 2) — primaries, shared parents,
   emit results, contributions.
@@ -712,6 +712,7 @@ func (p *TransformerPluginDefinition) Transform(
             input.LinkGraph,
             target,
             reg,
+            p.OnRun,  // threaded so pipeline step 0 can run OnRun to load run-scoped state (e.g. the build manifest)
             input.TransformerContext,
         )
     }
@@ -872,6 +873,7 @@ func RunTransformPipeline(
     linkGraph linktypes.DeclaredLinkGraph,
     target Target,
     reg *TransformerRegistry,
+    onRun OnRun,  // propagated from TransformerPluginDefinition.OnRun; invoked in step 0
     ctx transform.Context,
 ) (*transform.SpecTransformerTransformOutput, error)
 ```
@@ -1975,7 +1977,7 @@ by Celerity v0):
   materialiser (Pillar 3).
 - `sdk/pluginutils/capabilities.go` — derived matrix (Pillar 4).
 - `sdk/pluginutils/run_transform_pipeline.go` — `RunTransformPipeline(blueprint,
-  linkGraph, target, reg, ctx)`, the engine that orchestrates the
+  linkGraph, target, reg, onRun, ctx)`, the engine that orchestrates the
   11-step execution flow described in "Execution Pipeline". Named
   `Transform` rather than `Emit` because the pipeline owns far more than
   emit — it does target validation, resolve, aggregate, chain
