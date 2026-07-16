@@ -480,9 +480,10 @@ func buildProxyResources(
 	}, nil
 }
 
-// The IAM role trusts rds.amazonaws.com; in password mode it also grants
+// The IAM role trusts rds.amazonaws.com. In password mode it grants
 // secretsmanager:GetSecretValue on the instance's RDS-managed master secret so
-// the proxy can read credentials.
+// the proxy can read credentials; in iam mode it instead grants rds-db:connect
+// so the proxy can authenticate to the database with IAM (defaultAuthScheme=IAM_AUTH).
 func buildProxyRole(r *ResolvedSQLDatabase, name string, iamMode bool) (*schema.Resource, error) {
 	roleName := proxyRoleResourceName(r.Name)
 	spec := core.MappingNodeFields(
@@ -499,7 +500,30 @@ func buildProxyRole(r *ResolvedSQLDatabase, name string, iamMode bool) (*schema.
 		),
 	)
 
-	if !iamMode {
+	if iamMode {
+		// rds-db:connect scoped to the instance's DB user. The dbiResourceId is
+		// globally unique, so wildcard region/account still scope the grant to this
+		// exact instance and the master user the transformer configures.
+		dbConnectResource, err := shared.SubstitutionMappingNode(fmt.Sprintf(
+			"arn:aws:rds-db:*:*:dbuser:${resources.%s.spec.dbiResourceId}/%s",
+			instanceResourceName(r.Name), defaultMasterUsername))
+		if err != nil {
+			return nil, err
+		}
+		spec.Fields["policies"] = core.MappingNodeItems(
+			core.MappingNodeFields(
+				"policyName", core.MappingNodeFromString(fmt.Sprintf("%s-rds-connect", name)),
+				"policyDocument", core.MappingNodeFields(
+					"version", core.MappingNodeFromString(policyDocVersion),
+					"statement", core.MappingNodeItems(core.MappingNodeFields(
+						"effect", core.MappingNodeFromString("Allow"),
+						"action", core.MappingNodeFromString("rds-db:connect"),
+						"resource", dbConnectResource,
+					)),
+				),
+			),
+		)
+	} else {
 		secretArnRef, err := shared.SubstitutionMappingNode(
 			fmt.Sprintf("${resources.%s.spec.masterUserSecret.secretArn}", instanceResourceName(r.Name)))
 		if err != nil {
