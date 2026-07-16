@@ -285,10 +285,12 @@ func specGet(r *ResolvedCache, path string) *core.MappingNode {
 // also links to the secret (injecting it as a SECRET_<name> env var), plus the
 // distinctive auth label the RG selects on.
 func buildAuthSecret(r *ResolvedCache, name string) *schema.Resource {
-	labels := map[string]string{cacheAuthLabelKey: name}
+	labels := map[string]string{}
 	if r.Resource.Metadata != nil && r.Resource.Metadata.Labels != nil {
 		maps.Copy(labels, r.Resource.Metadata.Labels.Values)
 	}
+	// Assigned last so a user label reusing this key cannot displace the auth selector.
+	labels[cacheAuthLabelKey] = name
 	meta := infraMeta(r.Name)
 	meta.Labels = &schema.StringMap{Values: labels}
 
@@ -310,7 +312,7 @@ func buildAuthSecret(r *ResolvedCache, name string) *schema.Resource {
 // byLabel semantics are a union across labels, so appending the auth label
 // preserves every existing edge while adding the RG -> auth-secret edge.
 func mergeLinkSelectorLabel(existing *schema.LinkSelector, key, value string) *schema.LinkSelector {
-	values := map[string]string{key: value}
+	values := map[string]string{}
 	var exclude *schema.StringList
 	if existing != nil {
 		if existing.ByLabel != nil {
@@ -318,6 +320,8 @@ func mergeLinkSelectorLabel(existing *schema.LinkSelector, key, value string) *s
 		}
 		exclude = existing.Exclude
 	}
+	// Assigned last so an existing selector reusing this key cannot displace the value.
+	values[key] = value
 	return &schema.LinkSelector{
 		ByLabel: &schema.StringMap{Values: values},
 		Exclude: exclude,

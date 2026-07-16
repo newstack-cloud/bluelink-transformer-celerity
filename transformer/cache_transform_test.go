@@ -76,6 +76,29 @@ func (s *CacheTransformTestSuite) Test_cache_in_a_managed_vpc_emits_rg_and_subne
 	s.False(hasWarningContaining(out.Diagnostics, "authMode"), "no auth-deferred warning in password mode")
 }
 
+// A user label that reuses the internal auth selector key must not displace the
+// value the secret carries and the replication group selects on.
+func (s *CacheTransformTestSuite) Test_user_label_cannot_override_auth_selector() {
+	out := s.transformCacheWithVPC(
+		core.MappingNodeFields(
+			"name", core.MappingNodeFromString("sessions"),
+		),
+		"standard",
+		map[string]string{"celerity.cache.auth": "attacker-value"},
+	)
+	resources := out.TransformedBlueprint.Resources.Values
+
+	secret := resources["myCache_cache_auth_secret"]
+	s.Require().NotNil(secret)
+	s.Equal("sessions", secret.Metadata.Labels.Values["celerity.cache.auth"],
+		"the internal auth selector value wins over a colliding user label")
+
+	rg := resources["myCache_elasticache_rg"]
+	s.Require().NotNil(rg)
+	s.Equal("sessions", rg.LinkSelector.ByLabel.Values["celerity.cache.auth"],
+		"the RG still selects the secret on the internal auth value")
+}
+
 func (s *CacheTransformTestSuite) Test_iam_auth_mode_emits_user_and_user_group() {
 	out := s.transformCacheWithVPC(
 		core.MappingNodeFields(
