@@ -236,6 +236,10 @@ func emitAuthorizers(
 		diagnostics = append(diagnostics, guardConfigWarnings(r.Name, guardName, cfg)...)
 		switch guardType {
 		case "jwt":
+			if diag := jwtGuardError(r.Name, guardName, cfg); diag != nil {
+				diagnostics = append(diagnostics, diag)
+				continue
+			}
 			resources[authorizerResourceName(r.Name, guardName)] = jwtAuthorizer(guardName, cfg, apiIDRef)
 		case "custom":
 			authRes, diag := customAuthorizer(ctx, r, guardName, apiIDRef)
@@ -276,6 +280,35 @@ func guardConfigWarnings(apiName, guardName string, cfg *core.MappingNode) []*co
 		})
 	}
 	return diagnostics
+}
+
+// An API Gateway JWT authorizer is invalid without an issuer, at least one
+// audience and an identity source, and the abstract schema can only mark these
+// conditionally required on the "jwt" type in prose. A jwt guard missing any of
+// them is reported as an error and skipped rather than emitting a broken
+// authorizer.
+func jwtGuardError(apiName, guardName string, cfg *core.MappingNode) *core.Diagnostic {
+	var missing []string
+	if strings.TrimSpace(core.StringValue(specNode(cfg, "$.issuer"))) == "" {
+		missing = append(missing, "issuer")
+	}
+	if audience := specNode(cfg, "$.audience"); audience == nil || len(audience.Items) == 0 {
+		missing = append(missing, "audience")
+	}
+	if identitySourceNode(specNode(cfg, "$.tokenSource")) == nil {
+		missing = append(missing, "tokenSource")
+	}
+	if len(missing) == 0 {
+		return nil
+	}
+	return &core.Diagnostic{
+		Level: core.DiagnosticLevelError,
+		Message: fmt.Sprintf(
+			"celerity/api %q guard %q has type \"jwt\" but is missing required field(s) %s; a jwt guard must "+
+				"set issuer, audience and tokenSource to emit a valid API Gateway JWT authorizer",
+			apiName, guardName, strings.Join(missing, ", "),
+		),
+	}
 }
 
 func jwtAuthorizer(

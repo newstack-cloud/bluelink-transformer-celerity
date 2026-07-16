@@ -307,6 +307,9 @@ func (s *APITransformTestSuite) Test_linked_http_handler_carries_route_annotatio
 						"type", core.MappingNodeFromString("jwt"),
 						"issuer", core.MappingNodeFromString("https://identity.example.com/oauth2/v1/"),
 						"tokenSource", core.MappingNodeFromString("$.headers.Authorization"),
+						"audience", core.MappingNodeItems(
+							core.MappingNodeFromString("orders-api"),
+						),
 					),
 				),
 			),
@@ -393,6 +396,9 @@ func (s *APITransformTestSuite) Test_jwt_guard_oauth2_discovery_warns() {
 						"issuer", core.MappingNodeFromString("https://identity.example.com/oauth2/v1/"),
 						"discoveryMode", core.MappingNodeFromString("oauth2"),
 						"tokenSource", core.MappingNodeFromString("$.headers.Authorization"),
+						"audience", core.MappingNodeItems(
+							core.MappingNodeFromString("orders-api"),
+						),
 					),
 				),
 			),
@@ -426,6 +432,9 @@ func (s *APITransformTestSuite) Test_guard_non_bearer_auth_scheme_warns() {
 						"issuer", core.MappingNodeFromString("https://identity.example.com/oauth2/v1/"),
 						"authScheme", core.MappingNodeFromString("basic"),
 						"tokenSource", core.MappingNodeFromString("$.headers.Authorization"),
+						"audience", core.MappingNodeItems(
+							core.MappingNodeFromString("orders-api"),
+						),
 					),
 				),
 			),
@@ -441,6 +450,42 @@ func (s *APITransformTestSuite) Test_guard_non_bearer_auth_scheme_warns() {
 		hasWarningContaining(diagnostics, "authScheme"),
 		"expected a scoped non-bearer authScheme warning",
 	)
+}
+
+// A jwt guard missing the conditionally-required issuer, audience and
+// tokenSource fields errors before emission instead of producing an invalid
+// API Gateway JWT authorizer.
+func (s *APITransformTestSuite) Test_jwt_guard_missing_required_fields_errors() {
+	apiRes := &schema.Resource{
+		Type: &schema.ResourceTypeWrapper{Value: "celerity/api"},
+		Spec: core.MappingNodeFields(
+			"protocols", core.MappingNodeItems(core.MappingNodeFromString("http")),
+			"auth", core.MappingNodeFields(
+				"guards", core.MappingNodeFields(
+					"jwt", core.MappingNodeFields(
+						"type", core.MappingNodeFromString("jwt"),
+					),
+				),
+			),
+		),
+	}
+
+	resources, diagnostics := s.transformWithDiagnostics(
+		map[string]*schema.Resource{"ordersApi": apiRes},
+		edges(),
+	)
+
+	found := false
+	for _, d := range diagnostics {
+		if d.Level == core.DiagnosticLevelError &&
+			strings.Contains(d.Message, "issuer") &&
+			strings.Contains(d.Message, "audience") &&
+			strings.Contains(d.Message, "tokenSource") {
+			found = true
+		}
+	}
+	s.True(found, "expected an error diagnostic listing the missing jwt guard fields")
+	s.Nil(resources["ordersApi_jwt_authorizer"], "no authorizer should be emitted for an invalid jwt guard")
 }
 
 // A websocketConfig using authStrategy "connect" raises a scoped warning because
