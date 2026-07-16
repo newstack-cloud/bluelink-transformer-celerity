@@ -71,7 +71,7 @@ Net: 5 renames, 4 value-ref bridges, 0 custom rules. Every abstract field is ref
 
 ### [resources/handler/handler_aws_serverless_emit.go](../../resources/handler/handler_aws_serverless_emit.go) (modified — total rewrite)
 
-Composable subbuilders, one Lambda function emitted per handler plus per-handler permission/event-source-mapping resources, role and layer fragments contributed to SharedParents.
+Composable subbuilders, one Lambda function emitted per handler plus the trigger nodes the provider links don't own (and standalone event source mappings for external streams/SQS). No role or layer fragments are contributed to SharedParents: both seeds are already complete (see the emit phase above).
 
 ```
 emit(ctx, r, resPropRewriter, transformCtx) -> EmitResult
@@ -113,10 +113,10 @@ emit(ctx, r, resPropRewriter, transformCtx) -> EmitResult
   out.Resources += handler_aws_links.EmitTriggerNodes(r, funcName)   // events/rule (targets[].arn -> func), apigatewayv2 api+stage, flex/vpc
   out.Links     += handler_aws_links.DeclareLinks(r, funcName)       // concrete links + their aws.* link annotations
 
-  // NO iam-role contribution: SeedRoleSpec is complete (links inject per-link IAM).
-  if layerHash != "" {
-    out.SharedParentContributions["layer:<layerHash>"] = layer_planner.SeedLayerSpec(...)  // duplicate-but-equal so merge is a no-op
-  }
+  // NO SharedParentContributions: both the iam-role and layer seeds are already
+  // complete. SeedRoleSpec carries the full policy set (links inject per-link IAM
+  // at deploy time), and the layer seed built at aggregate time already carries
+  // the full compatibleRuntimes union across every handler sharing the layer.
 
   // Derived values that back the property map's ValueRefs entries. Each holds
   // the abstract literal under a stable name so user references like
@@ -187,10 +187,10 @@ aggregateAWSServerless(deps) Aggregator:
       switch r.(type):
         case *handlerconfig.ResolvedHandlerConfig,
              *consumer.ResolvedConsumer,
-             *schedule.ResolvedSchedule,
-             *vpc.ResolvedVPC:           // contributory-only
+             *schedule.ResolvedSchedule:   // contributory-only
           continue
         default:
+          // VPC resolved structs stay primaries: they emit their own concrete VPC.
           primaries = append(primaries, r)
 
     parents := []SharedParent{}
@@ -233,18 +233,24 @@ AWSServerlessSharedParents(ctx, primaries []ResolvedResource, deps) []SharedPare
         SeedSpec:     shared/aws.SeedRoleSpec(fp, h /* for partition + base policies */),
       })
 
-  // Lambda layers — one per distinct contentHash, runtime union built up via per-handler contributions
-  layersSeen := map[string]bool{}
+  // Lambda layers — one per distinct contentHash. The runtime union is built here,
+  // at aggregate time, across every handler sharing the layer, so the seed is
+  // complete and the emit contributes nothing.
+  runtimes  := map[string]set{}      // hash -> set of mapped runtimes
+  artifacts := map[string]Artifact{}
+  order     := []string{}            // deterministic hash order
   for h in handlers:
-    if hash, artifact := layer_planner.SelectLayerForHandler(h.Name, manifest); hash != "" && !layersSeen[hash]:
-      layersSeen[hash] = true
-      parents = append(parents, SharedParent{
-        Key:          "layer:" + hash,
-        ResourceName: "celerityLambdaLayer_" + hash,
-        ResourceType: "aws/lambda/layerVersion",
-        Annotations:  TransformerBaseAnnotations({h.Name, "celerity/handler", "code-hosting"}),
-        SeedSpec:     layer_planner.SeedLayerSpec(artifact, []string{} /* runtimes added via emit contributions */),
-      })
+    if hash, artifact := layer_planner.SelectLayerForHandler(h.Name, manifest); hash != "":
+      if !seen(hash): artifacts[hash] = artifact; order = append(order, hash)
+      runtimes[hash].add(mappedRuntime(h))
+  for hash in order:
+    parents = append(parents, SharedParent{
+      Key:          "layer:" + hash,
+      ResourceName: "celerityLambdaLayer_" + hash,
+      ResourceType: "aws/lambda/layerVersion",
+      Annotations:  TransformerBaseAnnotations({firstHandler(hash).Name, "celerity/handler", "code-hosting"}),
+      SeedSpec:     layer_planner.SeedLayerSpec(artifacts[hash], sortedKeys(runtimes[hash])),  // full compatibleRuntimes union
+    })
 
   return parents
 ```
@@ -309,7 +315,7 @@ Because the seed is complete and identical for every handler sharing a fingerpri
 ### `shared/aws/layer_planner.go` (new)
 
 - `SelectLayerForHandler(handlerName string, manifest *Manifest) (contentHash string, artifact *Artifact)` — per [../contract/aws-serverless.md §9](../contract/aws-serverless.md#9-lambda-layers): per-handler `lambda.dependencies` if non-null, else `lambda.sharedLayer`, else `("", nil)`.
-- `SeedLayerSpec(artifact *Artifact, runtimes []string) *core.MappingNode` — `{content: {s3Bucket, s3Key}, compatibleRuntimes: [...]}`. The `compatibleRuntimes` union grows as more handlers contribute fragments with their mapped runtime.
+- `SeedLayerSpec(artifact *Artifact, runtimes []string) *core.MappingNode` — `{content: {s3Bucket, s3Key}, compatibleRuntimes: [...]}`. The `compatibleRuntimes` union is computed once, at aggregate time, over every handler that shares the layer hash, and passed in complete — the seed is authoritative and the emit contributes no runtime fragments.
 
 ### [shared/aws/config_definition.go](../../shared/aws/config_definition.go) (modified)
 
