@@ -433,6 +433,9 @@ func buildProxyResources(
 
 	iamMode := sqlAuthMode(r) == "iam"
 	if iamMode {
+		// IAM_AUTH lets the proxy authenticate to the database with IAM as well, so
+		// no Secrets Manager secret is needed for the proxy-to-database connection.
+		proxySpec.Fields["defaultAuthScheme"] = core.MappingNodeFromString("IAM_AUTH")
 		proxySpec.Fields["auth"] = core.MappingNodeItems(
 			core.MappingNodeFields("iamAuth", core.MappingNodeFromString("REQUIRED")),
 		)
