@@ -28,7 +28,32 @@ type RolePlan struct {
 	Tracing bool `json:"tracing"`
 	// VPC is the subnet type when the handler is VPC-attached, empty otherwise.
 	VPC string `json:"vpc,omitempty"`
+	// ExternalSources are the out-of-blueprint event sources (external SQS queues
+	// and DynamoDB/Kinesis streams) an absorbed consumer polls via a standalone
+	// event source mapping. No provider link injects their source-read IAM, so the
+	// seed grants it; they are part of the fingerprint so a handler with external
+	// sources never shares a role with one that lacks them.
+	ExternalSources []ExternalEventSource `json:"externalSources,omitempty"`
 }
+
+// ExternalEventSource identifies one out-of-blueprint event source that the
+// execution role must be granted read access to. Both fields are part of the
+// role fingerprint.
+type ExternalEventSource struct {
+	// Service selects the action set granted (see ExternalSourceService* constants).
+	Service string `json:"service"`
+	// ARN is the specific external source ARN the statement is scoped to. It may be
+	// a literal ARN or a ${...} substitution rendered to its canonical string.
+	ARN string `json:"arn"`
+}
+
+// External event source service identifiers, selecting the source-read action set
+// seeded onto the execution role for a standalone event source mapping.
+const (
+	ExternalSourceServiceSQS            = "sqs"
+	ExternalSourceServiceDynamoDBStream = "dynamodb-stream"
+	ExternalSourceServiceKinesisStream  = "kinesis-stream"
+)
 
 // Fingerprint is the role-sharing key: identical plans → identical fingerprint
 // → one shared role. Stable JSON + SHA-256, first 8 hex characters.
