@@ -281,7 +281,8 @@ func (s *SQLDatabaseTransformTestSuite) Test_single_az_light_preset_is_rejected(
 
 	found := false
 	for _, d := range out.Diagnostics {
-		if d.Level == core.DiagnosticLevelError && strings.Contains(d.Message, "two") {
+		if d.Level == core.DiagnosticLevelError &&
+			strings.Contains(d.Message, "at least two availability zones") {
 			found = true
 		}
 	}
