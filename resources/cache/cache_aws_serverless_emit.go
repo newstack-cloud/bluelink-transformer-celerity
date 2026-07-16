@@ -166,21 +166,32 @@ func emitCache(
 	// Redis AUTH). Password mode is fully wired here; iam mode (ElastiCache
 	// RBAC user groups) remains a scoped deferral.
 	rgLinkSelector := r.Resource.LinkSelector
-	if cacheAuthMode(r) == "password" {
+	if cacheAuthMode(r) == "iam" {
+		// iam mode: ElastiCache RBAC. Emit an IAM-authenticated user and a user
+		// group that contains it plus the managed "default" user (required in
+		// every RBAC user group), then attach the group to the replication
+		// group. No stored secret is needed — the client generates a short-lived
+		// SigV4 token from IAM credentials. The handler that links to the cache
+		// stamps aws.lambda.elasticache.<rg>.authMode=iam so the
+		// function::replicationGroup link creates the elasticache:Connect grant.
+		userRes, groupRes, err := buildIAMUserAndGroup(r, name, engine)
+		if err != nil {
+			return nil, err
+		}
+		resources[iamUserResourceName(r.Name)] = userRes
+		resources[userGroupResourceName(r.Name)] = groupRes
+
+		userGroupRef, err := shared.SubstitutionMappingNode(
+			fmt.Sprintf("${resources.%s.spec.userGroupId}", userGroupResourceName(r.Name)))
+		if err != nil {
+			return nil, err
+		}
+		rgSpec.Fields["userGroupIds"] = core.MappingNodeItems(userGroupRef)
+	} else {
 		resources[authSecretResourceName(r.Name)] = buildAuthSecret(r, name)
 		// Activate the replicationGroup::secret link: the RG selects the auth
 		// secret by its distinctive label (merged with any existing selector).
 		rgLinkSelector = mergeLinkSelectorLabel(r.Resource.LinkSelector, cacheAuthLabelKey, name)
-	} else {
-		diagnostics = append(diagnostics, &core.Diagnostic{
-			Level: core.DiagnosticLevelWarning,
-			Message: fmt.Sprintf(
-				"celerity/cache %q uses authMode %q; ElastiCache IAM/RBAC user-group wiring is planned "+
-					"and is not emitted for this cache, so no RBAC user groups are created. Password mode "+
-					"is the supported v0 default",
-				name, cacheAuthMode(r),
-			),
-		})
 	}
 
 	// The replication group is the resource handlers link to, so it carries the
@@ -324,6 +335,55 @@ func mergeLinkSelectorLabel(existing *schema.LinkSelector, key, value string) *s
 
 func authSecretResourceName(name string) string {
 	return fmt.Sprintf("%s_cache_auth_secret", name)
+}
+
+// buildIAMUserAndGroup emits the ElastiCache RBAC user (IAM-authenticated) and
+// the user group that backs iam auth mode. The user group must contain the
+// managed "default" user in addition to the IAM user. The replication group
+// references the group via userGroupIds (set by the caller).
+func buildIAMUserAndGroup(r *ResolvedCache, name, engine string) (*schema.Resource, *schema.Resource, error) {
+	userID := fmt.Sprintf("%s-iam", name)
+	user := &schema.Resource{
+		Type: &schema.ResourceTypeWrapper{Value: "aws/elasticache/user"},
+		Spec: core.MappingNodeFields(
+			"engine", core.MappingNodeFromString(engine),
+			"userId", core.MappingNodeFromString(userID),
+			"userName", core.MappingNodeFromString(userID),
+			// Full access; scope down in a follow-up if per-command ACLs are needed.
+			"accessString", core.MappingNodeFromString("on ~* +@all"),
+			"authenticationMode", core.MappingNodeFields(
+				"type", core.MappingNodeFromString("iam"),
+			),
+		),
+		Metadata: infraMeta(r.Name),
+	}
+
+	userIDRef, err := shared.SubstitutionMappingNode(
+		fmt.Sprintf("${resources.%s.spec.userId}", iamUserResourceName(r.Name)))
+	if err != nil {
+		return nil, nil, err
+	}
+	group := &schema.Resource{
+		Type: &schema.ResourceTypeWrapper{Value: "aws/elasticache/userGroup"},
+		Spec: core.MappingNodeFields(
+			"engine", core.MappingNodeFromString(engine),
+			"userGroupId", core.MappingNodeFromString(fmt.Sprintf("%s-users", name)),
+			"userIds", core.MappingNodeItems(
+				core.MappingNodeFromString("default"),
+				userIDRef,
+			),
+		),
+		Metadata: infraMeta(r.Name),
+	}
+	return user, group, nil
+}
+
+func iamUserResourceName(name string) string {
+	return fmt.Sprintf("%s_cache_iam_user", name)
+}
+
+func userGroupResourceName(name string) string {
+	return fmt.Sprintf("%s_cache_user_group", name)
 }
 
 func replicationGroupResourceName(name string) string {
