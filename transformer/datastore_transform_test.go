@@ -4,6 +4,7 @@ package transformer
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/newstack-cloud/bluelink-transformer-celerity/shared"
@@ -200,6 +201,48 @@ func (s *DatastoreTransformTestSuite) Test_pay_per_request_applies_on_demand_cei
 	s.Equal(100, core.IntValue(od.Fields["maxReadRequestUnits"]))
 }
 
+// An index with an out-of-range field count (zero, or more than a partition +
+// sort key) is reported as an error and skipped rather than silently dropped or
+// truncated. The schema enforces the one-or-two bound, so this exercises the
+// emit's defensive backstop directly.
+func (s *DatastoreTransformTestSuite) Test_index_with_invalid_field_count_errors_and_is_skipped() {
+	ds := &schema.Resource{
+		Type: &schema.ResourceTypeWrapper{Value: "celerity/datastore"},
+		Spec: core.MappingNodeFields(
+			"keys", core.MappingNodeFields("partitionKey", core.MappingNodeFromString("id")),
+			"indexes", &core.MappingNode{
+				Items: []*core.MappingNode{
+					core.MappingNodeFields(
+						"name", core.MappingNodeFromString("tooMany"),
+						"fields", &core.MappingNode{
+							Items: []*core.MappingNode{
+								core.MappingNodeFromString("a"),
+								core.MappingNodeFromString("b"),
+								core.MappingNodeFromString("c"),
+							},
+						},
+					),
+				},
+			},
+		),
+	}
+
+	out := s.transformOutput(map[string]*schema.Resource{"orders": ds}, validationContext())
+	table := out.TransformedBlueprint.Resources.Values["orders_dynamodb_table"]
+	s.Require().NotNil(table)
+	s.Nil(table.Spec.Fields["globalSecondaryIndexes"], "the invalid index is skipped, not truncated")
+
+	found := false
+	for _, d := range out.Diagnostics {
+		if d.Level == core.DiagnosticLevelError &&
+			strings.Contains(d.Message, "tooMany") &&
+			strings.Contains(d.Message, "one or two fields") {
+			found = true
+		}
+	}
+	s.True(found, "expected an error diagnostic about the invalid index cardinality")
+}
+
 func (s *DatastoreTransformTestSuite) transformDatastore(
 	resources map[string]*schema.Resource,
 ) map[string]*schema.Resource {
@@ -210,6 +253,13 @@ func (s *DatastoreTransformTestSuite) transformWith(
 	resources map[string]*schema.Resource,
 	ctx transform.Context,
 ) map[string]*schema.Resource {
+	return s.transformOutput(resources, ctx).TransformedBlueprint.Resources.Values
+}
+
+func (s *DatastoreTransformTestSuite) transformOutput(
+	resources map[string]*schema.Resource,
+	ctx transform.Context,
+) *transform.SpecTransformerTransformOutput {
 	bp := &schema.Blueprint{Resources: &schema.ResourceMap{Values: resources}}
 	out, err := NewTransformer(&shared.Dependencies{}).Transform(
 		context.Background(),
@@ -221,5 +271,5 @@ func (s *DatastoreTransformTestSuite) transformWith(
 	)
 	s.Require().NoError(err)
 	s.Require().NotNil(out.TransformedBlueprint)
-	return out.TransformedBlueprint.Resources.Values
+	return out
 }
