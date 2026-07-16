@@ -7,12 +7,12 @@ func bucketResourceSchema() *provider.ResourceDefinitionsSchema {
 		Type:  provider.ResourceDefinitionsSchemaTypeObject,
 		Label: "BucketDefinition",
 		Description: "A managed object storage bucket that handlers read from and write to. On " +
-			"aws-serverless this maps to an S3 bucket.",
+			"AWS this maps to an S3 bucket.",
 		Attributes: map[string]*provider.ResourceDefinitionsSchema{
 			"name": {
 				Type: provider.ResourceDefinitionsSchemaTypeString,
 				Description: "The unique name of the bucket. If a name is not provided, a unique name is " +
-					"generated based on the blueprint the bucket is defined in. On aws-serverless this maps " +
+					"generated based on the blueprint the bucket is defined in. On AWS this maps " +
 					"to the S3 bucket name (create-only).",
 			},
 			"encryption": {
@@ -25,7 +25,7 @@ func bucketResourceSchema() *provider.ResourceDefinitionsSchema {
 					},
 					"encryptionAlgorithm": {
 						Type: provider.ResourceDefinitionsSchemaTypeString,
-						Description: "The encryption algorithm. On aws-serverless this is the S3 SSE algorithm " +
+						Description: "The encryption algorithm. On AWS this is the S3 SSE algorithm " +
 							"(for example \"AES256\" or \"aws:kms\"). Defaults to \"aws:kms\" when an " +
 							"encryptionKeyId is set, otherwise \"AES256\".",
 					},
@@ -132,7 +132,7 @@ func bucketResourceSchema() *provider.ResourceDefinitionsSchema {
 			"id": {
 				Type:     provider.ResourceDefinitionsSchemaTypeString,
 				Computed: true,
-				Description: "The ID of the created bucket in the target environment. On aws-serverless " +
+				Description: "The ID of the created bucket in the target environment. On AWS " +
 					"this is the S3 bucket ARN.",
 			},
 		},

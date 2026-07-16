@@ -7,13 +7,13 @@ func datastoreResourceSchema() *provider.ResourceDefinitionsSchema {
 		Type:  provider.ResourceDefinitionsSchemaTypeObject,
 		Label: "DatastoreDefinition",
 		Description: "A managed NoSQL data store that handlers read from and write to, and consumers " +
-			"process change streams from. On aws-serverless this maps to a DynamoDB table.",
+			"process change streams from. On AWS this maps to a DynamoDB table.",
 		Required: []string{"keys"},
 		Attributes: map[string]*provider.ResourceDefinitionsSchema{
 			"name": {
 				Type: provider.ResourceDefinitionsSchemaTypeString,
 				Description: "The unique name of the data store. If a name is not provided, a unique name " +
-					"is generated based on the blueprint the data store is defined in. On aws-serverless " +
+					"is generated based on the blueprint the data store is defined in. On AWS " +
 					"this maps to the DynamoDB table name (create-only).",
 			},
 			"keys": {
@@ -47,7 +47,7 @@ func datastoreResourceSchema() *provider.ResourceDefinitionsSchema {
 						},
 						"fields": {
 							Type: provider.ResourceDefinitionsSchemaTypeArray,
-							Description: "The one or two fields the index covers. On aws-serverless the first " +
+							Description: "The one or two fields the index covers. On AWS the first " +
 								"field is the index HASH key and the second (if present) the RANGE key.",
 							MinLength: 1,
 							MaxLength: 2,
@@ -97,7 +97,7 @@ func datastoreResourceSchema() *provider.ResourceDefinitionsSchema {
 			"id": {
 				Type:     provider.ResourceDefinitionsSchemaTypeString,
 				Computed: true,
-				Description: "The ID of the created data store in the target environment. On aws-serverless " +
+				Description: "The ID of the created data store in the target environment. On AWS " +
 					"this is the DynamoDB table ARN.",
 			},
 		},

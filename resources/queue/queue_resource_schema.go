@@ -10,7 +10,7 @@ func queueResourceSchema() *provider.ResourceDefinitionsSchema {
 		Type:  provider.ResourceDefinitionsSchemaTypeObject,
 		Label: "QueueDefinition",
 		Description: "A managed message queue that handlers send messages to and consumers process " +
-			"messages from. On aws-serverless this maps to an SQS queue.",
+			"messages from. On AWS this maps to an SQS queue.",
 		Attributes: map[string]*provider.ResourceDefinitionsSchema{
 			"name": {
 				Type: provider.ResourceDefinitionsSchemaTypeString,
@@ -28,13 +28,13 @@ func queueResourceSchema() *provider.ResourceDefinitionsSchema {
 			"visibilityTimeout": {
 				Type: provider.ResourceDefinitionsSchemaTypeInteger,
 				Description: "The time in seconds that a message is hidden from other consumers after it " +
-					"has been received from the queue. On aws-serverless this maps to the SQS queue's " +
+					"has been received from the queue. On AWS this maps to the SQS queue's " +
 					"visibility timeout.",
 			},
 			"encryptionKeyId": {
 				Type: provider.ResourceDefinitionsSchemaTypeString,
 				Description: "The ID of the KMS key used to encrypt messages at rest. Optional; when " +
-					"omitted, the target environment's default encryption is used. On aws-serverless this " +
+					"omitted, the target environment's default encryption is used. On AWS this " +
 					"maps to the SQS queue's KMS master key id.",
 			},
 
@@ -42,7 +42,7 @@ func queueResourceSchema() *provider.ResourceDefinitionsSchema {
 			"id": {
 				Type:     provider.ResourceDefinitionsSchemaTypeString,
 				Computed: true,
-				Description: "The ID of the created queue in the target environment. On aws-serverless " +
+				Description: "The ID of the created queue in the target environment. On AWS " +
 					"this is the queue ARN.",
 			},
 		},

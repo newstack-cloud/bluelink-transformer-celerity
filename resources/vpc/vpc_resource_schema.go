@@ -10,7 +10,7 @@ func vpcResourceSchema() *provider.ResourceDefinitionsSchema {
 		Type:  provider.ResourceDefinitionsSchemaTypeObject,
 		Label: "VpcDefinition",
 		Description: "A managed virtual network that handlers, caches and databases are placed into. On " +
-			"aws-serverless this maps to a synthetic aws/flex/vpc that owns the VPC, subnets, routing and " +
+			"AWS this maps to a synthetic aws/flex/vpc that owns the VPC, subnets, routing and " +
 			"security groups.",
 		Required: []string{"name"},
 		Attributes: map[string]*provider.ResourceDefinitionsSchema{
@@ -49,7 +49,7 @@ func vpcResourceSchema() *provider.ResourceDefinitionsSchema {
 			"id": {
 				Type:     provider.ResourceDefinitionsSchemaTypeString,
 				Computed: true,
-				Description: "The ID of the VPC in the target environment. On aws-serverless this is the " +
+				Description: "The ID of the VPC in the target environment. On AWS this is the " +
 					"VPC id.",
 			},
 		},

@@ -10,11 +10,11 @@ func cacheResourceSchema() *provider.ResourceDefinitionsSchema {
 		Type:  provider.ResourceDefinitionsSchemaTypeObject,
 		Label: "CacheDefinition",
 		Description: "A managed in-memory cache (Redis/Valkey) that handlers connect to. Requires VPC " +
-			"placement. On aws-serverless this maps to an ElastiCache replication group.",
+			"placement. On AWS this maps to an ElastiCache replication group.",
 		Attributes: map[string]*provider.ResourceDefinitionsSchema{
 			"name": {
 				Type: provider.ResourceDefinitionsSchemaTypeString,
-				Description: "The unique name of the cache. On aws-serverless this maps to the ElastiCache " +
+				Description: "The unique name of the cache. On AWS this maps to the ElastiCache " +
 					"replication group id.",
 			},
 			"clusterMode": {
