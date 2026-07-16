@@ -62,7 +62,9 @@ func (s *SQLDatabaseTransformTestSuite) Test_database_in_a_managed_vpc_emits_ins
 	s.Require().NotNil(proxy.Spec.Fields["vpcSubnetIds"])
 	s.Require().NotNil(proxy.Spec.Fields["roleArn"])
 	s.Equal("orders", proxy.Metadata.Labels.Values["app"])
-	// Password mode -> SECRETS auth against the instance's RDS-managed secret.
+	// Password mode -> SECRETS auth against the instance's RDS-managed secret;
+	// the IAM_AUTH default scheme is iam-mode only.
+	s.Nil(proxy.Spec.Fields["defaultAuthScheme"])
 	authItems := proxy.Spec.Fields["auth"].Items
 	s.Require().Len(authItems, 1)
 	s.Equal("SECRETS", core.StringValue(authItems[0].Fields["authScheme"]))
@@ -97,6 +99,8 @@ func (s *SQLDatabaseTransformTestSuite) Test_iam_auth_proxy_uses_iam_auth_and_ro
 
 	proxy := resources["myDb_rds_proxy"]
 	s.Require().NotNil(proxy)
+	// IAM_AUTH lets the secret-less iam-mode proxy authenticate to the database.
+	s.Equal("IAM_AUTH", core.StringValue(proxy.Spec.Fields["defaultAuthScheme"]))
 	authItems := proxy.Spec.Fields["auth"].Items
 	s.Require().Len(authItems, 1)
 	s.Equal("REQUIRED", core.StringValue(authItems[0].Fields["iamAuth"]))
