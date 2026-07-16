@@ -556,6 +556,81 @@ func (s *ConsumerTransformTestSuite) Test_two_bucket_consumers_use_unique_s3_eve
 		got,
 		"each bucket consumer's event must occupy its own index, not overwrite the other",
 	)
+
+	// The two buckets request divergent event sets, which the provider applies as
+	// a union to both; that limitation is surfaced rather than left silent.
+	s.True(
+		hasWarningContaining(out.Diagnostics, "combined into one list"),
+		"expected a warning that divergent bucket event sets are unioned",
+	)
+}
+
+// Two queue consumers with differing batch settings on one handler warn, because
+// aws-serverless applies a single SQS batch configuration per function.
+func (s *ConsumerTransformTestSuite) Test_diverging_queue_consumer_settings_warn() {
+	out := s.transformTwoQueueConsumers(5, 25)
+	s.True(
+		hasWarningContaining(out.Diagnostics, "only one consumer's settings take effect"),
+		"expected a shared-setting conflict warning for divergent queue batch sizes",
+	)
+}
+
+// Identical settings across two same-kind consumers must NOT warn — the check
+// only speaks up on genuine divergence, so it stays quiet for normal use.
+func (s *ConsumerTransformTestSuite) Test_matching_queue_consumer_settings_do_not_warn() {
+	out := s.transformTwoQueueConsumers(10, 10)
+	s.False(
+		hasWarningContaining(out.Diagnostics, "only one consumer's settings take effect"),
+		"consumers with identical settings must not produce a conflict warning",
+	)
+}
+
+// transformTwoQueueConsumers absorbs two queue consumers (each on its own queue)
+// into a single handler, with the given per-consumer batch sizes.
+func (s *ConsumerTransformTestSuite) transformTwoQueueConsumers(batchA, batchB int) *transform.SpecTransformerTransformOutput {
+	handlerRes := &schema.Resource{
+		Type: &schema.ResourceTypeWrapper{Value: "celerity/handler"},
+		Spec: core.MappingNodeFields(
+			"handlerName", core.MappingNodeFromString("orderHandler"),
+			"handler", core.MappingNodeFromString("handlers.process"),
+			"runtime", core.MappingNodeFromString("nodejs24.x"),
+		),
+		Metadata: &schema.Metadata{
+			Annotations: annotationMap("celerity.handler.consumer", "true"),
+		},
+	}
+	queueRes := func(role string) *schema.Resource {
+		return &schema.Resource{
+			Type:         &schema.ResourceTypeWrapper{Value: "celerity/queue"},
+			Spec:         core.MappingNodeFields("name", core.MappingNodeFromString(role)),
+			LinkSelector: &schema.LinkSelector{ByLabel: &schema.StringMap{Values: map[string]string{"role": role}}},
+		}
+	}
+	consumerRes := func(role string, batch int) *schema.Resource {
+		return &schema.Resource{
+			Type: &schema.ResourceTypeWrapper{Value: "celerity/consumer"},
+			Spec: core.MappingNodeFields("batchSize", core.MappingNodeFromInt(batch)),
+			Metadata: &schema.Metadata{
+				Labels: &schema.StringMap{Values: map[string]string{"role": role}},
+			},
+		}
+	}
+
+	return s.transformOutput(
+		map[string]*schema.Resource{
+			"orderHandler": handlerRes,
+			"queueA":       queueRes("queue-a"),
+			"queueB":       queueRes("queue-b"),
+			"consumerA":    consumerRes("queue-a", batchA),
+			"consumerB":    consumerRes("queue-b", batchB),
+		},
+		edges(
+			edge("queueA", "consumerA", "celerity/queue", "celerity/consumer"),
+			edge("queueB", "consumerB", "celerity/queue", "celerity/consumer"),
+			edge("consumerA", "orderHandler", "celerity/consumer", "celerity/handler"),
+			edge("consumerB", "orderHandler", "celerity/consumer", "celerity/handler"),
+		),
+	)
 }
 
 // When a consumer matches multiple same-type sources, the disambiguation annotation

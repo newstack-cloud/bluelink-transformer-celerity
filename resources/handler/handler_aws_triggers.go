@@ -107,7 +107,132 @@ func stampTriggerAnnotations(r *ResolvedHandler, lambda *schema.Resource) []*cor
 			diagnostics = append(diagnostics, diag)
 		}
 	}
+	diagnostics = append(diagnostics, perFunctionTriggerConflicts(r)...)
 	return diagnostics
+}
+
+// perFunctionTriggerConflicts warns when a handler absorbs several consumers of
+// the same event-source family whose settings diverge. On aws-serverless the
+// SQS/DynamoDB batch settings and the S3 notification event list are single
+// per-function values applied to every source of that kind, so divergent
+// per-consumer settings cannot all take effect. The common one-consumer-per-
+// handler case, and same-kind consumers that share settings, never trigger it.
+func perFunctionTriggerConflicts(r *ResolvedHandler) []*core.Diagnostic {
+	var sqs, ddb, bucket []*ConsumerBinding
+	for _, binding := range r.ConsumerBindings {
+		switch binding.SourceKind {
+		case ConsumerSourceQueue, ConsumerSourceTopic:
+			sqs = append(sqs, binding)
+		case ConsumerSourceDatastore:
+			ddb = append(ddb, binding)
+		case ConsumerSourceBucket:
+			bucket = append(bucket, binding)
+		}
+	}
+
+	var diagnostics []*core.Diagnostic
+	if batchOrFailuresConflict(sqs) {
+		diagnostics = append(diagnostics, sharedSettingWarning(
+			r.Name, sqs, "queue/topic",
+			"SQS event-source-mapping settings (batchSize, reportBatchItemFailures)",
+		))
+	}
+	if batchOrFailuresConflict(ddb) || startingPositionConflict(ddb) {
+		diagnostics = append(diagnostics, sharedSettingWarning(
+			r.Name, ddb, "datastore",
+			"DynamoDB stream settings (batchSize, reportBatchItemFailures, startingPosition)",
+		))
+	}
+	if bucketEventSetsDiverge(bucket) {
+		diagnostics = append(diagnostics, bucketEventUnionWarning(r.Name, bucket))
+	}
+	return diagnostics
+}
+
+// batchOrFailuresConflict reports whether the bindings set two or more distinct
+// batchSize values, or disagree on partialFailures.
+func batchOrFailuresConflict(bindings []*ConsumerBinding) bool {
+	if len(bindings) < 2 {
+		return false
+	}
+	batchSizes := map[int]bool{}
+	var seenPF, seenNoPF bool
+	for _, binding := range bindings {
+		spec := consumerSpec(binding)
+		if node, ok := pluginutils.GetValueByPath("$.batchSize", spec); ok {
+			batchSizes[core.IntValue(node)] = true
+		}
+		if partialFailures(spec) {
+			seenPF = true
+		} else {
+			seenNoPF = true
+		}
+	}
+	return len(batchSizes) >= 2 || (seenPF && seenNoPF)
+}
+
+func startingPositionConflict(bindings []*ConsumerBinding) bool {
+	if len(bindings) < 2 {
+		return false
+	}
+	positions := map[string]bool{}
+	for _, binding := range bindings {
+		positions[startingPosition(binding)] = true
+	}
+	return len(positions) >= 2
+}
+
+func bucketEventSetsDiverge(bindings []*ConsumerBinding) bool {
+	if len(bindings) < 2 {
+		return false
+	}
+	sets := map[string]bool{}
+	for _, binding := range bindings {
+		events, _ := bucketEvents(binding)
+		sort.Strings(events)
+		sets[strings.Join(events, ",")] = true
+	}
+	return len(sets) >= 2
+}
+
+func sharedSettingWarning(
+	handlerName string,
+	bindings []*ConsumerBinding,
+	kindLabel string,
+	settingLabel string,
+) *core.Diagnostic {
+	return &core.Diagnostic{
+		Level: core.DiagnosticLevelWarning,
+		Message: fmt.Sprintf(
+			"celerity/handler %q absorbs multiple %s consumers (%s) with differing settings, but on "+
+				"aws-serverless the %s are a single per-function value applied to every source of this "+
+				"kind, so only one consumer's settings take effect. Split the consumers across separate "+
+				"handlers to configure them independently.",
+			handlerName, kindLabel, consumerNameList(bindings), settingLabel,
+		),
+	}
+}
+
+func bucketEventUnionWarning(handlerName string, bindings []*ConsumerBinding) *core.Diagnostic {
+	return &core.Diagnostic{
+		Level: core.DiagnosticLevelWarning,
+		Message: fmt.Sprintf(
+			"celerity/handler %q absorbs multiple bucket consumers (%s) requesting different event sets, "+
+				"but on aws-serverless the S3 notification events are combined into one list applied to "+
+				"every linked bucket, so each bucket triggers on the union rather than only its own events. "+
+				"Split the consumers across separate handlers for independent event sets.",
+			handlerName, consumerNameList(bindings),
+		),
+	}
+}
+
+func consumerNameList(bindings []*ConsumerBinding) string {
+	names := make([]string, 0, len(bindings))
+	for _, binding := range bindings {
+		names = append(names, binding.ConsumerName)
+	}
+	sort.Strings(names)
+	return strings.Join(names, ", ")
 }
 
 // Warns when a consumer sets a non-default routingKey while its handler activates
