@@ -160,7 +160,9 @@ func (s *RolePlanTestSuite) Test_seed_role_spec_adds_external_source_read_polici
 	s.Equal("2012-10-17", core.StringValue(doc["version"]))
 
 	statements := doc["statement"].Items
-	s.Require().Len(statements, 3)
+	// 3 ARN-scoped statements (sqs, dynamodb, kinesis) plus 2 "*"-scoped
+	// ListStreams statements (dynamodb, kinesis).
+	s.Require().Len(statements, 5)
 
 	sqsStmt := statements[0].Fields
 	s.Equal("Allow", core.StringValue(sqsStmt["effect"]))
@@ -173,27 +175,44 @@ func (s *RolePlanTestSuite) Test_seed_role_spec_adds_external_source_read_polici
 		core.StringSliceValue(sqsStmt["action"]),
 	)
 
+	// Stream read actions stay scoped to the stream ARN; ListStreams is removed.
 	ddbStmt := statements[1].Fields
+	s.Equal(
+		"arn:aws:dynamodb:us-east-1:123456789012:table/orders/stream/2024",
+		core.StringValue(ddbStmt["resource"]),
+	)
 	s.Equal(
 		[]string{
 			"dynamodb:GetRecords",
 			"dynamodb:GetShardIterator",
 			"dynamodb:DescribeStream",
-			"dynamodb:ListStreams",
 		},
 		core.StringSliceValue(ddbStmt["action"]),
 	)
 
 	kinesisStmt := statements[2].Fields
 	s.Equal(
+		"arn:aws:kinesis:us-east-1:123456789012:stream/events",
+		core.StringValue(kinesisStmt["resource"]),
+	)
+	s.Equal(
 		[]string{
 			"kinesis:GetRecords",
 			"kinesis:GetShardIterator",
 			"kinesis:DescribeStream",
-			"kinesis:ListStreams",
 		},
 		core.StringSliceValue(kinesisStmt["action"]),
 	)
+
+	// ListStreams must be granted on "*" in its own statement.
+	ddbListStmt := statements[3].Fields
+	s.Equal("Allow", core.StringValue(ddbListStmt["effect"]))
+	s.Equal("dynamodb:ListStreams", core.StringValue(ddbListStmt["action"]))
+	s.Equal("*", core.StringValue(ddbListStmt["resource"]))
+
+	kinesisListStmt := statements[4].Fields
+	s.Equal("kinesis:ListStreams", core.StringValue(kinesisListStmt["action"]))
+	s.Equal("*", core.StringValue(kinesisListStmt["resource"]))
 }
 
 func (s *RolePlanTestSuite) Test_seed_role_spec_combines_xray_and_external_source_policies() {

@@ -372,17 +372,25 @@ func (s *ConsumerTransformTestSuite) Test_external_dbStream_consumer_emits_event
 	s.Require().NotNil(role, "expected the referenced execution role to be emitted")
 	policy := externalSourcesPolicy(s.T(), role)
 	s.Require().NotNil(policy, "expected a celerity-external-event-sources policy on the role")
-	statement := policy.Fields["statement"].Items[0].Fields
-	s.Equal(streamARN, core.StringValue(statement["resource"]))
+	statements := policy.Fields["statement"].Items
+	s.Require().Len(statements, 2, "one ARN-scoped read statement plus a *-scoped ListStreams statement")
+
+	// Stream read actions stay scoped to the external stream ARN.
+	readStmt := statements[0].Fields
+	s.Equal(streamARN, core.StringValue(readStmt["resource"]))
 	s.Equal(
 		[]string{
 			"dynamodb:GetRecords",
 			"dynamodb:GetShardIterator",
 			"dynamodb:DescribeStream",
-			"dynamodb:ListStreams",
 		},
-		core.StringSliceValue(statement["action"]),
+		core.StringSliceValue(readStmt["action"]),
 	)
+
+	// ListStreams cannot be ARN-scoped, so it is granted on "*" separately.
+	listStmt := statements[1].Fields
+	s.Equal("dynamodb:ListStreams", core.StringValue(listStmt["action"]))
+	s.Equal("*", core.StringValue(listStmt["resource"]))
 }
 
 // externalSourcesPolicy returns the celerity-external-event-sources inline policy

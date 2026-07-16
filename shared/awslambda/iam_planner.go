@@ -68,15 +68,30 @@ func policyEntry(name string, document *core.MappingNode) *core.MappingNode {
 // external ARN. Returns nil when there are no grantable sources.
 func externalSourcesPolicyDoc(sources []ExternalEventSource) *core.MappingNode {
 	statements := []*core.MappingNode{}
+	listStreamsActions := []string{}
+	seenListStreams := map[string]bool{}
 	for _, source := range sources {
-		actions := externalSourceActions(source.Service)
-		if len(actions) == 0 || source.ARN == "" {
+		if source.ARN == "" {
 			continue
 		}
+		if actions := externalSourceActions(source.Service); len(actions) > 0 {
+			statements = append(statements, core.MappingNodeFields(
+				"effect", core.MappingNodeFromString("Allow"),
+				"action", core.MappingNodeFromStringSlice(actions),
+				"resource", policyResourceNode(source.ARN),
+			))
+		}
+		if ls := externalSourceListStreamsAction(source.Service); ls != "" && !seenListStreams[ls] {
+			seenListStreams[ls] = true
+			listStreamsActions = append(listStreamsActions, ls)
+		}
+	}
+	// ListStreams cannot be scoped to a stream ARN; grant each on "*" separately.
+	for _, action := range listStreamsActions {
 		statements = append(statements, core.MappingNodeFields(
 			"effect", core.MappingNodeFromString("Allow"),
-			"action", core.MappingNodeFromStringSlice(actions),
-			"resource", policyResourceNode(source.ARN),
+			"action", core.MappingNodeFromString(action),
+			"resource", core.MappingNodeFromString("*"),
 		))
 	}
 	if len(statements) == 0 {
@@ -101,17 +116,29 @@ func externalSourceActions(service string) []string {
 			"dynamodb:GetRecords",
 			"dynamodb:GetShardIterator",
 			"dynamodb:DescribeStream",
-			"dynamodb:ListStreams",
 		}
 	case ExternalSourceServiceKinesisStream:
 		return []string{
 			"kinesis:GetRecords",
 			"kinesis:GetShardIterator",
 			"kinesis:DescribeStream",
-			"kinesis:ListStreams",
 		}
 	default:
 		return nil
+	}
+}
+
+// ListStreams does not support resource-level permissions, so it must be granted
+// on "*" in its own statement rather than scoped to the source ARN. Returns "" for
+// services that have no ListStreams action.
+func externalSourceListStreamsAction(service string) string {
+	switch service {
+	case ExternalSourceServiceDynamoDBStream:
+		return "dynamodb:ListStreams"
+	case ExternalSourceServiceKinesisStream:
+		return "kinesis:ListStreams"
+	default:
+		return ""
 	}
 }
 
