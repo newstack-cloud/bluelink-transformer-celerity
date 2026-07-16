@@ -67,6 +67,15 @@ func routeKeyForHandler(r *ResolvedHandler) string {
 }
 
 func stampRouteAuth(r *ResolvedHandler, lambda *schema.Resource) error {
+	if r.EventSource == EventSourceWebSocket {
+		// WebSocket routes don't use an API Gateway authorizer on aws-serverless:
+		// API Gateway v2 WebSocket APIs don't support JWT/REQUEST authorizers (see
+		// emitAuthorizers), so Celerity validates WebSocket auth in-message via the
+		// authMessage strategy in the handler. Stamping an authorizer reference here
+		// would point at an authorizer the API emit never creates (dangling for a
+		// WebSocket-only API, cross-API for a hybrid one).
+		return nil
+	}
 	if isPublicHandler(r) {
 		// Public handlers opt out of the API's default guard; leave the route open.
 		return nil

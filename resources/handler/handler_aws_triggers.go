@@ -419,28 +419,48 @@ func s3EventForConsumerEvent(consumerEvent string) (string, bool) {
 func emitScheduleRules(
 	r *ResolvedHandler,
 	funcResourceName string,
-) (map[string]*schema.Resource, error) {
+) (map[string]*schema.Resource, []*core.Diagnostic, error) {
 	rules := map[string]*schema.Resource{}
+	var diagnostics []*core.Diagnostic
 	for _, schedule := range r.Schedules {
-		rule, err := scheduleRule(schedule.Name, schedule.Resource, funcResourceName)
+		rule, diag, err := scheduleRule(schedule.Name, schedule.Resource, funcResourceName)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
-		rules[scheduleRuleResourceName(schedule.Name)] = rule
+		if diag != nil {
+			diagnostics = append(diagnostics, diag)
+		}
+		if rule != nil {
+			rules[scheduleRuleResourceName(schedule.Name)] = rule
+		}
 	}
-	return rules, nil
+	return rules, diagnostics, nil
 }
 
 func scheduleRule(
 	scheduleName string,
 	scheduleResource *schema.Resource,
 	funcResourceName string,
-) (*schema.Resource, error) {
+) (*schema.Resource, *core.Diagnostic, error) {
+	expression := scheduleExpression(scheduleResource)
+	if expression == "" {
+		// An events/rule with an empty scheduleExpression is invalid and would only
+		// fail at deploy; report it and emit no rule instead.
+		return nil, &core.Diagnostic{
+			Level: core.DiagnosticLevelError,
+			Message: fmt.Sprintf(
+				"celerity/schedule %q has no schedule expression (spec.schedule); no aws/events/rule has "+
+					"been emitted. Set a rate() or cron() expression",
+				scheduleName,
+			),
+		}, nil
+	}
+
 	arnRef, err := shared.SubstitutionMappingNode(
 		fmt.Sprintf("${resources.%s.spec.arn}", funcResourceName),
 	)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	target := core.MappingNodeFields(
@@ -452,7 +472,7 @@ func scheduleRule(
 	}
 
 	spec := core.MappingNodeFields(
-		"scheduleExpression", scheduleExpression(scheduleResource),
+		"scheduleExpression", core.MappingNodeFromString(expression),
 		"targets", core.MappingNodeItems(target),
 	)
 
@@ -468,15 +488,15 @@ func scheduleRule(
 				},
 			),
 		},
-	}, nil
+	}, nil, nil
 }
 
-func scheduleExpression(scheduleResource *schema.Resource) *core.MappingNode {
+func scheduleExpression(scheduleResource *schema.Resource) string {
 	if scheduleResource == nil {
-		return core.MappingNodeFromString("")
+		return ""
 	}
 	node, _ := pluginutils.GetValueByPath("$.schedule", scheduleResource.Spec)
-	return core.MappingNodeFromString(core.StringValue(node))
+	return core.StringValue(node)
 }
 
 // Returns the schedule's spec.input JSON-encoded as a string, as required by the
