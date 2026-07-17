@@ -25,11 +25,17 @@ type TopicForwardEdge struct {
 // ResolvedQueue carries the abstract queue through to the emit phase. Beyond the
 // queue's own metadata (labels + linkSelector are preserved as-is), it records any
 // outbound celerity/topic forwarding edges so the emit can provision the
-// intermediary forwarder.
+// intermediary forwarder, and whether the queue is also consumed (which competes
+// with forwarding for the queue's messages).
 type ResolvedQueue struct {
 	Name          string
 	Resource      *schema.Resource
 	TopicForwards []*TopicForwardEdge
+	// Consumed is true when a celerity/consumer links to this queue. A consumed
+	// queue's handler polls it via an SQS event source mapping, which competes with
+	// the forwarder's mapping (SQS is competing-consumers, not fan-out), so a queue
+	// cannot be both consumed and forwarded on aws-serverless.
+	Consumed bool
 }
 
 func (q *ResolvedQueue) ResourceName() string {
@@ -48,31 +54,40 @@ func resolveQueue(
 	linkGraph linktypes.DeclaredLinkGraph,
 	_ *schema.Blueprint,
 ) (transformutils.ResolvedResource, error) {
+	forwards, consumed := outboundEdges(name, linkGraph)
 	return &ResolvedQueue{
 		Name:          name,
 		Resource:      resource,
-		TopicForwards: topicForwardEdges(name, linkGraph),
+		TopicForwards: forwards,
+		Consumed:      consumed,
 	}, nil
 }
 
-// topicForwardEdges collects the queue's outbound celerity/topic edges from the
-// declared link graph, parsing each edge's selector keys into the topic labels the
-// forwarder must carry.
-func topicForwardEdges(name string, linkGraph linktypes.DeclaredLinkGraph) []*TopicForwardEdge {
+// outboundEdges collects the queue's outbound celerity/topic forwarding edges from
+// the declared link graph (parsing each edge's selector keys into the topic labels
+// the forwarder must carry) and reports whether the queue is also consumed (has an
+// outbound celerity/consumer edge).
+func outboundEdges(name string, linkGraph linktypes.DeclaredLinkGraph) ([]*TopicForwardEdge, bool) {
 	if linkGraph == nil {
-		return nil
+		return nil, false
 	}
-	var edges []*TopicForwardEdge
+	var forwards []*TopicForwardEdge
+	consumed := false
 	for _, edge := range linkGraph.EdgesFrom(name) {
-		if edge == nil || edge.TargetType != "celerity/topic" {
+		if edge == nil {
 			continue
 		}
-		edges = append(edges, &TopicForwardEdge{
-			TopicName:      edge.Target,
-			SelectorLabels: labelsFromSelectorKeys(edge.SelectorKeys),
-		})
+		switch edge.TargetType {
+		case "celerity/topic":
+			forwards = append(forwards, &TopicForwardEdge{
+				TopicName:      edge.Target,
+				SelectorLabels: labelsFromSelectorKeys(edge.SelectorKeys),
+			})
+		case "celerity/consumer":
+			consumed = true
+		}
 	}
-	return edges
+	return forwards, consumed
 }
 
 // labelsFromSelectorKeys parses selector keys of the form "label::<key>:<value>"

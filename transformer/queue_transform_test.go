@@ -270,6 +270,46 @@ func (s *QueueTransformTestSuite) Test_unsupported_bucket_event_warns() {
 	s.True(found, "expected a warning about the unmappable metadataUpdated event")
 }
 
+// When every requested bucket event is unmappable, nothing is stamped (so the
+// provider falls back to created); the transformer must say so rather than let the
+// created default apply silently.
+func (s *QueueTransformTestSuite) Test_all_unsupported_bucket_events_warns_about_default() {
+	q := &schema.Resource{
+		Type: &schema.ResourceTypeWrapper{Value: "celerity/queue"},
+		Spec: core.MappingNodeFields("name", core.MappingNodeFromString("orders")),
+		Metadata: &schema.Metadata{
+			Annotations: &schema.StringOrSubstitutionsMap{
+				Values: map[string]*substitutions.StringOrSubstitutions{
+					"celerity.queue.bucket.events": literalAnnotation("metadataUpdated"),
+				},
+			},
+		},
+	}
+
+	bp := &schema.Blueprint{Resources: &schema.ResourceMap{Values: map[string]*schema.Resource{"myQueue": q}}}
+	out, err := NewTransformer(&shared.Dependencies{}).Transform(
+		context.Background(),
+		&transform.SpecTransformerTransformInput{
+			InputBlueprint:     bp,
+			LinkGraph:          emptyLinkGraph{},
+			TransformerContext: validationContext(),
+		},
+	)
+	s.Require().NoError(err)
+
+	sqs := out.TransformedBlueprint.Resources.Values["myQueue_sqs_queue"]
+	s.Require().NotNil(sqs)
+	s.Nil(sqs.Metadata.Annotations.Values["aws.s3.sqs.event.0"], "nothing should be stamped when all events unmappable")
+
+	found := false
+	for _, d := range out.Diagnostics {
+		if d.Level == core.DiagnosticLevelWarning && strings.Contains(d.Message, "default object-created") {
+			found = true
+		}
+	}
+	s.True(found, "expected a warning that the created default will apply")
+}
+
 // A queue that links to a topic provisions an intermediary forwarder (function +
 // role) — AWS has no native SQS->SNS forwarding. The forwarder is triggered by the
 // source queue (synthetic forward label) and publishes to the topic (its link
@@ -309,7 +349,7 @@ func (s *QueueTransformTestSuite) Test_queue_to_topic_emits_a_forwarder() {
 	resources := out.TransformedBlueprint.Resources.Values
 
 	// The forwarder function: inline code, index.handler, role reference.
-	fwd := resources["ordersQueue_to_eventsTopic_forwarder"]
+	fwd := resources["ordersQueue_topic_forwarder"]
 	s.Require().NotNil(fwd, "expected an intermediary forwarder function")
 	s.Equal("aws/lambda/function", fwd.Type.Value)
 	s.Equal("index.handler", core.StringValue(fwd.Spec.Fields["handler"]))
@@ -318,23 +358,128 @@ func (s *QueueTransformTestSuite) Test_queue_to_topic_emits_a_forwarder() {
 
 	// It carries the synthetic forward label and its selector matches the topic.
 	s.Require().NotNil(fwd.Metadata.Labels)
-	s.Equal("true", fwd.Metadata.Labels.Values["celerity.queue.forward.ordersQueue.eventsTopic"])
+	s.Equal("true", fwd.Metadata.Labels.Values["celerity.queue.forward.ordersQueue"])
 	s.Require().NotNil(fwd.LinkSelector)
 	s.Equal("orders-events", fwd.LinkSelector.ByLabel.Values["stream"])
 
-	// It renames the topic-ARN env var the function::sns link injects.
-	s.Equal("CELERITY_FORWARD_TOPIC_ARN",
+	// It renames the topic-ARN env var the function::sns link injects (indexed).
+	s.Equal("CELERITY_FORWARD_TOPIC_ARN_0",
 		annotationLiteral(fwd.Metadata.Annotations, "aws.lambda.sns.eventsTopic_sns_topic.envVarName"))
 
 	// A base execution role is emitted for it.
-	s.Require().NotNil(resources["ordersQueue_to_eventsTopic_forwarder_role"], "expected a forwarder role")
+	s.Require().NotNil(resources["ordersQueue_topic_forwarder_role"], "expected a forwarder role")
 
 	// The source queue carries the forward label so it triggers the forwarder,
 	// while keeping its original selector label.
 	src := resources["ordersQueue_sqs_queue"]
 	s.Require().NotNil(src.LinkSelector)
-	s.Equal("true", src.LinkSelector.ByLabel.Values["celerity.queue.forward.ordersQueue.eventsTopic"])
+	s.Equal("true", src.LinkSelector.ByLabel.Values["celerity.queue.forward.ordersQueue"])
 	s.Equal("orders-events", src.LinkSelector.ByLabel.Values["stream"])
+}
+
+// A queue forwarding to several topics emits ONE forwarder (SQS is competing
+// consumers, so a forwarder-per-topic would split the messages). The single
+// forwarder's selector matches all target topics and it renames each topic's ARN
+// env var to a distinct indexed name it fans out to.
+func (s *QueueTransformTestSuite) Test_queue_to_multiple_topics_emits_one_forwarder() {
+	q := &schema.Resource{
+		Type: &schema.ResourceTypeWrapper{Value: "celerity/queue"},
+		Spec: core.MappingNodeFields("name", core.MappingNodeFromString("orders")),
+		LinkSelector: &schema.LinkSelector{
+			ByLabel: &schema.StringMap{Values: map[string]string{"a": "1", "b": "2"}},
+		},
+	}
+	topicA := &schema.Resource{
+		Type:     &schema.ResourceTypeWrapper{Value: "celerity/topic"},
+		Spec:     core.MappingNodeFields("name", core.MappingNodeFromString("alpha")),
+		Metadata: &schema.Metadata{Labels: &schema.StringMap{Values: map[string]string{"a": "1"}}},
+	}
+	topicB := &schema.Resource{
+		Type:     &schema.ResourceTypeWrapper{Value: "celerity/topic"},
+		Spec:     core.MappingNodeFields("name", core.MappingNodeFromString("beta")),
+		Metadata: &schema.Metadata{Labels: &schema.StringMap{Values: map[string]string{"b": "2"}}},
+	}
+
+	bp := &schema.Blueprint{Resources: &schema.ResourceMap{Values: map[string]*schema.Resource{
+		"ordersQueue": q, "alphaTopic": topicA, "betaTopic": topicB,
+	}}}
+	out, err := NewTransformer(&shared.Dependencies{}).Transform(
+		context.Background(),
+		&transform.SpecTransformerTransformInput{
+			InputBlueprint: bp,
+			LinkGraph: edges(
+				edgeWithLabels("ordersQueue", "alphaTopic", "celerity/queue", "celerity/topic", map[string]string{"a": "1"}),
+				edgeWithLabels("ordersQueue", "betaTopic", "celerity/queue", "celerity/topic", map[string]string{"b": "2"}),
+			),
+			TransformerContext: validationContext(),
+		},
+	)
+	s.Require().NoError(err)
+	resources := out.TransformedBlueprint.Resources.Values
+
+	// Exactly one forwarder, not one per topic.
+	s.Require().NotNil(resources["ordersQueue_topic_forwarder"])
+	s.Nil(resources["ordersQueue_to_alphaTopic_forwarder"])
+	s.Nil(resources["ordersQueue_to_betaTopic_forwarder"])
+
+	fwd := resources["ordersQueue_topic_forwarder"]
+	// Its selector is the union of both topics' matched labels.
+	s.Equal("1", fwd.LinkSelector.ByLabel.Values["a"])
+	s.Equal("2", fwd.LinkSelector.ByLabel.Values["b"])
+	// Each topic's ARN env var is renamed to a distinct indexed name (sorted by
+	// topic name: alpha=0, beta=1).
+	s.Equal("CELERITY_FORWARD_TOPIC_ARN_0",
+		annotationLiteral(fwd.Metadata.Annotations, "aws.lambda.sns.alphaTopic_sns_topic.envVarName"))
+	s.Equal("CELERITY_FORWARD_TOPIC_ARN_1",
+		annotationLiteral(fwd.Metadata.Annotations, "aws.lambda.sns.betaTopic_sns_topic.envVarName"))
+}
+
+// A queue that is both consumed and forwarded cannot work on aws-serverless (the
+// consumer's poller and the forwarder's poller would compete), so no forwarder is
+// emitted and an error is surfaced.
+func (s *QueueTransformTestSuite) Test_consumed_and_forwarded_queue_errors_and_emits_no_forwarder() {
+	q := &schema.Resource{
+		Type: &schema.ResourceTypeWrapper{Value: "celerity/queue"},
+		Spec: core.MappingNodeFields("name", core.MappingNodeFromString("orders")),
+		LinkSelector: &schema.LinkSelector{
+			ByLabel: &schema.StringMap{Values: map[string]string{"stream": "orders"}},
+		},
+	}
+	topicRes := &schema.Resource{
+		Type:     &schema.ResourceTypeWrapper{Value: "celerity/topic"},
+		Spec:     core.MappingNodeFields("name", core.MappingNodeFromString("events")),
+		Metadata: &schema.Metadata{Labels: &schema.StringMap{Values: map[string]string{"stream": "orders"}}},
+	}
+	consumerRes := &schema.Resource{
+		Type: &schema.ResourceTypeWrapper{Value: "celerity/consumer"},
+		Spec: core.MappingNodeFields("sourceId", core.MappingNodeFromString("orders")),
+	}
+
+	bp := &schema.Blueprint{Resources: &schema.ResourceMap{Values: map[string]*schema.Resource{
+		"ordersQueue": q, "eventsTopic": topicRes, "ordersConsumer": consumerRes,
+	}}}
+	out, err := NewTransformer(&shared.Dependencies{}).Transform(
+		context.Background(),
+		&transform.SpecTransformerTransformInput{
+			InputBlueprint: bp,
+			LinkGraph: edges(
+				edgeWithLabels("ordersQueue", "eventsTopic", "celerity/queue", "celerity/topic", map[string]string{"stream": "orders"}),
+				edge("ordersQueue", "ordersConsumer", "celerity/queue", "celerity/consumer"),
+			),
+			TransformerContext: validationContext(),
+		},
+	)
+	s.Require().NoError(err)
+
+	s.Nil(out.TransformedBlueprint.Resources.Values["ordersQueue_topic_forwarder"],
+		"no forwarder should be emitted for a consumed-and-forwarded queue")
+	found := false
+	for _, d := range out.Diagnostics {
+		if d.Level == core.DiagnosticLevelError && strings.Contains(d.Message, "both consumed and forwarded") {
+			found = true
+		}
+	}
+	s.True(found, "expected an error diagnostic about the consumed-and-forwarded queue")
 }
 
 func (s *QueueTransformTestSuite) transform(

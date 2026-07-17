@@ -2,6 +2,7 @@ package queue
 
 import (
 	"fmt"
+	"sort"
 
 	"github.com/newstack-cloud/bluelink-transformer-celerity/resources/topic"
 	"github.com/newstack-cloud/bluelink-transformer-celerity/shared"
@@ -13,10 +14,12 @@ import (
 )
 
 const (
-	// forwardTopicEnvVar is the environment variable the intermediary forwarder
-	// reads the target topic ARN from. The aws/lambda/function::aws/sns/topic link
-	// injects it under this name (set via the envVarName annotation below).
-	forwardTopicEnvVar = "CELERITY_FORWARD_TOPIC_ARN"
+	// forwardTopicEnvVarPrefix is the prefix of the environment variables the
+	// intermediary forwarder reads target topic ARNs from. One variable per target
+	// topic (<prefix>_<index>) is injected by the aws/lambda/function::aws/sns/topic
+	// link via the per-topic envVarName annotation; the inline handler publishes each
+	// message to every variable with this prefix.
+	forwardTopicEnvVarPrefix = "CELERITY_FORWARD_TOPIC_ARN"
 
 	// forwarderRuntime is the AWS Lambda runtime the intermediary forwarder runs
 	// under. The forwarder is language-agnostic infrastructure glue, so a single
@@ -29,64 +32,78 @@ const (
 )
 
 // forwarderSource is the inline handler the intermediary forwarder runs: it
-// republishes each SQS record's body to the target SNS topic. The topic ARN is
-// read from the env var the function::sns link injects. FIFO group ordering is
-// preserved by passing MessageGroupId through, using the SQS message id as the
-// deduplication id.
+// republishes each SQS record's body to every target SNS topic. Target topic ARNs
+// are discovered from the CELERITY_FORWARD_TOPIC_ARN* env vars the function::sns
+// links inject. A single forwarder fans a message out to all topics (one SQS event
+// source mapping — SQS is competing-consumers, so one forwarder per queue, not one
+// per topic). FIFO group ordering is preserved by passing MessageGroupId through,
+// using the SQS message id as the deduplication id.
 //
 // This is emitted inline via aws/lambda/function.code.zipFile because there is no
-// build-manifest artifact for intermediary functions on aws-serverless. Inline
-// code is write-only in the provider, so a change to this source only redeploys
-// after the code object is refreshed.
+// build-manifest artifact for intermediary functions on aws-serverless. Inline code
+// is write-only in the provider, so a change to this source only redeploys after
+// the code object is refreshed.
 const forwarderSource = `const { SNSClient, PublishCommand } = require("@aws-sdk/client-sns");
 const sns = new SNSClient({});
-const TopicArn = process.env.CELERITY_FORWARD_TOPIC_ARN;
+const topicArns = Object.keys(process.env)
+  .filter((key) => key.startsWith("CELERITY_FORWARD_TOPIC_ARN"))
+  .map((key) => process.env[key])
+  .filter(Boolean);
 exports.handler = async (event) => {
   const records = event.Records || [];
-  await Promise.all(records.map((record) => {
-    const params = { TopicArn, Message: record.body };
-    const groupId = record.attributes && record.attributes.MessageGroupId;
-    if (groupId) {
-      params.MessageGroupId = groupId;
-      params.MessageDeduplicationId = record.messageId;
+  const publishes = [];
+  for (const record of records) {
+    for (const TopicArn of topicArns) {
+      const params = { TopicArn, Message: record.body };
+      const groupId = record.attributes && record.attributes.MessageGroupId;
+      if (groupId) {
+        params.MessageGroupId = groupId;
+        params.MessageDeduplicationId = record.messageId;
+      }
+      publishes.push(sns.send(new PublishCommand(params)));
     }
-    return sns.send(new PublishCommand(params));
-  }));
+  }
+  await Promise.all(publishes);
 };
 `
 
 // forwardLabelKey is the synthetic label that binds the source queue's link
-// selector to the intermediary forwarder function, activating the
+// selector to its intermediary forwarder function, activating the
 // aws/sqs/queue::aws/lambda/function poll link (which creates the event source
-// mapping and injects the SQS-receive IAM). It is namespaced per queue->topic edge
-// so a queue forwarding to several topics keeps one distinct wiring label each.
-func forwardLabelKey(queueName, topicName string) string {
-	return fmt.Sprintf("celerity.queue.forward.%s.%s", queueName, topicName)
+// mapping and injects the SQS-receive IAM). One label per queue: a single forwarder
+// consumes the queue and fans out to all target topics.
+func forwardLabelKey(queueName string) string {
+	return fmt.Sprintf("celerity.queue.forward.%s", queueName)
 }
 
-func forwarderFunctionName(queueName, topicName string) string {
-	return fmt.Sprintf("%s_to_%s_forwarder", queueName, topicName)
+func forwarderFunctionName(queueName string) string {
+	return fmt.Sprintf("%s_topic_forwarder", queueName)
 }
 
-func forwarderRoleName(queueName, topicName string) string {
-	return fmt.Sprintf("%s_to_%s_forwarder_role", queueName, topicName)
+func forwarderRoleName(queueName string) string {
+	return fmt.Sprintf("%s_topic_forwarder_role", queueName)
 }
 
-// buildTopicForwarder emits the intermediary function + execution role for one
-// queue->topic edge. The function is triggered by the source queue (via the
-// synthetic forward label added to the queue's link selector) and publishes to the
-// topic (via its own link selector matching the topic's labels). Both provider
-// links inject the IAM the forwarder needs, so only a base execution role is
-// emitted.
-func buildTopicForwarder(queueName string, edge *TopicForwardEdge) (map[string]*schema.Resource, error) {
-	funcName := forwarderFunctionName(queueName, edge.TopicName)
-	roleName := forwarderRoleName(queueName, edge.TopicName)
+// buildTopicForwarder emits the single intermediary function + execution role that
+// forwards the queue's messages to every target topic. The function is triggered by
+// the source queue (via the synthetic forward label on the queue's link selector)
+// and publishes to the topics (via its own link selector matching the union of the
+// topics' labels). Each topic's function::sns link injects the topic ARN under a
+// distinct CELERITY_FORWARD_TOPIC_ARN_<index> env var (renamed per topic). Both
+// provider links inject the IAM the forwarder needs, so only a base role is emitted.
+func buildTopicForwarder(queueName string, edges []*TopicForwardEdge) (map[string]*schema.Resource, error) {
+	funcName := forwarderFunctionName(queueName)
+	roleName := forwarderRoleName(queueName)
 
 	roleArnRef, err := shared.SubstitutionMappingNode(
 		fmt.Sprintf("${resources.%s.spec.arn}", roleName))
 	if err != nil {
 		return nil, err
 	}
+
+	// Deterministic order so env-var indices and the union selector are stable.
+	sorted := append([]*TopicForwardEdge(nil), edges...)
+	sort.Slice(sorted, func(i, j int) bool { return sorted[i].TopicName < sorted[j].TopicName })
 
 	funcMeta := &schema.Metadata{
 		Annotations: transformutils.TransformerBaseAnnotations(
@@ -97,13 +114,22 @@ func buildTopicForwarder(queueName string, edge *TopicForwardEdge) (map[string]*
 			},
 		),
 		Labels: &schema.StringMap{Values: map[string]string{
-			forwardLabelKey(queueName, edge.TopicName): "true",
+			forwardLabelKey(queueName): "true",
 		}},
 	}
-	// Rename the topic-ARN env var the function::sns link injects so the inline
-	// handler can read a fixed, known name.
-	envVarNameKey := fmt.Sprintf("aws.lambda.sns.%s.envVarName", topic.ConcreteResourceName(edge.TopicName))
-	funcMeta.Annotations.Values[envVarNameKey] = pluginutils.StringToSubstitutions(forwardTopicEnvVar)
+
+	// Union the topics' matched labels for the publish selector, and rename each
+	// topic's injected ARN env var to a distinct CELERITY_FORWARD_TOPIC_ARN_<index>
+	// the inline handler discovers by prefix.
+	selectorLabels := map[string]string{}
+	for index, edge := range sorted {
+		for key, value := range edge.SelectorLabels {
+			selectorLabels[key] = value
+		}
+		envVarNameKey := fmt.Sprintf("aws.lambda.sns.%s.envVarName", topic.ConcreteResourceName(edge.TopicName))
+		funcMeta.Annotations.Values[envVarNameKey] = pluginutils.StringToSubstitutions(
+			fmt.Sprintf("%s_%d", forwardTopicEnvVarPrefix, index))
+	}
 
 	funcRes := &schema.Resource{
 		Type: &schema.ResourceTypeWrapper{Value: "aws/lambda/function"},
@@ -117,10 +143,8 @@ func buildTopicForwarder(queueName string, edge *TopicForwardEdge) (map[string]*
 			"role", roleArnRef,
 		),
 		Metadata: funcMeta,
-		// The forwarder's own link selector matches the topic's labels, activating
-		// the aws/lambda/function::aws/sns/topic link (publish grant + topic ARN env).
 		LinkSelector: &schema.LinkSelector{
-			ByLabel: &schema.StringMap{Values: edge.SelectorLabels},
+			ByLabel: &schema.StringMap{Values: selectorLabels},
 		},
 	}
 
@@ -145,11 +169,12 @@ func buildTopicForwarder(queueName string, edge *TopicForwardEdge) (map[string]*
 }
 
 // queueLinkSelectorWithForwards returns the source queue's link selector augmented
-// with a synthetic forward label per topic-forwarding edge. Bluelink label
-// matching is per-label (each label forms an independent selector group), so
+// with the synthetic forward label when the queue forwards to any topic. Bluelink
+// label matching is per-label (each label forms an independent selector group), so
 // adding the forward label creates a match to the forwarder function without
-// disturbing the existing topic match (which is inert — aws/sqs/queue declares no
-// link to aws/sns/topic). Returns the selector unchanged when there are no forwards.
+// disturbing the existing topic matches (which are inert — aws/sqs/queue declares
+// no link to aws/sns/topic). Returns the selector unchanged when there are no
+// forwards.
 func queueLinkSelectorWithForwards(r *ResolvedQueue) *schema.LinkSelector {
 	if len(r.TopicForwards) == 0 {
 		return r.Resource.LinkSelector
@@ -160,8 +185,19 @@ func queueLinkSelectorWithForwards(r *ResolvedQueue) *schema.LinkSelector {
 			labels[key] = value
 		}
 	}
-	for _, edge := range r.TopicForwards {
-		labels[forwardLabelKey(r.Name, edge.TopicName)] = "true"
-	}
+	labels[forwardLabelKey(r.Name)] = "true"
 	return &schema.LinkSelector{ByLabel: &schema.StringMap{Values: labels}}
+}
+
+// forwardSelectorLabels returns the union of every forwarding edge's matched topic
+// labels — the publish selector for the single forwarder. Empty when no edge
+// carries labels (a latent mis-wire the emit guards against).
+func forwardSelectorLabels(edges []*TopicForwardEdge) map[string]string {
+	labels := map[string]string{}
+	for _, edge := range edges {
+		for key, value := range edge.SelectorLabels {
+			labels[key] = value
+		}
+	}
+	return labels
 }
