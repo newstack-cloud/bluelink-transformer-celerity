@@ -105,17 +105,14 @@ func emitQueue(
 		queueConcreteName(r.Name): res,
 	}
 
-	// Emit an intermediary forwarder (function + role) per celerity/topic edge; the
-	// queue has no native SQS->SNS forwarding on AWS.
-	for _, edge := range r.TopicForwards {
-		forwarder, err := buildTopicForwarder(r.Name, edge)
-		if err != nil {
-			return nil, err
-		}
-		for name, resource := range forwarder {
-			resources[name] = resource
-		}
+	// A single intermediary forwarder fans the queue's messages out to every target
+	// topic (SQS has no native SNS forwarding). It is the queue's sole additional
+	// consumer, so it must not coexist with a Celerity consumer on the same queue.
+	forwardDiags, err := emitTopicForwarder(r, resources)
+	if err != nil {
+		return nil, err
 	}
+	diagnostics = append(diagnostics, forwardDiags...)
 
 	return &transformutils.EmitResult{
 		Resources:   resources,
@@ -123,28 +120,60 @@ func emitQueue(
 	}, nil
 }
 
+// emitTopicForwarder provisions the single forwarder (function + role) for a queue
+// that forwards to one or more topics, adding it to resources. It emits nothing (and
+// returns an error diagnostic) when the queue is also consumed — an SQS queue cannot
+// feed both a consumer's poller and the forwarder's poller (competing consumers) —
+// or when the forwarding edges carry no selector labels to resolve the topics.
+func emitTopicForwarder(r *ResolvedQueue, resources map[string]*schema.Resource) ([]*core.Diagnostic, error) {
+	if len(r.TopicForwards) == 0 {
+		return nil, nil
+	}
+
+	if r.Consumed {
+		return []*core.Diagnostic{{
+			Level: core.DiagnosticLevelError,
+			Message: fmt.Sprintf(
+				"celerity/queue %q is both consumed and forwarded to a topic; on aws-serverless a queue "+
+					"feeds a single poller, so the two would compete for its messages. No forwarder was "+
+					"emitted. Use separate queues, or subscribe the consumer to the topic instead",
+				r.Name,
+			),
+		}}, nil
+	}
+
+	if len(forwardSelectorLabels(r.TopicForwards)) == 0 {
+		return []*core.Diagnostic{{
+			Level: core.DiagnosticLevelError,
+			Message: fmt.Sprintf(
+				"celerity/queue %q forwards to a topic but the link carries no label selector to resolve "+
+					"the target topic; no forwarder was emitted",
+				r.Name,
+			),
+		}}, nil
+	}
+
+	forwarder, err := buildTopicForwarder(r.Name, r.TopicForwards)
+	if err != nil {
+		return nil, err
+	}
+	for name, resource := range forwarder {
+		resources[name] = resource
+	}
+	return nil, nil
+}
+
 // stampBucketNotifications maps the queue's celerity.queue.bucket.{events,
 // filterPrefix,filterSuffix} annotations onto the emitted queue's aws.s3.sqs.*
 // provider annotations, warning for any event with no S3 equivalent.
 func stampBucketNotifications(r *ResolvedQueue, meta *schema.Metadata) []*core.Diagnostic {
-	unsupported := sharedaws.StampBucketNotifications(r.Resource, meta, sharedaws.BucketNotificationKeys{
+	result := sharedaws.StampBucketNotifications(r.Resource, meta, sharedaws.BucketNotificationKeys{
 		CelerityEvents:       AnnotationKeyBucketEvents,
 		CelerityFilterPrefix: AnnotationKeyBucketFilterPrefix,
 		CelerityFilterSuffix: AnnotationKeyBucketFilterSuffix,
 		ProviderPrefix:       "aws.s3.sqs",
 	})
-	var diagnostics []*core.Diagnostic
-	for _, event := range unsupported {
-		diagnostics = append(diagnostics, &core.Diagnostic{
-			Level: core.DiagnosticLevelWarning,
-			Message: fmt.Sprintf(
-				"celerity/queue %q requests bucket notification event %q, which has no aws-serverless "+
-					"(S3) equivalent and is ignored; use created or deleted",
-				r.Name, event,
-			),
-		})
-	}
-	return diagnostics
+	return sharedaws.BucketNotificationDiagnostics("celerity/queue", r.Name, result)
 }
 
 // Carries the abstract queue's labels through to the concrete resource (so a

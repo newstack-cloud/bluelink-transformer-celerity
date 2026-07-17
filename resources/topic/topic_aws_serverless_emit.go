@@ -85,24 +85,13 @@ func emitTopic(
 // filterPrefix,filterSuffix} annotations onto the emitted topic's aws.s3.sns.*
 // provider annotations, warning for any event with no S3 equivalent.
 func stampBucketNotifications(r *ResolvedTopic, meta *schema.Metadata) []*core.Diagnostic {
-	unsupported := sharedaws.StampBucketNotifications(r.Resource, meta, sharedaws.BucketNotificationKeys{
+	result := sharedaws.StampBucketNotifications(r.Resource, meta, sharedaws.BucketNotificationKeys{
 		CelerityEvents:       AnnotationKeyBucketEvents,
 		CelerityFilterPrefix: AnnotationKeyBucketFilterPrefix,
 		CelerityFilterSuffix: AnnotationKeyBucketFilterSuffix,
 		ProviderPrefix:       "aws.s3.sns",
 	})
-	var diagnostics []*core.Diagnostic
-	for _, event := range unsupported {
-		diagnostics = append(diagnostics, &core.Diagnostic{
-			Level: core.DiagnosticLevelWarning,
-			Message: fmt.Sprintf(
-				"celerity/topic %q requests bucket notification event %q, which has no aws-serverless "+
-					"(S3) equivalent and is ignored; use created or deleted",
-				r.Name, event,
-			),
-		})
-	}
-	return diagnostics
+	return sharedaws.BucketNotificationDiagnostics("celerity/topic", r.Name, result)
 }
 
 // topicMetadata carries the abstract topic's labels through to the concrete
