@@ -2,6 +2,7 @@ package transformer
 
 import (
 	"fmt"
+	"maps"
 	"sort"
 
 	"github.com/newstack-cloud/bluelink-transformer-celerity/resources/bucket"
@@ -53,39 +54,10 @@ func collectResourcesStore(
 	entries := map[string]*core.MappingNode{}
 
 	// Iterate handlers in a stable order. The pipeline passes primaries in Go map
-	// order, so without this the winner of a configKey collision (below) — and hence
-	// the emitted store — would be nondeterministic across runs.
-	handlers := sortedHandlers(primaries)
-
-	for _, handlerResource := range handlers {
-		groups := []struct {
-			celerityType string
-			linked       []*types.LinkedResource
-		}{
-			{"celerity/queue", handlerResource.Queues},
-			{"celerity/topic", handlerResource.Topics},
-			{"celerity/datastore", handlerResource.Datastores},
-			{"celerity/bucket", handlerResource.Buckets},
-		}
-		for _, group := range groups {
-			backing := storeBackings[group.celerityType]
-			for _, linked := range group.linked {
-				configKey := storeConfigKey(linked)
-				if _, seen := entries[configKey]; seen {
-					// configKey uniqueness across all resources is enforced by the CLI
-					// with a fatal check before deploy; a collision here means an invalid
-					// blueprint. Keep the first (deterministic, given the sorted order
-					// above) so the transformer's output stays reproducible rather than
-					// silently varying.
-					continue
-				}
-				// The reference is over concrete names + a fixed attribute, so it is
-				// always a well-formed substitution.
-				ref, _ := shared.SubstitutionMappingNode(fmt.Sprintf(
-					"${resources.%s.spec.%s}", backing.concreteName(linked.Name), backing.idAttribute))
-				entries[configKey] = ref
-			}
-		}
+	// order, so without this the winner of a configKey collision — and hence the
+	// emitted store — would be nondeterministic across runs.
+	for _, handlerResource := range sortedHandlers(primaries) {
+		addHandlerStoreEntries(entries, handlerResource)
 	}
 
 	if len(entries) == 0 {
@@ -93,9 +65,7 @@ func collectResourcesStore(
 	}
 
 	values := &core.MappingNode{Fields: map[string]*core.MappingNode{}}
-	for _, key := range shared.SortedKeys(entries) {
-		values.Fields[key] = entries[key]
-	}
+	maps.Copy(values.Fields, entries)
 
 	return &transformutils.SharedParent{
 		Key:          "resources-store",
@@ -125,6 +95,36 @@ func sortedHandlers(primaries []transformutils.ResolvedResource) []*handler.Reso
 	}
 	sort.Slice(handlers, func(i, j int) bool { return handlers[i].Name < handlers[j].Name })
 	return handlers
+}
+
+// addHandlerStoreEntries adds a store entry (configKey -> physical-id reference)
+// for each of the handler's store-backed links, skipping keys already present.
+// A duplicate configKey means an invalid blueprint (the CLI enforces uniqueness
+// with a fatal check before deploy); the first entry is kept, which is
+// deterministic because the caller iterates handlers in sorted order.
+func addHandlerStoreEntries(entries map[string]*core.MappingNode, handlerResource *handler.ResolvedHandler) {
+	groups := []struct {
+		celerityType string
+		linked       []*types.LinkedResource
+	}{
+		{"celerity/queue", handlerResource.Queues},
+		{"celerity/topic", handlerResource.Topics},
+		{"celerity/datastore", handlerResource.Datastores},
+		{"celerity/bucket", handlerResource.Buckets},
+	}
+	for _, group := range groups {
+		backing := storeBackings[group.celerityType]
+		for _, linked := range group.linked {
+			configKey := storeConfigKey(linked)
+			if _, seen := entries[configKey]; seen {
+				continue
+			}
+			// A reference over concrete names + a fixed attribute is always well-formed.
+			ref, _ := shared.SubstitutionMappingNode(fmt.Sprintf(
+				"${resources.%s.spec.%s}", backing.concreteName(linked.Name), backing.idAttribute))
+			entries[configKey] = ref
+		}
+	}
 }
 
 // storeConfigKey derives the store parameter name for a linked resource: its

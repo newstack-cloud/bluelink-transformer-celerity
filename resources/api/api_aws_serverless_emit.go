@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"fmt"
+	"maps"
 	"strings"
 
 	"github.com/newstack-cloud/bluelink-transformer-celerity/resources/handler"
@@ -136,9 +137,7 @@ func protocolScopedLinkSelector(selector *schema.LinkSelector, protocol string) 
 		return selector
 	}
 	scoped := make(map[string]string, len(selector.ByLabel.Values)+1)
-	for key, value := range selector.ByLabel.Values {
-		scoped[key] = value
-	}
+	maps.Copy(scoped, selector.ByLabel.Values)
 	scoped[handler.LabelKeyAPIProtocol] = protocol
 	return &schema.LinkSelector{ByLabel: &schema.StringMap{Values: scoped}}
 }
