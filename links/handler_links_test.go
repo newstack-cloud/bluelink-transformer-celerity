@@ -85,6 +85,61 @@ func (s *HandlerLinksTestSuite) Test_api_handler_event_source_validation() {
 	}
 }
 
+// The schedule->handler and consumer->handler links share the same event-source
+// exclusivity validation as api->handler, so a handler marked as both (for example)
+// a schedule and an HTTP handler is rejected regardless of which link carries the
+// check.
+func (s *HandlerLinksTestSuite) Test_non_api_links_reject_conflicting_event_sources() {
+	cases := []struct {
+		name        string
+		link        func() *transformerv1.AbstractLinkDefinition
+		resource    *schema.Resource
+		expectError bool
+	}{
+		{
+			name:        "schedule link rejects schedule + http handler",
+			link:        ScheduleToHandlerLink,
+			resource:    handlerWithAnnotations(handler.AnnotationKeyScheduleHandler, handler.AnnotationKeyHTTPHandler),
+			expectError: true,
+		},
+		{
+			name:        "consumer link rejects consumer + schedule handler",
+			link:        ConsumerToHandlerLink,
+			resource:    handlerWithAnnotations(handler.AnnotationKeyConsumerHandler, handler.AnnotationKeyScheduleHandler),
+			expectError: true,
+		},
+		{
+			name:     "schedule link allows a schedule-only handler",
+			link:     ScheduleToHandlerLink,
+			resource: handlerWithAnnotations(handler.AnnotationKeyScheduleHandler),
+		},
+		{
+			name:     "consumer link allows a consumer-only handler",
+			link:     ConsumerToHandlerLink,
+			resource: handlerWithAnnotations(handler.AnnotationKeyConsumerHandler),
+		},
+	}
+
+	for _, tc := range cases {
+		s.Run(tc.name, func() {
+			out, err := tc.link().ValidateFunc(
+				context.Background(),
+				&transformerv1.AbstractLinkValidateInput{
+					Edge:      &linktypes.ResolvedLink{Source: "src", Target: "h1"},
+					LinkGraph: &fakeLinkGraph{resources: map[string]*schema.Resource{"h1": tc.resource}},
+				},
+			)
+			s.Require().NoError(err)
+			if tc.expectError {
+				s.Require().Len(out.Diagnostics, 1)
+				s.Equal(core.DiagnosticLevelError, out.Diagnostics[0].Level)
+			} else {
+				s.Empty(out.Diagnostics)
+			}
+		})
+	}
+}
+
 func TestHandlerLinksTestSuite(t *testing.T) {
 	suite.Run(t, new(HandlerLinksTestSuite))
 }

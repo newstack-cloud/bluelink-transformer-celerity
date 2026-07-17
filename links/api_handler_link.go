@@ -1,14 +1,10 @@
 package links
 
 import (
-	"context"
-	"fmt"
-
 	"github.com/newstack-cloud/bluelink-transformer-celerity/resources/handler"
 	"github.com/newstack-cloud/bluelink/libs/blueprint/core"
 	"github.com/newstack-cloud/bluelink/libs/blueprint/provider"
 	"github.com/newstack-cloud/bluelink/libs/plugin-framework/sdk/transformerv1"
-	"github.com/newstack-cloud/bluelink/libs/plugin-framework/sdk/transformutils"
 )
 
 const (
@@ -130,36 +126,6 @@ func APIToHandlerLink() *transformerv1.AbstractLinkDefinition {
 					"requests. The guard must be defined on the linked API.",
 			},
 		},
-		ValidateFunc: validateHandlerEventSourceExclusive,
+		ValidateFunc: validateHandlerTargetSingleEventSource,
 	}
-}
-
-func validateHandlerEventSourceExclusive(
-	ctx context.Context,
-	input *transformerv1.AbstractLinkValidateInput,
-) (*transformerv1.AbstractLinkValidateOutput, error) {
-	// api->handler: handler is the target
-	handlerRes, _, ok := input.LinkGraph.Resource(input.Edge.Target)
-	if !ok || handlerRes == nil {
-		return &transformerv1.AbstractLinkValidateOutput{}, nil
-	}
-
-	_, isHTTP := transformutils.GetAnnotation(handlerRes, handler.AnnotationKeyHTTPHandler, "")
-	_, isWS := transformutils.GetAnnotation(handlerRes, handler.AnnotationKeyWebSocketHandler, "")
-	if isHTTP && isWS {
-		return &transformerv1.AbstractLinkValidateOutput{
-			Diagnostics: []*core.Diagnostic{
-				{
-					Level: core.DiagnosticLevelError,
-					Message: fmt.Sprintf(
-						"a celerity/handler cannot be both an HTTP and a WebSocket handler; set only one of %s or %s",
-						handler.AnnotationKeyHTTPHandler,
-						handler.AnnotationKeyWebSocketHandler,
-					),
-				},
-			},
-		}, nil
-	}
-
-	return &transformerv1.AbstractLinkValidateOutput{}, nil
 }

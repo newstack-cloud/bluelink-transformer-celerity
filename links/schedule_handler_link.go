@@ -29,5 +29,6 @@ func ScheduleToHandlerLink() *transformerv1.AbstractLinkDefinition {
 					"schedule's cadence.",
 			},
 		},
+		ValidateFunc: validateHandlerTargetSingleEventSource,
 	}
 }

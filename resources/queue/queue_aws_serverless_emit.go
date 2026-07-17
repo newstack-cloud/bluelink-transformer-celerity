@@ -16,10 +16,27 @@ import (
 const fifoSuffix = ".fifo"
 
 const (
-	// deadLetterMaxAttemptsAnnotation is the celerity/queue -> celerity/queue link
-	// annotation set on a queue used as a dead-letter queue's parent; it maps to the
-	// provider redrive annotation the aws/sqs/queue::aws/sqs/queue link consumes.
-	deadLetterMaxAttemptsAnnotation  = "celerity.queue.deadLetterMaxAttempts"
+	// AnnotationKeyDeadLetterMaxAttempts is the celerity/queue -> celerity/queue link
+	// annotation set on the parent (source) queue; it maps to the provider redrive
+	// annotation the aws/sqs/queue::aws/sqs/queue link consumes on the source queue.
+	AnnotationKeyDeadLetterMaxAttempts = "celerity.queue.deadLetterMaxAttempts"
+
+	// AnnotationKeyBucketEvents is the celerity/bucket -> celerity/queue link
+	// annotation (comma-separated created | deleted | metadataUpdated) selecting which
+	// object-storage events flow from a linked bucket into this queue. It maps to the
+	// provider aws.s3.sqs.event.<index> annotations the aws/s3/bucket::aws/sqs/queue
+	// link consumes on the queue.
+	AnnotationKeyBucketEvents = "celerity.queue.bucket.events"
+
+	// AnnotationKeyBucketFilterPrefix restricts bucket notifications into this queue to
+	// object keys with the given prefix (maps to aws.s3.sqs.filterPrefix).
+	AnnotationKeyBucketFilterPrefix = "celerity.queue.bucket.filterPrefix"
+
+	// AnnotationKeyBucketFilterSuffix restricts bucket notifications into this queue to
+	// object keys with the given suffix (maps to aws.s3.sqs.filterSuffix).
+	AnnotationKeyBucketFilterSuffix = "celerity.queue.bucket.filterSuffix"
+
+	deadLetterMaxAttemptsAnnotation  = AnnotationKeyDeadLetterMaxAttempts
 	redriveMaxReceiveCountAnnotation = "aws.sqs.redrive.maxReceiveCount"
 )
 
