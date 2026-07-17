@@ -20,6 +20,13 @@ const (
 	annAPIAuthorizerID = "aws.apigatewayv2.lambda.authorizerId"
 	// "JWT" or "CUSTOM" for the protected route.
 	annAPIAuthorizationType = "aws.apigatewayv2.lambda.authorizationType"
+
+	// LabelKeyAPIProtocol scopes an emitted handler function to the API of its own
+	// protocol. Its value is the handler's event source ("http" or "websocket"). The
+	// celerity/api emit narrows each per-protocol concrete API's linkSelector by this
+	// label so a hybrid (HTTP + WebSocket) API's two APIs each attach only their own
+	// handlers, never the other protocol's (which would create an invalid route).
+	LabelKeyAPIProtocol = "celerity.internal.api.protocol"
 )
 
 const (
@@ -52,6 +59,10 @@ func stampAPIRouteAnnotations(r *ResolvedHandler, lambda *schema.Resource) error
 	if r.APILink == nil {
 		return nil
 	}
+
+	// Scope the function to its protocol's API so a hybrid API attaches it to only
+	// the matching concrete API (see LabelKeyAPIProtocol).
+	setLabel(lambda.Metadata, LabelKeyAPIProtocol, string(r.EventSource))
 
 	setStringAnnotation(lambda.Metadata, annAPIRouteKey, routeKeyForHandler(r))
 	return stampRouteAuth(r, lambda)

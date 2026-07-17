@@ -124,9 +124,28 @@ func emitAPI(
 	}, nil
 }
 
+// protocolScopedLinkSelector narrows the abstract API's linkSelector so the
+// concrete API for a protocol attaches only handlers of that protocol. Handlers
+// linked to an API carry a handler.LabelKeyAPIProtocol label (value
+// "http"/"websocket"); requiring it prevents a hybrid API's WebSocket API from
+// attaching an HTTP handler (which would create an invalid route), and vice versa.
+// A nil or label-less selector is returned unchanged, preserving the existing
+// behaviour that an API without a label selector attaches no handlers.
+func protocolScopedLinkSelector(selector *schema.LinkSelector, protocol string) *schema.LinkSelector {
+	if selector == nil || selector.ByLabel == nil {
+		return selector
+	}
+	scoped := make(map[string]string, len(selector.ByLabel.Values)+1)
+	for key, value := range selector.ByLabel.Values {
+		scoped[key] = value
+	}
+	scoped[handler.LabelKeyAPIProtocol] = protocol
+	return &schema.LinkSelector{ByLabel: &schema.StringMap{Values: scoped}}
+}
+
 // The provider's api::function link is activated by a label selector on the
-// source (the API), so the abstract API's linkSelector is preserved onto each
-// concrete API.
+// source (the API), so the abstract API's linkSelector is scoped per protocol onto
+// each concrete API (see protocolScopedLinkSelector).
 func emitProtocolAPI(
 	r *ResolvedAPI,
 	info protocolInfo,
@@ -160,7 +179,7 @@ func emitProtocolAPI(
 		Type:         &schema.ResourceTypeWrapper{Value: "aws/apigatewayv2/api"},
 		Spec:         spec,
 		Metadata:     apiMetadata(r),
-		LinkSelector: r.Resource.LinkSelector,
+		LinkSelector: protocolScopedLinkSelector(r.Resource.LinkSelector, protocol),
 	}
 
 	stageRes, err := stageResource(r, apiResName)
