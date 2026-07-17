@@ -111,7 +111,7 @@ Recorded here because it is the single clearest expression of why the manifest i
 | Merging the extracted Celerity SDK handler manifest into the blueprint | CLI | The transformer sees the already-merged blueprint and never runs the SDK extractor. |
 | Packaging code assets (shared or per-handler, as the target demands) | CLI | Recorded on the target sub-manifest. |
 | Generating any target-specific entry point or bootstrap file | CLI | Recorded on the target sub-manifest; the transformer reads its value verbatim, never computes it. |
-| Generating the internal resource-links routing file (`__celerity_resource_links__.json`) into the code asset | CLI | Bundled next to the user app by the CLI build step. The SDK reads it from disk at cold start; it is never carried in an env var. See 3.2. |
+| Generating the internal resource-links routing file (CLI-owned; currently `resource-links.json` — see the name-discrepancy note in 3.2) into the code asset | CLI | Bundled next to the user app by the CLI build step. The SDK reads it from disk at cold start; it is never carried in an env var. See 3.2. |
 | Building dependency artifacts (shared or per-handler) | CLI | Recorded on the target sub-manifest. |
 | Resolving `celerity.buildManifest` (context variable) to manifest bytes | Transformer | Variable holds either an absolute filesystem path or an `s3://` URL depending on the deploy engine. The transformer handles both forms; the CLI does not pre-resolve the URL. |
 | Emitting concrete provider resources, one per `celerity/handler` | Transformer | See the per-target contract for the concrete resource types. |
@@ -213,14 +213,14 @@ These three vars are the contract between the transformer and the SDK adapter th
 
 #### Resource link discovery (runtime configuration store)
 
-All entries below depend on section 3 and are populated from resolved outbound links; the table documents the final contract for the resource-link configuration store.
+All entries below depend on section 3. The **user-namespace** entries (`celerity/config` stores) are populated from resolved outbound links; the internal `resources` store's identifiers are set **directly by the transformer** as literals, not via a link (see the per-target contract for why). The table documents the final contract for the resource-link configuration store.
 
 The SDK discovers namespaces from the env-var names themselves (`celerity-node-sdk: packages/config/src/config-layer.ts`, `discoverNamespaces`). The transformer always uses the **per-namespace** `CELERITY_CONFIG_<NS>_*` form, including for the internal `resources` namespace, where `<NS>` is `RESOURCES`.
 
 | Env var | Injected by transformer | Source, value | Purpose |
 |---|---|---|---|
-| `CELERITY_CONFIG_RESOURCES_STORE_ID` | 🔗 on link | **link-provided** store identifier (a bluelink substitution resolved from the link to the store resource) | Points the SDK at the internal resource-links store. Namespace name resolves to `resources`, matching the SDK's `RESOURCE_CONFIG_NAMESPACE` (`packages/config/src/resource-links.ts`). |
-| `CELERITY_CONFIG_RESOURCES_STORE_KIND` | 🔗 on link | **transformer-emitted literal** naming the backend kind (see 3.1), not a link-resolved value | Selects which backend the SDK's `ConfigService` instantiates for the `resources` namespace. **Must be set explicitly**: when unset the SDK defaults a namespace to `secrets-manager`, not to the target's default. |
+| `CELERITY_CONFIG_RESOURCES_STORE_ID` | ❓ when the handler links a store-backed resource | **transformer-set literal**: the internal store's path prefix, set **directly** on the qualifying function — **not** via a link. The internal store is a shared-parent resource that cannot carry a link-selector label, so the transformer writes this env var itself (see the per-target contract). | Points the SDK at the internal resource-links store. Namespace name resolves to `resources`, matching the SDK's `RESOURCE_CONFIG_NAMESPACE` (`packages/config/src/resource-links.ts`). |
+| `CELERITY_CONFIG_RESOURCES_STORE_KIND` | ❓ when the handler links a store-backed resource | **transformer-emitted literal** naming the backend kind (see 3.1), `"parameter-store"` on `aws-serverless`; set directly on the function, not link-resolved | Selects which backend the SDK's `ConfigService` instantiates for the `resources` namespace. **Must be set explicitly**: when unset the SDK defaults a namespace to `secrets-manager`, not to the target's default. |
 | `CELERITY_CONFIG_<NS>_STORE_ID` | 🔗 on link, per `celerity/config` | **link-provided** store identifier for namespace `<NS>` | User namespaces declared via `celerity/config` resources. |
 | `CELERITY_CONFIG_<NS>_STORE_KIND` | 🔗 on link, per `celerity/config` | **transformer-emitted literal** naming the backend kind for namespace `<NS>` | Per-namespace backend choice. There is **no inheritance** from any global value; unset means `secrets-manager`. |
 | `CELERITY_CONFIG_<NS>_NAMESPACE` | 🔗 on link, per `celerity/config` | namespace name | Namespace name override, defaulting to the lowercase env-key suffix. |
@@ -251,13 +251,12 @@ The SDK discovers namespaces from the env-var names themselves (`celerity-node-s
 
 Blueprint authors write a **Celerity runtime identifier** in `spec.runtime`, not a cloud-native runtime string. The transformer is responsible for mapping that identifier to the value the target cloud provider expects in its concrete runtime field. The actual mapping table is per-target and lives in each target's contract (for `aws-serverless`, see [aws-serverless.md §6](aws-serverless.md#6-runtime-identifier-mapping-aws-serverless)).
 
-**Fallback policy** (shared across targets):
+**Resolution policy** (shared across targets):
 
-- An exact match in the mapping table is preferred.
-- If an exact match is not available (for example, the provider has deprecated the corresponding runtime since the mapping table was last updated), the transformer selects the nearest supported version on the same language track, records the substitution in a warning on the transform output, and proceeds.
-- If no substitution is available on the same language track, the transform fails fatally rather than emitting a resource that will be rejected at deploy time by the provider.
+- The mapping is an **exact lookup** in the per-target table. There is **no** nearest-version or same-language-track fallback: the transformer maps only identifiers it has an explicit table entry for.
+- An identifier with no matching table entry — unrecognised, or a runtime the current transformer version does not map for this target — is an **error**. The transformer emits an error diagnostic and does not emit a function for that handler.
 
-**Unknown identifiers** that don't match any known language track are a fatal transform error. The error message names the identifier, lists every identifier the current transformer version supports, and links to the "Runtimes" section of the upstream spec. Unknown-identifier errors are distinct from resolution-fallback warnings in log output so operators can tell the two apart at a glance.
+**Unknown or unmapped identifiers** are an error, not a silent substitution. The diagnostic names the identifier and the deploy target so operators can see immediately which runtime is unsupported.
 
 ---
 
@@ -295,7 +294,9 @@ There is **no env-var backend**. Lambda's 4 KB env-var cap (and analogous caps o
 
 ### 3.2 How the SDK finds values
 
-At cold start the SDK reads the routing map from `__celerity_resource_links__.json`, bundled next to the user app in the target's code asset by the CLI (see 1.4). For each DI token the map records `{type, configKey}` — `type` selects the resource layer the SDK instantiates, and `configKey` is the handle the SDK uses to fetch the actual value from the active backend.
+At cold start the SDK reads the routing map from the CLI-generated resource-links routing file, bundled next to the user app in the target's code asset by the CLI (see 1.4). For each DI token the map records `{type, configKey}` — `type` selects the resource layer the SDK instantiates, and `configKey` is the handle the SDK uses to fetch the actual value from the active backend.
+
+> **⚠️ Routing-file name discrepancy — resolve with the CLI.** This contract has historically referred to the routing file as `__celerity_resource_links__.json`, but the CLI's seed step actually writes **`resource-links.json`** (`celerity: apps/cli/internal/seed/resource_links.go`, `ResourceLinksFilename`), and a stale `__celerity_resource_links__.json` constant still lingers in `celerity: apps/cli/internal/build/types.go`. **The CLI owns and writes this file**, so its name is authoritative — the transformer never emits it. Wherever this document says `__celerity_resource_links__.json`, read it as "the CLI's routing file, currently `resource-links.json`". A human should reconcile the two CLI constants and align this contract to the single real name.
 
 **Backend selection**: `CELERITY_CONFIG_RESOURCES_STORE_KIND` tells the SDK which backend to instantiate for the `resources` namespace (see 3.1), and `CELERITY_CONFIG_RESOURCES_STORE_ID` points it at the concrete store. The SDK wires up exactly one backend implementation per namespace; the handler code above it is unchanged.
 
