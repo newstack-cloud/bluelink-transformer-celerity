@@ -23,8 +23,10 @@ func QueueToQueueLink() *transformerv1.AbstractLinkDefinition {
 		FormattedDescription: "The parent `celerity/queue` uses the linked-to `celerity/queue` as a " +
 			"dead-letter queue for messages that cannot be processed after the maximum number of " +
 			"attempts. On aws-serverless this maps to a redrive policy on the parent queue.",
-		// A queue uses at most one dead-letter queue.
-		CardinalityB: provider.LinkCardinality{Min: 0, Max: 1},
+		// A queue uses at most one dead-letter queue (a source-side outgoing limit).
+		// One dead-letter queue may still be shared by several source queues, so no
+		// incoming (CardinalityB) limit is placed on the DLQ.
+		CardinalityA: provider.LinkCardinality{Min: 0, Max: 1},
 		AnnotationDefinitions: map[string]*provider.LinkAnnotationDefinition{
 			"celerity/queue::" + queue.AnnotationKeyDeadLetterMaxAttempts: {
 				Name:      queue.AnnotationKeyDeadLetterMaxAttempts,
