@@ -624,6 +624,41 @@ func sqlAuthMode(r *ResolvedSQLDatabase) string {
 	return mode
 }
 
+// AuthTargetForHandler returns the concrete resource a handler links to for the
+// given celerity/sqlDatabase — the Aurora cluster when the Aurora path is enabled,
+// otherwise the RDS Proxy — together with the database's auth mode ("iam" or
+// "password"). The handler emit uses this to stamp the
+// aws.lambda.rds.<target>.authMode link annotation the provider consumes to grant
+// the function's execution role rds-db:connect in iam mode.
+func AuthTargetForHandler(
+	run *transformutils.Run,
+	dbAbstractName string,
+	dbSpec *core.MappingNode,
+) (target, mode string) {
+	mode = "password"
+	if node, ok := pluginutils.GetValueByPath("$.authMode", dbSpec); ok {
+		if value := core.StringValue(node); value != "" {
+			mode = value
+		}
+	}
+
+	// Aurora deploy config is keyed by the database's spec name (falling back to the
+	// abstract resource name), matching emitSQLDatabase.
+	configName := core.StringValue(mappingNodeAtPath(dbSpec, "$.name"))
+	if configName == "" {
+		configName = dbAbstractName
+	}
+	if core.BoolValue(auroraConfig(run, configName, "enabled")) {
+		return clusterResourceName(dbAbstractName), mode
+	}
+	return proxyResourceName(dbAbstractName), mode
+}
+
+func mappingNodeAtPath(spec *core.MappingNode, path string) *core.MappingNode {
+	node, _ := pluginutils.GetValueByPath(path, spec)
+	return node
+}
+
 func infraMeta(abstractName string) *schema.Metadata {
 	return &schema.Metadata{
 		Annotations: transformutils.TransformerBaseAnnotations(

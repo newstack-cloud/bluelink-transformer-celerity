@@ -180,6 +180,11 @@ func (e *awsServerlessEmitter) emit(
 	// elasticache:Connect.
 	stampCacheAnnotations(r, lambdaResource)
 
+	// Stamp the RDS authMode annotation for iam-mode SQL databases so the
+	// aws/lambda/function::aws/rds/dbProxy (or ::aws/rds/dbCluster) link grants
+	// the execution role rds-db:connect.
+	stampSQLDatabaseAnnotations(r, run, lambdaResource)
+
 	resources := map[string]*schema.Resource{
 		funcResourceName: lambdaResource,
 	}
