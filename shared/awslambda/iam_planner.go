@@ -1,6 +1,7 @@
 package awslambda
 
 import (
+	"fmt"
 	"strings"
 
 	"github.com/newstack-cloud/bluelink/libs/blueprint/core"
@@ -53,7 +54,34 @@ func inlinePolicies(plan *RolePlan) []*core.MappingNode {
 	if doc := externalSourcesPolicyDoc(plan.ExternalSources); doc != nil {
 		policies = append(policies, policyEntry("celerity-external-event-sources", doc))
 	}
+	if plan.ResourceLinksStorePath != "" {
+		policies = append(policies, policyEntry(
+			"celerity-resource-links-store",
+			resourceLinksStorePolicyDoc(plan.ResourceLinksStorePath),
+		))
+	}
 	return policies
+}
+
+// resourceLinksStorePolicyDoc grants read access to the internal resources
+// namespace config store, scoped to its SSM Parameter Store path prefix. The SDK
+// calls GetParametersByPath at runtime to resolve linked resources' physical ids.
+func resourceLinksStorePolicyDoc(path string) *core.MappingNode {
+	return core.MappingNodeFields(
+		"version", core.MappingNodeFromString(policyDocVersion),
+		"statement", core.MappingNodeItems(core.MappingNodeFields(
+			"effect", core.MappingNodeFromString("Allow"),
+			"action", core.MappingNodeFromStringSlice([]string{
+				"ssm:GetParametersByPath",
+				"ssm:GetParameters",
+				"ssm:GetParameter",
+			}),
+			"resource", core.MappingNodeFromStringSlice([]string{
+				fmt.Sprintf("arn:aws:ssm:*:*:parameter%s", path),
+				fmt.Sprintf("arn:aws:ssm:*:*:parameter%s/*", path),
+			}),
+		)),
+	)
 }
 
 func policyEntry(name string, document *core.MappingNode) *core.MappingNode {

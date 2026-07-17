@@ -192,3 +192,9 @@ func specGet(r *ResolvedBucket, path string) *core.MappingNode {
 func bucketConcreteName(name string) string {
 	return fmt.Sprintf("%s_s3_bucket", name)
 }
+
+// ConcreteResourceName is the concrete aws/s3/bucket resource name emitted for the
+// abstract bucket. Exported so the internal resources config store can reference it.
+func ConcreteResourceName(name string) string {
+	return bucketConcreteName(name)
+}

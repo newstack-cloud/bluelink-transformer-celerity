@@ -266,6 +266,13 @@ func datastoreConcreteName(name string) string {
 	return fmt.Sprintf("%s_dynamodb_table", name)
 }
 
+// ConcreteResourceName is the concrete aws/dynamodb/table resource name emitted for
+// the abstract datastore. Exported so the internal resources config store can
+// reference it.
+func ConcreteResourceName(name string) string {
+	return datastoreConcreteName(name)
+}
+
 // orderedSet is a small insertion-ordered string set used to collect key
 // attribute names without duplicates while preserving first-seen order.
 type orderedSet struct {

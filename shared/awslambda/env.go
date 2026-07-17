@@ -14,8 +14,16 @@ type EnvInput struct {
 	RoutingTag    string
 	HasRoutingTag bool
 	Tracing       bool
-	UserEnv       map[string]*core.MappingNode
+	// ResourceLinksStorePath is the SSM Parameter Store path prefix of the internal
+	// resources namespace config store, set for handlers that link to at least one
+	// backing resource the SDK resolves through the store. Empty otherwise.
+	ResourceLinksStorePath string
+	UserEnv                map[string]*core.MappingNode
 }
+
+// ResourceLinksStoreKind is the config-store kind vocabulary value for the internal
+// resources namespace store; it is always AWS Systems Manager Parameter Store.
+const ResourceLinksStoreKind = "parameter-store"
 
 func BuildEnvironmentVariables(input *EnvInput) *core.MappingNode {
 	vars := map[string]*core.MappingNode{
@@ -29,7 +37,14 @@ func BuildEnvironmentVariables(input *EnvInput) *core.MappingNode {
 		vars["CELERITY_HANDLER_TAG"] = core.MappingNodeFromString(input.RoutingTag)
 	}
 
-	// 3. Config-store discovery — Stage 5 (needs aws.configStore.* keys + outbound-link gating)
+	// Internal resources namespace config store discovery: the SDK reads the store
+	// at CELERITY_CONFIG_RESOURCES_STORE_ID (the path prefix) using the backend named
+	// by CELERITY_CONFIG_RESOURCES_STORE_KIND to resolve linked resources' physical
+	// ids at runtime. Only set for handlers with backing resource links.
+	if input.ResourceLinksStorePath != "" {
+		vars["CELERITY_CONFIG_RESOURCES_STORE_ID"] = core.MappingNodeFromString(input.ResourceLinksStorePath)
+		vars["CELERITY_CONFIG_RESOURCES_STORE_KIND"] = core.MappingNodeFromString(ResourceLinksStoreKind)
+	}
 
 	if input.Tracing {
 		vars["CELERITY_TELEMETRY_ENABLED"] = core.MappingNodeFromString("true")

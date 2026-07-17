@@ -34,6 +34,11 @@ type RolePlan struct {
 	// seed grants it; they are part of the fingerprint so a handler with external
 	// sources never shares a role with one that lacks them.
 	ExternalSources []ExternalEventSource `json:"externalSources,omitempty"`
+	// ResourceLinksStorePath is the SSM Parameter Store path prefix of the internal
+	// resources namespace config store. When set, the seed grants the role read
+	// access to that path (no provider link does); it is part of the fingerprint so a
+	// handler that reads the store never shares a role with one that does not.
+	ResourceLinksStorePath string `json:"resourceLinksStorePath,omitempty"`
 }
 
 // ExternalEventSource identifies one out-of-blueprint event source that the
