@@ -218,3 +218,9 @@ func queueName(name string, fifo bool) string {
 func queueConcreteName(name string) string {
 	return fmt.Sprintf("%s_sqs_queue", name)
 }
+
+// ConcreteResourceName is the concrete aws/sqs/queue resource name emitted for the
+// abstract queue. Exported so the internal resources config store can reference it.
+func ConcreteResourceName(name string) string {
+	return queueConcreteName(name)
+}

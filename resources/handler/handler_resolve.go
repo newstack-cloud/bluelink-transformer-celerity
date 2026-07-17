@@ -64,6 +64,17 @@ type ResolvedHandler struct {
 	TracingEnabled bool
 	// memoised AWS serverless role plan.
 	rolePlan *awslambda.RolePlan
+	// resourceLinksStorePath is the internal resources config store's SSM path prefix,
+	// set when the handler links to a backing resource resolved through the store
+	// (queue/topic/datastore/bucket). Drives the store env vars and the role's
+	// store-read grant; empty when the handler has no such links.
+	resourceLinksStorePath string
+}
+
+// hasResourceLinks reports whether the handler links to any backing resource whose
+// physical id is resolved at runtime through the internal resources config store.
+func hasResourceLinks(r *ResolvedHandler) bool {
+	return len(r.Queues)+len(r.Topics)+len(r.Datastores)+len(r.Buckets) > 0
 }
 
 func (h *ResolvedHandler) ResourceName() string {
@@ -120,9 +131,10 @@ func buildAWSRolePlan(r *ResolvedHandler) awslambda.RolePlan {
 	}
 
 	return awslambda.RolePlan{
-		Links:   links,
-		Tracing: r.TracingEnabled,
-		VPC:     subnetType,
+		Links:                  links,
+		Tracing:                r.TracingEnabled,
+		VPC:                    subnetType,
+		ResourceLinksStorePath: r.resourceLinksStorePath,
 		// External event sources (standalone ESMs) have no provider link to inject
 		// source-read IAM, so the seed grants it. Folding them into the plan also
 		// keeps the fingerprint (hence role sharing) sensitive to them.
@@ -154,6 +166,12 @@ func resolveHandler(
 	// Classify each absorbed consumer's event source now that all inbound consumer
 	// links are collected; the emit reads these bindings to wire the triggers.
 	resolveConsumerBindings(resolved, linkGraph, blueprint)
+
+	// Once backing links are known, record the internal resources config store path
+	// so the role plan grants store-read and the emit sets the store env vars.
+	if hasResourceLinks(resolved) {
+		resolved.resourceLinksStorePath = shared.ResourceLinksStorePath(run)
+	}
 
 	err := resolveInheritedSpec(resolved, blueprint)
 	if err != nil {

@@ -71,14 +71,15 @@ func (e *awsServerlessEmitter) emit(
 	timeout, _ := pluginutils.GetValueByPath("$.timeout", r.Resource.Spec)
 
 	envInput := &awslambda.EnvInput{
-		Platform:      shared.PlatformAWS,
-		DeployTarget:  shared.AWSServerless,
-		HandlerID:     handlerID,
-		EventSource:   string(r.EventSource),
-		RoutingTag:    r.RoutingTag,
-		HasRoutingTag: r.HasRoutingTag,
-		Tracing:       r.TracingEnabled,
-		UserEnv:       userEnvMap(r),
+		Platform:               shared.PlatformAWS,
+		DeployTarget:           shared.AWSServerless,
+		HandlerID:              handlerID,
+		EventSource:            string(r.EventSource),
+		RoutingTag:             r.RoutingTag,
+		HasRoutingTag:          r.HasRoutingTag,
+		Tracing:                r.TracingEnabled,
+		ResourceLinksStorePath: r.resourceLinksStorePath,
+		UserEnv:                userEnvMap(r),
 	}
 	spec := core.MappingNodeFields(
 		"functionName", name,
