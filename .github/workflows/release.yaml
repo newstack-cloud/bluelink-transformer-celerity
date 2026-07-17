@@ -87,7 +87,7 @@ jobs:
           cache: true
       - name: Install svu binary
         if: ${{ steps.check-merge.outputs.release_merged == 'false' }}
-        run: go install github.com/caarlos0/svu@latest
+        run: go install github.com/caarlos0/svu@v1.12.0
 
       - name: Determine version
         if: ${{ steps.check-merge.outputs.release_merged == 'false' }}
@@ -216,35 +216,44 @@ jobs:
           fetch-depth: 0
       - name: Resolve Version
         id: version
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          INPUT_VERSION: ${{ inputs.version }}
+          PREP_TAG: ${{ needs.prepare-release.outputs.tag }}
+          PREP_VERSION: ${{ needs.prepare-release.outputs.version }}
+          PREP_PRERELEASE: ${{ needs.prepare-release.outputs.prerelease }}
         run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            echo "tag=v${{ inputs.version }}" >> "$GITHUB_OUTPUT"
-            echo "version=${{ inputs.version }}" >> "$GITHUB_OUTPUT"
+          if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+            echo "tag=v$INPUT_VERSION" >> "$GITHUB_OUTPUT"
+            echo "version=$INPUT_VERSION" >> "$GITHUB_OUTPUT"
             # Detect pre-release from version string
-            if echo "${{ inputs.version }}" | grep -qE '\-'; then
+            if echo "$INPUT_VERSION" | grep -qE '\-'; then
               echo "prerelease=true" >> "$GITHUB_OUTPUT"
             else
               echo "prerelease=false" >> "$GITHUB_OUTPUT"
             fi
           else
-            echo "tag=${{ needs.prepare-release.outputs.tag }}" >> "$GITHUB_OUTPUT"
-            echo "version=${{ needs.prepare-release.outputs.version }}" >> "$GITHUB_OUTPUT"
-            echo "prerelease=${{ needs.prepare-release.outputs.prerelease }}" >> "$GITHUB_OUTPUT"
+            echo "tag=$PREP_TAG" >> "$GITHUB_OUTPUT"
+            echo "version=$PREP_VERSION" >> "$GITHUB_OUTPUT"
+            echo "prerelease=$PREP_PRERELEASE" >> "$GITHUB_OUTPUT"
           fi
       - name: Checkout release tag
-        run: git checkout "${{ steps.version.outputs.tag }}"
+        env:
+          TAG: ${{ steps.version.outputs.tag }}
+        run: git checkout "$TAG"
       - uses: actions/setup-go@v6
         with:
           go-version-file: 'go.mod'
           cache: true
       - name: Install Plugin Docgen Tool
         run: |
-          go install github.com/newstack-cloud/bluelink/tools/plugin-docgen/cmd/bluelink-plugin-docgen@latest
+          go install github.com/newstack-cloud/bluelink/tools/plugin-docgen/cmd/bluelink-plugin-docgen@v0.3.0
       - name: Build Transformer for Docgen
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
         run: |
-          VERSION="${{ steps.version.outputs.version }}"
-          mkdir -p /tmp/bluelink/plugins/transformers/newstack-cloud/celerity/$VERSION
-          go build -ldflags "-X main.version=$VERSION" -o /tmp/bluelink/plugins/transformers/newstack-cloud/celerity/$VERSION/plugin .
+          mkdir -p "/tmp/bluelink/plugins/transformers/newstack-cloud/celerity/$VERSION"
+          go build -ldflags "-X main.version=$VERSION" -o "/tmp/bluelink/plugins/transformers/newstack-cloud/celerity/$VERSION/plugin" .
       - name: Generate Plugin JSON Docs
         run: |
           bluelink-plugin-docgen -plugin=newstack-cloud/celerity
