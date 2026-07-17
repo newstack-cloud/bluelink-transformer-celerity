@@ -4,6 +4,7 @@ package transformer
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -897,14 +898,26 @@ func resourceRefNameAndPath(node *core.MappingNode) (string, []string) {
 }
 
 type linkEdge struct {
-	source     string
-	target     string
-	sourceType string
-	targetType string
+	source       string
+	target       string
+	sourceType   string
+	targetType   string
+	selectorKeys []string
 }
 
 func edge(source, target, sourceType, targetType string) linkEdge {
 	return linkEdge{source: source, target: target, sourceType: sourceType, targetType: targetType}
+}
+
+// edgeWithLabels builds an edge carrying the matched label selector keys (in the
+// "label::<key>:<value>" form the blueprint produces), for links whose emit reads
+// them (for example queue->topic forwarding).
+func edgeWithLabels(source, target, sourceType, targetType string, labels map[string]string) linkEdge {
+	e := edge(source, target, sourceType, targetType)
+	for key, value := range labels {
+		e.selectorKeys = append(e.selectorKeys, fmt.Sprintf("label::%s:%s", key, value))
+	}
+	return e
 }
 
 // edgeLinkGraph is a general-purpose DeclaredLinkGraph built from a list of edges.
@@ -921,10 +934,11 @@ func (g edgeLinkGraph) resolved(filter func(linkEdge) bool) []*linktypes.Resolve
 	for _, e := range g.list {
 		if filter(e) {
 			links = append(links, &linktypes.ResolvedLink{
-				Source:     e.source,
-				Target:     e.target,
-				SourceType: e.sourceType,
-				TargetType: e.targetType,
+				Source:       e.source,
+				Target:       e.target,
+				SourceType:   e.sourceType,
+				TargetType:   e.targetType,
+				SelectorKeys: e.selectorKeys,
 			})
 		}
 	}

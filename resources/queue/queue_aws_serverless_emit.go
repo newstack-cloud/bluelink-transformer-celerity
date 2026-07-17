@@ -90,20 +90,35 @@ func emitQueue(
 		Type:     &schema.ResourceTypeWrapper{Value: "aws/sqs/queue"},
 		Spec:     spec,
 		Metadata: queueMetadata(r),
-		// Preserve the abstract queue's linkSelector so a dead-letter
-		// (queue -> queue) relationship still resolves against the concrete
-		// resources by label.
-		LinkSelector: r.Resource.LinkSelector,
+		// Preserve the abstract queue's linkSelector (so a dead-letter queue -> queue
+		// relationship still resolves) augmented with a synthetic forward label per
+		// topic-forwarding edge so the source queue triggers each intermediary
+		// forwarder.
+		LinkSelector: queueLinkSelectorWithForwards(r),
 	}
 
 	// Translate any celerity.queue.bucket.* notification config into the provider
 	// aws.s3.sqs.* annotations the aws/s3/bucket::aws/sqs/queue link consumes.
 	diagnostics := stampBucketNotifications(r, res.Metadata)
 
+	resources := map[string]*schema.Resource{
+		queueConcreteName(r.Name): res,
+	}
+
+	// Emit an intermediary forwarder (function + role) per celerity/topic edge; the
+	// queue has no native SQS->SNS forwarding on AWS.
+	for _, edge := range r.TopicForwards {
+		forwarder, err := buildTopicForwarder(r.Name, edge)
+		if err != nil {
+			return nil, err
+		}
+		for name, resource := range forwarder {
+			resources[name] = resource
+		}
+	}
+
 	return &transformutils.EmitResult{
-		Resources: map[string]*schema.Resource{
-			queueConcreteName(r.Name): res,
-		},
+		Resources:   resources,
 		Diagnostics: diagnostics,
 	}, nil
 }
