@@ -175,6 +175,28 @@ func (s *TransformTestSuite) transformOneHandler() *transform.SpecTransformerTra
 	return out
 }
 
+// A build-manifest path that is set but cannot be loaded (missing/unreadable) must
+// not abort the transform: per the fallback contract it continues without the
+// manifest, emitting a syntactically valid function with no code asset so that
+// validation and dry-run can run before "celerity build".
+func (s *TransformTestSuite) Test_unloadable_manifest_path_is_not_fatal() {
+	out, err := NewTransformer(manifestDeps()).Transform(
+		context.Background(),
+		&transform.SpecTransformerTransformInput{
+			InputBlueprint:     oneHandlerBlueprint(),
+			LinkGraph:          emptyLinkGraph{},
+			TransformerContext: transformContext(filepath.Join(s.T().TempDir(), "does-not-exist.json")),
+		},
+	)
+	s.Require().NoError(err, "an unloadable manifest path must not fail the transform")
+	s.Require().NotNil(out.TransformedBlueprint)
+
+	lambda := out.TransformedBlueprint.Resources.Values["myHandler_lambda_func"]
+	s.Require().NotNil(lambda)
+	// No manifest -> no code asset reference is emitted.
+	s.Nil(lambda.Spec.Fields["code"], "no code asset should be emitted without a manifest")
+}
+
 func TestTransformTestSuite(t *testing.T) {
 	suite.Run(t, new(TransformTestSuite))
 }
