@@ -2,7 +2,6 @@ package transformer
 
 import (
 	"context"
-	"fmt"
 
 	"github.com/newstack-cloud/bluelink-transformer-celerity/shared"
 	"github.com/newstack-cloud/bluelink/libs/blueprint/core"
@@ -26,11 +25,15 @@ func createRunHook(deps *shared.Dependencies) func(ctx context.Context, run *tra
 			run.TransformContext,
 		)
 		if err != nil {
-			return fmt.Errorf(
-				"failed to load build manifest from path %q: %w",
-				core.StringValueFromScalar(path),
-				err,
-			)
+			// The manifest path is set but the manifest cannot be obtained (missing or
+			// unreadable file, failed remote fetch). Per the build-manifest fallback
+			// contract, this is not fatal: the transform continues without the manifest
+			// so the handler emit produces syntactically valid resources without the
+			// code-asset/entry-point references and surfaces a per-handler warning
+			// (see loadCodeLocationInfo). This lets validation and dry-run/plan run
+			// before "celerity build" has produced a manifest. OnRun has no diagnostic
+			// channel, so the warning is carried by the downstream emit.
+			return nil
 		}
 
 		// Provide the manifest to the run; transformutils.Use retrieves it later
