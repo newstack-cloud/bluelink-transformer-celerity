@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/newstack-cloud/bluelink-transformer-celerity/shared"
+	sharedaws "github.com/newstack-cloud/bluelink-transformer-celerity/shared/aws"
 	"github.com/newstack-cloud/bluelink-transformer-celerity/shared/awslambda"
 	"github.com/newstack-cloud/bluelink/libs/blueprint/core"
 	"github.com/newstack-cloud/bluelink/libs/blueprint/schema"
@@ -402,14 +403,7 @@ func splitAndTrim(value string) []string {
 }
 
 func s3EventForConsumerEvent(consumerEvent string) (string, bool) {
-	switch consumerEvent {
-	case "created":
-		return "s3:ObjectCreated:*", true
-	case "deleted":
-		return "s3:ObjectRemoved:*", true
-	default:
-		return "", false
-	}
+	return sharedaws.S3EventForCelerityEvent(consumerEvent)
 }
 
 // Builds one aws/events/rule per absorbed schedule, targeting the emitted function.

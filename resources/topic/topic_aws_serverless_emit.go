@@ -69,11 +69,40 @@ func emitTopic(
 		LinkSelector: r.Resource.LinkSelector,
 	}
 
+	// Translate any celerity.topic.bucket.* notification config into the provider
+	// aws.s3.sns.* annotations the aws/s3/bucket::aws/sns/topic link consumes.
+	diagnostics := stampBucketNotifications(r, res.Metadata)
+
 	return &transformutils.EmitResult{
 		Resources: map[string]*schema.Resource{
 			topicConcreteName(r.Name): res,
 		},
+		Diagnostics: diagnostics,
 	}, nil
+}
+
+// stampBucketNotifications maps the topic's celerity.topic.bucket.{events,
+// filterPrefix,filterSuffix} annotations onto the emitted topic's aws.s3.sns.*
+// provider annotations, warning for any event with no S3 equivalent.
+func stampBucketNotifications(r *ResolvedTopic, meta *schema.Metadata) []*core.Diagnostic {
+	unsupported := sharedaws.StampBucketNotifications(r.Resource, meta, sharedaws.BucketNotificationKeys{
+		CelerityEvents:       AnnotationKeyBucketEvents,
+		CelerityFilterPrefix: AnnotationKeyBucketFilterPrefix,
+		CelerityFilterSuffix: AnnotationKeyBucketFilterSuffix,
+		ProviderPrefix:       "aws.s3.sns",
+	})
+	var diagnostics []*core.Diagnostic
+	for _, event := range unsupported {
+		diagnostics = append(diagnostics, &core.Diagnostic{
+			Level: core.DiagnosticLevelWarning,
+			Message: fmt.Sprintf(
+				"celerity/topic %q requests bucket notification event %q, which has no aws-serverless "+
+					"(S3) equivalent and is ignored; use created or deleted",
+				r.Name, event,
+			),
+		})
+	}
+	return diagnostics
 }
 
 // topicMetadata carries the abstract topic's labels through to the concrete

@@ -96,11 +96,40 @@ func emitQueue(
 		LinkSelector: r.Resource.LinkSelector,
 	}
 
+	// Translate any celerity.queue.bucket.* notification config into the provider
+	// aws.s3.sqs.* annotations the aws/s3/bucket::aws/sqs/queue link consumes.
+	diagnostics := stampBucketNotifications(r, res.Metadata)
+
 	return &transformutils.EmitResult{
 		Resources: map[string]*schema.Resource{
 			queueConcreteName(r.Name): res,
 		},
+		Diagnostics: diagnostics,
 	}, nil
+}
+
+// stampBucketNotifications maps the queue's celerity.queue.bucket.{events,
+// filterPrefix,filterSuffix} annotations onto the emitted queue's aws.s3.sqs.*
+// provider annotations, warning for any event with no S3 equivalent.
+func stampBucketNotifications(r *ResolvedQueue, meta *schema.Metadata) []*core.Diagnostic {
+	unsupported := sharedaws.StampBucketNotifications(r.Resource, meta, sharedaws.BucketNotificationKeys{
+		CelerityEvents:       AnnotationKeyBucketEvents,
+		CelerityFilterPrefix: AnnotationKeyBucketFilterPrefix,
+		CelerityFilterSuffix: AnnotationKeyBucketFilterSuffix,
+		ProviderPrefix:       "aws.s3.sqs",
+	})
+	var diagnostics []*core.Diagnostic
+	for _, event := range unsupported {
+		diagnostics = append(diagnostics, &core.Diagnostic{
+			Level: core.DiagnosticLevelWarning,
+			Message: fmt.Sprintf(
+				"celerity/queue %q requests bucket notification event %q, which has no aws-serverless "+
+					"(S3) equivalent and is ignored; use created or deleted",
+				r.Name, event,
+			),
+		})
+	}
+	return diagnostics
 }
 
 // Carries the abstract queue's labels through to the concrete resource (so a

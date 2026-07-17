@@ -4,6 +4,7 @@ package transformer
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/newstack-cloud/bluelink-transformer-celerity/shared"
@@ -183,6 +184,90 @@ func (s *QueueTransformTestSuite) Test_deploy_config_sets_retention_and_max_size
 	s.Require().NotNil(sqs)
 	s.Equal(600, core.IntValue(sqs.Spec.Fields["messageRetentionPeriod"]))
 	s.Equal(1024, core.IntValue(sqs.Spec.Fields["maximumMessageSize"]))
+}
+
+// A queue receiving bucket notifications maps its celerity.queue.bucket.* config
+// onto the provider aws.s3.sqs.* annotations the aws/s3/bucket::aws/sqs/queue link
+// consumes: one aws.s3.sqs.event.<index> per mapped event, plus filter prefix/suffix.
+func (s *QueueTransformTestSuite) Test_bucket_notification_events_and_filters_are_stamped() {
+	q := &schema.Resource{
+		Type: &schema.ResourceTypeWrapper{Value: "celerity/queue"},
+		Spec: core.MappingNodeFields("name", core.MappingNodeFromString("orders")),
+		Metadata: &schema.Metadata{
+			Annotations: &schema.StringOrSubstitutionsMap{
+				Values: map[string]*substitutions.StringOrSubstitutions{
+					"celerity.queue.bucket.events":       literalAnnotation("created,deleted"),
+					"celerity.queue.bucket.filterPrefix": literalAnnotation("incoming/"),
+					"celerity.queue.bucket.filterSuffix": literalAnnotation(".json"),
+				},
+			},
+		},
+	}
+
+	resources := s.transform(map[string]*schema.Resource{"myQueue": q})
+	sqs := resources["myQueue_sqs_queue"]
+	s.Require().NotNil(sqs)
+
+	s.Equal("s3:ObjectCreated:*", annotationLiteral(sqs.Metadata.Annotations, "aws.s3.sqs.event.0"))
+	s.Equal("s3:ObjectRemoved:*", annotationLiteral(sqs.Metadata.Annotations, "aws.s3.sqs.event.1"))
+	s.Equal("incoming/", annotationLiteral(sqs.Metadata.Annotations, "aws.s3.sqs.filterPrefix"))
+	s.Equal(".json", annotationLiteral(sqs.Metadata.Annotations, "aws.s3.sqs.filterSuffix"))
+}
+
+// A queue with no bucket-notification annotations stamps no aws.s3.sqs.* keys, so
+// the provider applies its default event set.
+func (s *QueueTransformTestSuite) Test_no_bucket_notification_config_stamps_nothing() {
+	q := &schema.Resource{
+		Type: &schema.ResourceTypeWrapper{Value: "celerity/queue"},
+		Spec: core.MappingNodeFields("name", core.MappingNodeFromString("orders")),
+	}
+
+	resources := s.transform(map[string]*schema.Resource{"myQueue": q})
+	sqs := resources["myQueue_sqs_queue"]
+	s.Require().NotNil(sqs)
+	s.Nil(sqs.Metadata.Annotations.Values["aws.s3.sqs.event.0"])
+	s.Nil(sqs.Metadata.Annotations.Values["aws.s3.sqs.filterPrefix"])
+}
+
+// An unmappable bucket event (metadataUpdated) is not stamped and surfaces a
+// warning rather than being silently dropped.
+func (s *QueueTransformTestSuite) Test_unsupported_bucket_event_warns() {
+	q := &schema.Resource{
+		Type: &schema.ResourceTypeWrapper{Value: "celerity/queue"},
+		Spec: core.MappingNodeFields("name", core.MappingNodeFromString("orders")),
+		Metadata: &schema.Metadata{
+			Annotations: &schema.StringOrSubstitutionsMap{
+				Values: map[string]*substitutions.StringOrSubstitutions{
+					"celerity.queue.bucket.events": literalAnnotation("created,metadataUpdated"),
+				},
+			},
+		},
+	}
+
+	bp := &schema.Blueprint{Resources: &schema.ResourceMap{Values: map[string]*schema.Resource{"myQueue": q}}}
+	out, err := NewTransformer(&shared.Dependencies{}).Transform(
+		context.Background(),
+		&transform.SpecTransformerTransformInput{
+			InputBlueprint:     bp,
+			LinkGraph:          emptyLinkGraph{},
+			TransformerContext: validationContext(),
+		},
+	)
+	s.Require().NoError(err)
+
+	sqs := out.TransformedBlueprint.Resources.Values["myQueue_sqs_queue"]
+	s.Require().NotNil(sqs)
+	// created is still stamped at index 0; metadataUpdated is dropped, not stamped.
+	s.Equal("s3:ObjectCreated:*", annotationLiteral(sqs.Metadata.Annotations, "aws.s3.sqs.event.0"))
+	s.Nil(sqs.Metadata.Annotations.Values["aws.s3.sqs.event.1"])
+
+	found := false
+	for _, d := range out.Diagnostics {
+		if d.Level == core.DiagnosticLevelWarning && strings.Contains(d.Message, "metadataUpdated") {
+			found = true
+		}
+	}
+	s.True(found, "expected a warning about the unmappable metadataUpdated event")
 }
 
 func (s *QueueTransformTestSuite) transform(
