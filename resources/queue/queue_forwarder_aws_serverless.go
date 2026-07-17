@@ -2,6 +2,7 @@ package queue
 
 import (
 	"fmt"
+	"maps"
 	"sort"
 
 	"github.com/newstack-cloud/bluelink-transformer-celerity/resources/topic"
@@ -123,9 +124,7 @@ func buildTopicForwarder(queueName string, edges []*TopicForwardEdge) (map[strin
 	// the inline handler discovers by prefix.
 	selectorLabels := map[string]string{}
 	for index, edge := range sorted {
-		for key, value := range edge.SelectorLabels {
-			selectorLabels[key] = value
-		}
+		maps.Copy(selectorLabels, edge.SelectorLabels)
 		envVarNameKey := fmt.Sprintf("aws.lambda.sns.%s.envVarName", topic.ConcreteResourceName(edge.TopicName))
 		funcMeta.Annotations.Values[envVarNameKey] = pluginutils.StringToSubstitutions(
 			fmt.Sprintf("%s_%d", forwardTopicEnvVarPrefix, index))
@@ -148,7 +147,17 @@ func buildTopicForwarder(queueName string, edges []*TopicForwardEdge) (map[strin
 		},
 	}
 
-	roleRes := &schema.Resource{
+	return map[string]*schema.Resource{
+		funcName: funcRes,
+		roleName: buildForwarderRole(queueName, roleName),
+	}, nil
+}
+
+// buildForwarderRole is the forwarder's base execution role. Both provider links
+// (sqs::function, function::sns) inject the SQS-receive and sns:Publish grants at
+// deploy, so no inline policy is seeded.
+func buildForwarderRole(queueName, roleName string) *schema.Resource {
+	return &schema.Resource{
 		Type: &schema.ResourceTypeWrapper{Value: "aws/iam/role"},
 		Spec: awslambda.SeedRoleSpec(roleName, &awslambda.RolePlan{}),
 		Metadata: &schema.Metadata{
@@ -161,11 +170,6 @@ func buildTopicForwarder(queueName string, edges []*TopicForwardEdge) (map[strin
 			),
 		},
 	}
-
-	return map[string]*schema.Resource{
-		funcName: funcRes,
-		roleName: roleRes,
-	}, nil
 }
 
 // queueLinkSelectorWithForwards returns the source queue's link selector augmented
@@ -181,9 +185,7 @@ func queueLinkSelectorWithForwards(r *ResolvedQueue) *schema.LinkSelector {
 	}
 	labels := map[string]string{}
 	if r.Resource.LinkSelector != nil && r.Resource.LinkSelector.ByLabel != nil {
-		for key, value := range r.Resource.LinkSelector.ByLabel.Values {
-			labels[key] = value
-		}
+		maps.Copy(labels, r.Resource.LinkSelector.ByLabel.Values)
 	}
 	labels[forwardLabelKey(r.Name)] = "true"
 	return &schema.LinkSelector{ByLabel: &schema.StringMap{Values: labels}}
@@ -195,9 +197,7 @@ func queueLinkSelectorWithForwards(r *ResolvedQueue) *schema.LinkSelector {
 func forwardSelectorLabels(edges []*TopicForwardEdge) map[string]string {
 	labels := map[string]string{}
 	for _, edge := range edges {
-		for key, value := range edge.SelectorLabels {
-			labels[key] = value
-		}
+		maps.Copy(labels, edge.SelectorLabels)
 	}
 	return labels
 }
