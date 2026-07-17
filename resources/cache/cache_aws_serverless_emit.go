@@ -69,129 +69,26 @@ func emitCache(
 		name = r.Name
 	}
 
-	// Preset-suitability validation: a managed VPC must provide private subnets.
-	// Referenced VPCs have unknown topology at transform time — the provider's
-	// subnet-group validation covers those at plan time.
-	if r.VPCName != "" && !r.VPCReferenced {
-		if _, noPrivate := presetsWithoutPrivateSubnets[r.VPCPreset]; noPrivate {
-			return &transformutils.EmitResult{
-				Diagnostics: []*core.Diagnostic{
-					{
-						Level: core.DiagnosticLevelError,
-						Message: fmt.Sprintf(
-							"celerity/cache %q requires private subnets, but its placement VPC preset %q "+
-								"provides none; use a preset with private subnets (standard, isolated, or light)",
-							name, r.VPCPreset,
-						),
-					},
-				},
-			}, nil
-		}
+	if diag := cachePresetSuitabilityError(r, name); diag != nil {
+		return &transformutils.EmitResult{Diagnostics: []*core.Diagnostic{diag}}, nil
 	}
 
-	var diagnostics []*core.Diagnostic
 	resources := map[string]*schema.Resource{}
-
-	// Engine is fixed to Valkey for v0; honour spec.engine if a future schema
-	// exposes it, otherwise default. engineVersion default 8.2 is injected here
-	// (resolver-owns-defaults), not via a schema Default.
-	engine := core.StringValue(specGet(r, "$.engine"))
-	if engine == "" {
-		engine = defaultEngine
-	}
-	engineVersion := core.StringValue(specGet(r, "$.engineVersion"))
-	if engineVersion == "" {
-		engineVersion = defaultEngineVersion
-	}
-
+	engine := cacheEngine(r)
 	clusterMode := core.BoolValue(specGet(r, "$.clusterMode"))
 
-	rgSpec := core.MappingNodeFields(
-		"replicationGroupId", core.MappingNodeFromString(name),
-		"replicationGroupDescription", core.MappingNodeFromString(fmt.Sprintf("Celerity cache %s", name)),
-		"engine", core.MappingNodeFromString(engine),
-		"engineVersion", core.MappingNodeFromString(engineVersion),
-		"transitEncryptionEnabled", core.MappingNodeFromBool(true),
-		"port", core.MappingNodeFromInt(defaultCachePort),
-	)
-	// clusterMode selects the shard/replica topology. numShards applies only in
-	// cluster mode; numReplicas (replicas per shard) applies to both.
-	if clusterMode {
-		rgSpec.Fields["numNodeGroups"] = core.MappingNodeFromInt(
-			elasticacheConfigInt(run, name, "numShards", defaultClusterShards))
-	} else {
-		rgSpec.Fields["numNodeGroups"] = core.MappingNodeFromInt(1)
-	}
-	rgSpec.Fields["replicasPerNodeGroup"] = core.MappingNodeFromInt(
-		elasticacheConfigInt(run, name, "numReplicas", defaultReplicasPerNodeGroup))
+	rgSpec := replicationGroupBaseSpec(r, run, name, engine, clusterMode)
 
-	if r.VPCName != "" {
-		vpcConcrete := vpc.ConcreteResourceName(r.VPCName)
-		subnetGroupName := fmt.Sprintf("%s-cache-subnets", name)
-
-		subnetIdsRef, err := shared.SubstitutionMappingNode(
-			fmt.Sprintf("${resources.%s.spec.privateSubnetIds}", vpcConcrete))
-		if err != nil {
-			return nil, err
-		}
-		sgRef, err := shared.SubstitutionMappingNode(
-			fmt.Sprintf("${resources.%s.spec.securityGroups}", vpcConcrete))
-		if err != nil {
-			return nil, err
-		}
-
-		resources[subnetGroupResourceName(r.Name)] = &schema.Resource{
-			Type: &schema.ResourceTypeWrapper{Value: "aws/elasticache/subnetGroup"},
-			Spec: core.MappingNodeFields(
-				"cacheSubnetGroupName", core.MappingNodeFromString(subnetGroupName),
-				"description", core.MappingNodeFromString(fmt.Sprintf("Subnets for Celerity cache %s", name)),
-				"subnetIds", subnetIdsRef,
-			),
-			Metadata: infraMeta(r.Name),
-		}
-		rgSpec.Fields["cacheSubnetGroupName"] = core.MappingNodeFromString(subnetGroupName)
-		rgSpec.Fields["securityGroupIds"] = sgRef
-	} else {
-		diagnostics = append(diagnostics, &core.Diagnostic{
-			Level: core.DiagnosticLevelWarning,
-			Message: fmt.Sprintf(
-				"celerity/cache %q is not linked to a celerity/vpc; caches require VPC placement for "+
-					"secure network access",
-				name,
-			),
-		})
+	var diagnostics []*core.Diagnostic
+	if diag, err := applyVPCPlacement(r, name, rgSpec, resources); err != nil {
+		return nil, err
+	} else if diag != nil {
+		diagnostics = append(diagnostics, diag)
 	}
 
-	// transitEncryption is already set on the RG (required for both Redis AUTH and
-	// RBAC). password mode provisions an auth-token secret; iam mode provisions
-	// RBAC user groups.
-	rgLinkSelector := r.Resource.LinkSelector
-	if cacheAuthMode(r) == "iam" {
-		// iam mode: ElastiCache RBAC. Emit an IAM-authenticated user and a user
-		// group that contains it plus the managed "default" user (required in
-		// every RBAC user group), then attach the group to the replication
-		// group. No stored secret is needed — the client generates a short-lived
-		// SigV4 token from IAM credentials. The handler that links to the cache
-		// stamps aws.lambda.elasticache.<rg>.authMode=iam so the
-		// function::replicationGroup link creates the elasticache:Connect grant.
-		userRes, groupRes, err := buildIAMUserAndGroup(r, name, engine)
-		if err != nil {
-			return nil, err
-		}
-		resources[iamUserResourceName(r.Name)] = userRes
-		resources[userGroupResourceName(r.Name)] = groupRes
-
-		userGroupRef, err := shared.SubstitutionMappingNode(
-			fmt.Sprintf("${resources.%s.spec.userGroupId}", userGroupResourceName(r.Name)))
-		if err != nil {
-			return nil, err
-		}
-		rgSpec.Fields["userGroupIds"] = core.MappingNodeItems(userGroupRef)
-	} else {
-		resources[authSecretResourceName(r.Name)] = buildAuthSecret(r, name)
-		// Activate the replicationGroup::secret link: the RG selects the auth
-		// secret by its distinctive label (merged with any existing selector).
-		rgLinkSelector = mergeLinkSelectorLabel(r.Resource.LinkSelector, cacheAuthLabelKey, name)
+	rgLinkSelector, err := applyCacheAuth(r, name, engine, rgSpec, resources)
+	if err != nil {
+		return nil, err
 	}
 
 	// The replication group is the resource handlers link to, so it carries the
@@ -227,6 +124,162 @@ func emitCache(
 		},
 		Diagnostics: diagnostics,
 	}, nil
+}
+
+// cachePresetSuitabilityError validates that a managed VPC provides private
+// subnets (a cache requires private-subnet placement). Referenced VPCs have
+// unknown topology at transform time — the provider's subnet-group validation
+// covers those at plan time. Returns nil when there is nothing to reject.
+func cachePresetSuitabilityError(r *ResolvedCache, name string) *core.Diagnostic {
+	if r.VPCName == "" || r.VPCReferenced {
+		return nil
+	}
+	if _, noPrivate := presetsWithoutPrivateSubnets[r.VPCPreset]; !noPrivate {
+		return nil
+	}
+	return &core.Diagnostic{
+		Level: core.DiagnosticLevelError,
+		Message: fmt.Sprintf(
+			"celerity/cache %q requires private subnets, but its placement VPC preset %q "+
+				"provides none; use a preset with private subnets (standard, isolated, or light)",
+			name, r.VPCPreset,
+		),
+	}
+}
+
+// cacheEngine resolves the cache engine, fixed to Valkey for v0 but honouring
+// spec.engine if a future schema exposes it.
+func cacheEngine(r *ResolvedCache) string {
+	if engine := core.StringValue(specGet(r, "$.engine")); engine != "" {
+		return engine
+	}
+	return defaultEngine
+}
+
+// cacheEngineVersion resolves the engine version, defaulting to 8.2 here
+// (resolver-owns-defaults), not via a schema Default.
+func cacheEngineVersion(r *ResolvedCache) string {
+	if version := core.StringValue(specGet(r, "$.engineVersion")); version != "" {
+		return version
+	}
+	return defaultEngineVersion
+}
+
+// replicationGroupBaseSpec builds the replication group's spec without VPC
+// placement or auth fields. clusterMode selects the shard/replica topology:
+// numShards applies only in cluster mode; numReplicas (replicas per shard)
+// applies to both.
+func replicationGroupBaseSpec(
+	r *ResolvedCache,
+	run *transformutils.Run,
+	name, engine string,
+	clusterMode bool,
+) *core.MappingNode {
+	spec := core.MappingNodeFields(
+		"replicationGroupId", core.MappingNodeFromString(name),
+		"replicationGroupDescription", core.MappingNodeFromString(fmt.Sprintf("Celerity cache %s", name)),
+		"engine", core.MappingNodeFromString(engine),
+		"engineVersion", core.MappingNodeFromString(cacheEngineVersion(r)),
+		"transitEncryptionEnabled", core.MappingNodeFromBool(true),
+		"port", core.MappingNodeFromInt(defaultCachePort),
+	)
+	if clusterMode {
+		spec.Fields["numNodeGroups"] = core.MappingNodeFromInt(
+			elasticacheConfigInt(run, name, "numShards", defaultClusterShards))
+	} else {
+		spec.Fields["numNodeGroups"] = core.MappingNodeFromInt(1)
+	}
+	spec.Fields["replicasPerNodeGroup"] = core.MappingNodeFromInt(
+		elasticacheConfigInt(run, name, "numReplicas", defaultReplicasPerNodeGroup))
+	return spec
+}
+
+// applyVPCPlacement emits the subnet group and sets the RG's placement fields
+// when the cache is linked to a VPC. When it is not, it returns a warning
+// diagnostic (the RG is still emitted) and leaves the placement fields unset.
+func applyVPCPlacement(
+	r *ResolvedCache,
+	name string,
+	rgSpec *core.MappingNode,
+	resources map[string]*schema.Resource,
+) (*core.Diagnostic, error) {
+	if r.VPCName == "" {
+		return &core.Diagnostic{
+			Level: core.DiagnosticLevelWarning,
+			Message: fmt.Sprintf(
+				"celerity/cache %q is not linked to a celerity/vpc; caches require VPC placement for "+
+					"secure network access",
+				name,
+			),
+		}, nil
+	}
+
+	vpcConcrete := vpc.ConcreteResourceName(r.VPCName)
+	subnetGroupName := fmt.Sprintf("%s-cache-subnets", name)
+
+	subnetIdsRef, err := shared.SubstitutionMappingNode(
+		fmt.Sprintf("${resources.%s.spec.privateSubnetIds}", vpcConcrete))
+	if err != nil {
+		return nil, err
+	}
+	sgRef, err := shared.SubstitutionMappingNode(
+		fmt.Sprintf("${resources.%s.spec.securityGroups}", vpcConcrete))
+	if err != nil {
+		return nil, err
+	}
+
+	resources[subnetGroupResourceName(r.Name)] = &schema.Resource{
+		Type: &schema.ResourceTypeWrapper{Value: "aws/elasticache/subnetGroup"},
+		Spec: core.MappingNodeFields(
+			"cacheSubnetGroupName", core.MappingNodeFromString(subnetGroupName),
+			"description", core.MappingNodeFromString(fmt.Sprintf("Subnets for Celerity cache %s", name)),
+			"subnetIds", subnetIdsRef,
+		),
+		Metadata: infraMeta(r.Name),
+	}
+	rgSpec.Fields["cacheSubnetGroupName"] = core.MappingNodeFromString(subnetGroupName)
+	rgSpec.Fields["securityGroupIds"] = sgRef
+	return nil, nil
+}
+
+// applyCacheAuth provisions the auth resources and returns the replication
+// group's link selector. transitEncryption is already set on the RG (required
+// for both Redis AUTH and RBAC): iam mode provisions RBAC user groups; password
+// mode provisions an auth-token secret and selects it by label.
+func applyCacheAuth(
+	r *ResolvedCache,
+	name, engine string,
+	rgSpec *core.MappingNode,
+	resources map[string]*schema.Resource,
+) (*schema.LinkSelector, error) {
+	if cacheAuthMode(r) != "iam" {
+		resources[authSecretResourceName(r.Name)] = buildAuthSecret(r, name)
+		// Activate the replicationGroup::secret link: the RG selects the auth
+		// secret by its distinctive label (merged with any existing selector).
+		return mergeLinkSelectorLabel(r.Resource.LinkSelector, cacheAuthLabelKey, name), nil
+	}
+
+	// iam mode: ElastiCache RBAC. Emit an IAM-authenticated user and a user group
+	// that contains it plus the managed "default" user (required in every RBAC
+	// user group), then attach the group to the replication group. No stored
+	// secret is needed — the client generates a short-lived SigV4 token from IAM
+	// credentials. The handler that links to the cache stamps
+	// aws.lambda.elasticache.<rg>.authMode=iam so the function::replicationGroup
+	// link creates the elasticache:Connect grant.
+	userRes, groupRes, err := buildIAMUserAndGroup(r, name, engine)
+	if err != nil {
+		return nil, err
+	}
+	resources[iamUserResourceName(r.Name)] = userRes
+	resources[userGroupResourceName(r.Name)] = groupRes
+
+	userGroupRef, err := shared.SubstitutionMappingNode(
+		fmt.Sprintf("${resources.%s.spec.userGroupId}", userGroupResourceName(r.Name)))
+	if err != nil {
+		return nil, err
+	}
+	rgSpec.Fields["userGroupIds"] = core.MappingNodeItems(userGroupRef)
+	return r.Resource.LinkSelector, nil
 }
 
 func elasticacheConfigInt(run *transformutils.Run, name, suffix string, fallback int) int {
