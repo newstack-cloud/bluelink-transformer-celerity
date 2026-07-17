@@ -54,14 +54,14 @@ const reportBatchItemFailures = "ReportBatchItemFailures"
 
 // Consumer annotation keys read from the abstract consumer.
 const (
-	annConsumerDatastoreStartFromBeginning = "celerity.consumer.datastore.startFromBeginning"
-	annConsumerBucketEvents                = "celerity.consumer.bucket.events"
+	annConsumerDatastoreStartFromBeginning = AnnotationKeyConsumerDatastoreStartFromBeginning
+	annConsumerBucketEvents                = AnnotationKeyConsumerBucketEvents
 
 	// annConsumerDeadLetterQueue toggles creation of a dead-letter queue for a
 	// Celerity-topic consumer (default true).
-	annConsumerDeadLetterQueue = "celerity.consumer.deadLetterQueue"
+	annConsumerDeadLetterQueue = AnnotationKeyConsumerDeadLetterQueue
 	// annConsumerDeadLetterQueueMaxAttempts sets the DLQ redrive maxReceiveCount.
-	annConsumerDeadLetterQueueMaxAttempts = "celerity.consumer.deadLetterQueueMaxAttempts"
+	annConsumerDeadLetterQueueMaxAttempts = AnnotationKeyConsumerDeadLetterQueueMaxAttempts
 
 	// annConsumerTopicPollPrefix is a synthetic per-consumer label key (value
 	// "true") stamped on the function and the topic fan-out queue's linkSelector so

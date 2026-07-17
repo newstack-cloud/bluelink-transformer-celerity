@@ -44,5 +44,6 @@ func ConsumerToHandlerLink() *transformerv1.AbstractLinkDefinition {
 					"consumer handlers share one function.",
 			},
 		},
+		ValidateFunc: validateHandlerTargetSingleEventSource,
 	}
 }

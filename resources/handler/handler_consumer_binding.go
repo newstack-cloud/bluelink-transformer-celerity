@@ -47,9 +47,9 @@ const celerityTopicSourcePrefix = "celerity::topic::"
 // link selector of multiple sources of the same type, these name the source to
 // bind to.
 const (
-	annConsumerSourceQueue     = "celerity.consumer.queue"
-	annConsumerSourceDatastore = "celerity.consumer.datastore"
-	annConsumerSourceBucket    = "celerity.consumer.bucket"
+	annConsumerSourceQueue     = AnnotationKeyConsumerSourceQueue
+	annConsumerSourceDatastore = AnnotationKeyConsumerSourceDatastore
+	annConsumerSourceBucket    = AnnotationKeyConsumerSourceBucket
 )
 
 // ExternalStreamBinding captures one externalEvents stream entry (dbStream or

@@ -21,6 +21,34 @@ const (
 	// AnnotationKeyConsumerRoute specifies the route for a consumer handler.
 	AnnotationKeyConsumerRoute = "celerity.handler.consumer.route"
 
+	// AnnotationKeyConsumerSourceQueue names the in-blueprint celerity/queue a
+	// consumer binds to when it matches several queues by link selector.
+	AnnotationKeyConsumerSourceQueue = "celerity.consumer.queue"
+
+	// AnnotationKeyConsumerSourceDatastore names the in-blueprint celerity/datastore
+	// a consumer binds to when it matches several datastores by link selector.
+	AnnotationKeyConsumerSourceDatastore = "celerity.consumer.datastore"
+
+	// AnnotationKeyConsumerSourceBucket names the in-blueprint celerity/bucket a
+	// consumer binds to when it matches several buckets by link selector.
+	AnnotationKeyConsumerSourceBucket = "celerity.consumer.bucket"
+
+	// AnnotationKeyConsumerBucketEvents is the comma-separated set of object-storage
+	// events (created | deleted | metadataUpdated) that trigger a bucket consumer.
+	AnnotationKeyConsumerBucketEvents = "celerity.consumer.bucket.events"
+
+	// AnnotationKeyConsumerDatastoreStartFromBeginning starts a datastore-stream
+	// consumer from the earliest available point rather than the stream tip.
+	AnnotationKeyConsumerDatastoreStartFromBeginning = "celerity.consumer.datastore.startFromBeginning"
+
+	// AnnotationKeyConsumerDeadLetterQueue toggles creation of a dead-letter queue
+	// for a consumer bound to a Celerity topic source.
+	AnnotationKeyConsumerDeadLetterQueue = "celerity.consumer.deadLetterQueue"
+
+	// AnnotationKeyConsumerDeadLetterQueueMaxAttempts sets the redrive maxReceiveCount
+	// for a topic-sourced consumer's dead-letter queue.
+	AnnotationKeyConsumerDeadLetterQueueMaxAttempts = "celerity.consumer.deadLetterQueueMaxAttempts"
+
 	// AnnotationKeyVPCSubnetType specifies the subnet type for a handler's VPC configuration.
 	AnnotationKeyVPCSubnetType = "celerity.handler.vpc.subnetType"
 

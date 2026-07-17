@@ -15,6 +15,23 @@ import (
 
 const fifoSuffix = ".fifo"
 
+const (
+	// AnnotationKeyBucketEvents is the celerity/bucket -> celerity/topic link
+	// annotation (comma-separated created | deleted | metadataUpdated) selecting which
+	// object-storage events flow from a linked bucket into this topic. It maps to the
+	// provider aws.s3.sns.event.<index> annotations the aws/s3/bucket::aws/sns/topic
+	// link consumes on the topic.
+	AnnotationKeyBucketEvents = "celerity.topic.bucket.events"
+
+	// AnnotationKeyBucketFilterPrefix restricts bucket notifications into this topic to
+	// object keys with the given prefix (maps to aws.s3.sns.filterPrefix).
+	AnnotationKeyBucketFilterPrefix = "celerity.topic.bucket.filterPrefix"
+
+	// AnnotationKeyBucketFilterSuffix restricts bucket notifications into this topic to
+	// object keys with the given suffix (maps to aws.s3.sns.filterSuffix).
+	AnnotationKeyBucketFilterSuffix = "celerity.topic.bucket.filterSuffix"
+)
+
 func emitTopic(
 	_ context.Context,
 	_ *transformutils.Run,

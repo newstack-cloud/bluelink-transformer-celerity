@@ -46,44 +46,51 @@ func NewTransformer(deps *shared.Dependencies) transform.SpecTransformer {
 			"celerity/config":        config.Resource(),
 			"celerity/handlerConfig": handlerconfig.Resource(),
 		},
-		AbstractLinks: map[string]*transformerv1.AbstractLinkDefinition{
-			// API links
-			"celerity/api::celerity/handler": links.APIToHandlerLink(),
-			"celerity/api::celerity/config":  links.APIToConfigLink(),
-			// Handler links
-			"celerity/handler::celerity/queue":         links.HandlerToQueueLink(),
-			"celerity/handler::celerity/topic":         links.HandlerToTopicLink(),
-			"celerity/handler::celerity/datastore":     links.HandlerToDatastoreLink(),
-			"celerity/handler::celerity/sqlDatabase":   links.HandlerToSqlDatabaseLink(),
-			"celerity/handler::celerity/bucket":        links.HandlerToBucketLink(),
-			"celerity/handler::celerity/cache":         links.HandlerToCacheLink(),
-			"celerity/handler::celerity/config":        links.HandlerToConfigLink(),
-			"celerity/handler::celerity/handlerConfig": links.HandlerToHandlerConfigLink(),
-			// Queue links
-			"celerity/queue::celerity/queue":    links.QueueToQueueLink(),
-			"celerity/queue::celerity/consumer": links.QueueToConsumerLink(),
-			"celerity/queue::celerity/topic":    links.QueueToTopicLink(),
-			// Bucket links
-			"celerity/bucket::celerity/queue":    links.BucketToQueueLink(),
-			"celerity/bucket::celerity/topic":    links.BucketToTopicLink(),
-			"celerity/bucket::celerity/consumer": links.BucketToConsumerLink(),
-			// Consumer links
-			"celerity/consumer::celerity/handler": links.ConsumerToHandlerLink(),
-			"celerity/consumer::celerity/config":  links.ConsumerToConfigLink(),
-			// Datastore links
-			"celerity/datastore::celerity/consumer": links.DatastoreToConsumerLink(),
-			// VPC links
-			"celerity/vpc::celerity/handler":     links.VPCToHandlerLink(),
-			"celerity/vpc::celerity/cache":       links.VPCToCacheLink(),
-			"celerity/vpc::celerity/sqlDatabase": links.VPCToSqlDatabaseLink(),
-			// Schedule links
-			"celerity/schedule::celerity/handler": links.ScheduleToHandlerLink(),
-			"celerity/schedule::celerity/config":  links.ScheduleToConfigLink(),
-		},
+		AbstractLinks: abstractLinks(),
 		Aggregators: map[string]transformutils.Aggregator{
 			shared.AWSServerless: createAWSServerlessAggregator(),
 		},
 		OnRun: createRunHook(deps),
+	}
+}
+
+// abstractLinks is the single registry of every abstract link definition the
+// transformer recognises. Keyed by "<resourceTypeA>::<resourceTypeB>", it is
+// consumed by NewTransformer and exercised by the registry-invariant test.
+func abstractLinks() map[string]*transformerv1.AbstractLinkDefinition {
+	return map[string]*transformerv1.AbstractLinkDefinition{
+		// API links
+		"celerity/api::celerity/handler": links.APIToHandlerLink(),
+		"celerity/api::celerity/config":  links.APIToConfigLink(),
+		// Handler links
+		"celerity/handler::celerity/queue":         links.HandlerToQueueLink(),
+		"celerity/handler::celerity/topic":         links.HandlerToTopicLink(),
+		"celerity/handler::celerity/datastore":     links.HandlerToDatastoreLink(),
+		"celerity/handler::celerity/sqlDatabase":   links.HandlerToSqlDatabaseLink(),
+		"celerity/handler::celerity/bucket":        links.HandlerToBucketLink(),
+		"celerity/handler::celerity/cache":         links.HandlerToCacheLink(),
+		"celerity/handler::celerity/config":        links.HandlerToConfigLink(),
+		"celerity/handler::celerity/handlerConfig": links.HandlerToHandlerConfigLink(),
+		// Queue links
+		"celerity/queue::celerity/queue":    links.QueueToQueueLink(),
+		"celerity/queue::celerity/consumer": links.QueueToConsumerLink(),
+		"celerity/queue::celerity/topic":    links.QueueToTopicLink(),
+		// Bucket links
+		"celerity/bucket::celerity/queue":    links.BucketToQueueLink(),
+		"celerity/bucket::celerity/topic":    links.BucketToTopicLink(),
+		"celerity/bucket::celerity/consumer": links.BucketToConsumerLink(),
+		// Consumer links
+		"celerity/consumer::celerity/handler": links.ConsumerToHandlerLink(),
+		"celerity/consumer::celerity/config":  links.ConsumerToConfigLink(),
+		// Datastore links
+		"celerity/datastore::celerity/consumer": links.DatastoreToConsumerLink(),
+		// VPC links
+		"celerity/vpc::celerity/handler":     links.VPCToHandlerLink(),
+		"celerity/vpc::celerity/cache":       links.VPCToCacheLink(),
+		"celerity/vpc::celerity/sqlDatabase": links.VPCToSqlDatabaseLink(),
+		// Schedule links
+		"celerity/schedule::celerity/handler": links.ScheduleToHandlerLink(),
+		"celerity/schedule::celerity/config":  links.ScheduleToConfigLink(),
 	}
 }
 
