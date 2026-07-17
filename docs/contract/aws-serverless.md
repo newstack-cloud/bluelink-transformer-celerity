@@ -51,7 +51,7 @@ The `aws-serverless` target reads its sub-manifest from the top-level `lambda` k
 }
 ```
 
-- `lambda.appCode` is a **single shared code asset** containing the whole app source tree, the generated Celerity Lambda entry point file (`__celerity_lambda_entry__.{py,mjs,js}`), and the CLI-generated resource-links routing file (currently `resource-links.json` — see the name-discrepancy note in [index.md §3.2](index.md#32-how-the-sdk-finds-values)). Every Lambda function the transformer emits references the same `appCode` artifact; there is no per-handler code zip.
+- `lambda.appCode` is a **single shared code asset** containing the whole app source tree, the generated Celerity Lambda entry point file (`__celerity_lambda_entry__.{py,mjs,js}`), and the CLI-generated resource-links routing file (`__celerity_resource_links__.json` on the Lambda path — see the deploy-mode name note in [index.md §3.2](index.md#32-how-the-sdk-finds-values)). Every Lambda function the transformer emits references the same `appCode` artifact; there is no per-handler code zip.
 - `lambda.entryPoint` is the Lambda `Handler` field value, identical for every function in the project (for example `"__celerity_lambda_entry__.handler"`). The transformer reads this verbatim and writes it to every emitted Lambda function (see §7).
 - `lambda.sharedLayer` is the production dependency layer every handler uses by default.
 - `handlers[name].lambda.dependencies` is nullable. `null` means the handler falls back to `lambda.sharedLayer`. A non-null value is a per-handler custom layer; the transformer dedupes layers across handlers by `contentHash` (see §9).
@@ -64,7 +64,7 @@ These rows extend the shared table in [index.md §1.4](index.md#14-celerity-cli-
 | Responsibility | Owner | Notes |
 |---|---|---|
 | Generating the Lambda entry point file (`__celerity_lambda_entry__.{py,mjs,js}`) | CLI | Written into the shared `app.zip` at build time. |
-| Generating the resource-links routing file (CLI-owned; currently `resource-links.json`) | CLI | Written into the shared `app.zip` at build time; read by the SDK from `/var/task/<routing-file>` at cold start. **Filename is CLI-owned and currently `resource-links.json`** — see the name-discrepancy note in [index.md §3.2](index.md#32-how-the-sdk-finds-values). |
+| Generating the resource-links routing file (`__celerity_resource_links__.json`) | CLI | Written into the shared `app.zip` at build time; read by the SDK from `/var/task/__celerity_resource_links__.json` at cold start (matches the SDK's default filename). See the deploy-mode name note in [index.md §3.2](index.md#32-how-the-sdk-finds-values). |
 | Deciding the entry-point string value | CLI | Recorded on `lambda.entryPoint`. The transformer reads it verbatim; it never computes or guesses this value. |
 | Packaging the shared app code zip (`app.zip`) | CLI | Single zip shared by all handlers, recorded on `lambda.appCode`. |
 | Building the shared Lambda layer | CLI | Recorded on `lambda.sharedLayer`. |
@@ -393,7 +393,7 @@ Secrets Manager's maximum secret size is 64 KB. A store that exceeds it fails at
 
 ### 10.4 Routing-file schema on `aws-serverless`
 
-Per [index.md §3.2](index.md#32-how-the-sdk-finds-values), the routing map for the internal `resources` namespace ships in the CLI-owned routing file (currently `resource-links.json` — see the name-discrepancy note in [index.md §3.2](index.md#32-how-the-sdk-finds-values)) inside the shared `app.zip` (see §1). The schema is backend-agnostic, because the store-lookup step happens at value time, not routing time:
+Per [index.md §3.2](index.md#32-how-the-sdk-finds-values), the routing map for the internal `resources` namespace ships in the CLI-generated routing file `__celerity_resource_links__.json` (the Lambda-path name — see the deploy-mode name note in [index.md §3.2](index.md#32-how-the-sdk-finds-values)) inside the shared `app.zip` (see §1). The schema is backend-agnostic, because the store-lookup step happens at value time, not routing time:
 
 ```json
 {

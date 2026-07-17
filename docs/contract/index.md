@@ -111,7 +111,7 @@ Recorded here because it is the single clearest expression of why the manifest i
 | Merging the extracted Celerity SDK handler manifest into the blueprint | CLI | The transformer sees the already-merged blueprint and never runs the SDK extractor. |
 | Packaging code assets (shared or per-handler, as the target demands) | CLI | Recorded on the target sub-manifest. |
 | Generating any target-specific entry point or bootstrap file | CLI | Recorded on the target sub-manifest; the transformer reads its value verbatim, never computes it. |
-| Generating the internal resource-links routing file (CLI-owned; currently `resource-links.json` — see the name-discrepancy note in 3.2) into the code asset | CLI | Bundled next to the user app by the CLI build step. The SDK reads it from disk at cold start; it is never carried in an env var. See 3.2. |
+| Generating the internal resource-links routing file (`__celerity_resource_links__.json` on the Lambda path — see the deploy-mode name note in 3.2) into the code asset | CLI | Bundled next to the user app by the CLI build step. The SDK reads it from disk at cold start; it is never carried in an env var. See 3.2. |
 | Building dependency artifacts (shared or per-handler) | CLI | Recorded on the target sub-manifest. |
 | Resolving `celerity.buildManifest` (context variable) to manifest bytes | Transformer | Variable holds either an absolute filesystem path or an `s3://` URL depending on the deploy engine. The transformer handles both forms; the CLI does not pre-resolve the URL. |
 | Emitting concrete provider resources, one per `celerity/handler` | Transformer | See the per-target contract for the concrete resource types. |
@@ -296,7 +296,11 @@ There is **no env-var backend**. Lambda's 4 KB env-var cap (and analogous caps o
 
 At cold start the SDK reads the routing map from the CLI-generated resource-links routing file, bundled next to the user app in the target's code asset by the CLI (see 1.4). For each DI token the map records `{type, configKey}` — `type` selects the resource layer the SDK instantiates, and `configKey` is the handle the SDK uses to fetch the actual value from the active backend.
 
-> **⚠️ Routing-file name discrepancy — resolve with the CLI.** This contract has historically referred to the routing file as `__celerity_resource_links__.json`, but the CLI's seed step actually writes **`resource-links.json`** (`celerity: apps/cli/internal/seed/resource_links.go`, `ResourceLinksFilename`), and a stale `__celerity_resource_links__.json` constant still lingers in `celerity: apps/cli/internal/build/types.go`. **The CLI owns and writes this file**, so its name is authoritative — the transformer never emits it. Wherever this document says `__celerity_resource_links__.json`, read it as "the CLI's routing file, currently `resource-links.json`". A human should reconcile the two CLI constants and align this contract to the single real name.
+> **Routing-file name — two deploy-mode variants (CLI-owned).** The CLI, not the transformer, writes this file, and the name differs by deploy mode:
+> - **FaaS / Lambda deployment package** (the `app.zip` bundled next to the user app, read from `/var/task` at cold start): **`__celerity_resource_links__.json`** (`celerity: apps/cli/internal/build/types.go`, written by `internal/build/lambda.go`). This matches the SDK's default `RESOURCE_LINKS_FILENAME` (`celerity-node-sdk: packages/config/src/resource-links.ts`), so it is the name that must land in the Lambda code asset.
+> - **Local dev container**: **`resource-links.json`** (`celerity: apps/cli/internal/seed/resource_links.go`), mounted at `/opt/celerity/resource-links.json` and located via the `CELERITY_RESOURCE_LINKS_PATH` env var.
+>
+> This document describes the aws-serverless (Lambda) path, so it refers to `__celerity_resource_links__.json`. The transformer never emits the routing file; it only guarantees its store parameter names equal the CLI's `configKey` derivation.
 
 **Backend selection**: `CELERITY_CONFIG_RESOURCES_STORE_KIND` tells the SDK which backend to instantiate for the `resources` namespace (see 3.1), and `CELERITY_CONFIG_RESOURCES_STORE_ID` points it at the concrete store. The SDK wires up exactly one backend implementation per namespace; the handler code above it is unchanged.
 
