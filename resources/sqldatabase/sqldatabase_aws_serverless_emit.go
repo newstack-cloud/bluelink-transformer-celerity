@@ -47,6 +47,27 @@ var presetsUnsuitableForSQL = map[string]struct{}{
 	"light":        {},
 }
 
+// presetSuitabilityError rejects placement on a managed VPC preset that cannot
+// host an RDS database (no private subnets, or single-AZ). Returns nil when the
+// placement is a referenced VPC or a suitable preset.
+func presetSuitabilityError(r *ResolvedSQLDatabase, name string) *core.Diagnostic {
+	if r.VPCName == "" || r.VPCReferenced {
+		return nil
+	}
+	if _, unsuitable := presetsUnsuitableForSQL[r.VPCPreset]; !unsuitable {
+		return nil
+	}
+	return &core.Diagnostic{
+		Level: core.DiagnosticLevelError,
+		Message: fmt.Sprintf(
+			"celerity/sqlDatabase %q requires private subnets across at least two "+
+				"availability zones, but its placement VPC preset %q does not provide them; "+
+				"use \"standard\" or \"isolated\"",
+			name, r.VPCPreset,
+		),
+	}
+}
+
 func emitSQLDatabase(
 	_ context.Context,
 	run *transformutils.Run,
@@ -59,22 +80,8 @@ func emitSQLDatabase(
 	}
 
 	// Preset-suitability validation (managed VPC only).
-	if r.VPCName != "" && !r.VPCReferenced {
-		if _, unsuitable := presetsUnsuitableForSQL[r.VPCPreset]; unsuitable {
-			return &transformutils.EmitResult{
-				Diagnostics: []*core.Diagnostic{
-					{
-						Level: core.DiagnosticLevelError,
-						Message: fmt.Sprintf(
-							"celerity/sqlDatabase %q requires private subnets across at least two "+
-								"availability zones, but its placement VPC preset %q does not provide them; "+
-								"use \"standard\" or \"isolated\"",
-							name, r.VPCPreset,
-						),
-					},
-				},
-			}, nil
-		}
+	if diag := presetSuitabilityError(r, name); diag != nil {
+		return &transformutils.EmitResult{Diagnostics: []*core.Diagnostic{diag}}, nil
 	}
 
 	var diagnostics []*core.Diagnostic
