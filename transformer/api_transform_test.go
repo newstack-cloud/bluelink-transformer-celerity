@@ -94,6 +94,42 @@ func (s *APITransformTestSuite) Test_hybrid_emits_two_apis() {
 	s.Require().NotNil(resources["chatApi_websocket_stage"])
 }
 
+// A hybrid API's two concrete APIs each scope their linkSelector to their own
+// protocol (in addition to the author's labels), so the WebSocket API never
+// attaches an HTTP handler (which would create an invalid route) and vice versa.
+func (s *APITransformTestSuite) Test_hybrid_apis_are_protocol_scoped() {
+	apiRes := &schema.Resource{
+		Type: &schema.ResourceTypeWrapper{Value: "celerity/api"},
+		Spec: core.MappingNodeFields(
+			"protocols", core.MappingNodeItems(
+				core.MappingNodeFromString("http"),
+				core.MappingNodeFields(
+					"websocketConfig", core.MappingNodeFields(
+						"routeKey", core.MappingNodeFromString("action"),
+					),
+				),
+			),
+		),
+		LinkSelector: &schema.LinkSelector{
+			ByLabel: &schema.StringMap{Values: map[string]string{"application": "chat"}},
+		},
+	}
+
+	resources := s.transform(map[string]*schema.Resource{"chatApi": apiRes}, edges())
+
+	httpAPI := resources["chatApi_http_api"]
+	s.Require().NotNil(httpAPI)
+	s.Require().NotNil(httpAPI.LinkSelector)
+	s.Equal("chat", httpAPI.LinkSelector.ByLabel.Values["application"])
+	s.Equal("http", httpAPI.LinkSelector.ByLabel.Values["celerity.internal.api.protocol"])
+
+	ws := resources["chatApi_websocket_api"]
+	s.Require().NotNil(ws)
+	s.Require().NotNil(ws.LinkSelector)
+	s.Equal("chat", ws.LinkSelector.ByLabel.Values["application"])
+	s.Equal("websocket", ws.LinkSelector.ByLabel.Values["celerity.internal.api.protocol"])
+}
+
 // A JWT guard emits an aws/apigatewayv2/authorizer with the issuer, audience and
 // an identitySource derived from the guard's tokenSource.
 func (s *APITransformTestSuite) Test_jwt_guard_emits_authorizer() {
@@ -347,6 +383,9 @@ func (s *APITransformTestSuite) Test_linked_http_handler_carries_route_annotatio
 	s.Require().NotNil(lambda)
 	s.Equal("POST /orders", annotationLiteral(lambda.Metadata.Annotations, "aws.apigatewayv2.lambda.routeKey"))
 	s.Equal("JWT", annotationLiteral(lambda.Metadata.Annotations, "aws.apigatewayv2.lambda.authorizationType"))
+	// The handler carries the http protocol label so only the HTTP API attaches it.
+	s.Require().NotNil(lambda.Metadata.Labels)
+	s.Equal("http", lambda.Metadata.Labels.Values["celerity.internal.api.protocol"])
 	// The authorizerId references the concrete authorizer emitted by the API.
 	s.Equal(
 		"ordersApi_jwt_authorizer",
@@ -406,6 +445,9 @@ func (s *APITransformTestSuite) Test_websocket_handler_does_not_stamp_authorizer
 	s.Require().NotNil(lambda)
 	// The route key is still stamped, but no authorizer/authorizationType is.
 	s.Equal("sendMessage", annotationLiteral(lambda.Metadata.Annotations, "aws.apigatewayv2.lambda.routeKey"))
+	// The handler carries the websocket protocol label so only the WebSocket API attaches it.
+	s.Require().NotNil(lambda.Metadata.Labels)
+	s.Equal("websocket", lambda.Metadata.Labels.Values["celerity.internal.api.protocol"])
 	s.Equal("", annotationLiteral(lambda.Metadata.Annotations, "aws.apigatewayv2.lambda.authorizerId"),
 		"a WebSocket handler must not reference an API Gateway authorizer")
 	s.Equal("", annotationLiteral(lambda.Metadata.Annotations, "aws.apigatewayv2.lambda.authorizationType"))
