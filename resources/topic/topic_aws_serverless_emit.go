@@ -134,3 +134,10 @@ func topicName(name string, fifo bool) string {
 func topicConcreteName(name string) string {
 	return fmt.Sprintf("%s_sns_topic", name)
 }
+
+// ConcreteResourceName is the concrete aws/sns/topic resource name emitted for the
+// abstract topic. Exported so a queue's topic-forwarding emit can reference the
+// topic (for the function::sns env-var-rename annotation key).
+func ConcreteResourceName(name string) string {
+	return topicConcreteName(name)
+}

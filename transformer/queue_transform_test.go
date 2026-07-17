@@ -270,6 +270,73 @@ func (s *QueueTransformTestSuite) Test_unsupported_bucket_event_warns() {
 	s.True(found, "expected a warning about the unmappable metadataUpdated event")
 }
 
+// A queue that links to a topic provisions an intermediary forwarder (function +
+// role) — AWS has no native SQS->SNS forwarding. The forwarder is triggered by the
+// source queue (synthetic forward label) and publishes to the topic (its link
+// selector matches the topic labels).
+func (s *QueueTransformTestSuite) Test_queue_to_topic_emits_a_forwarder() {
+	q := &schema.Resource{
+		Type: &schema.ResourceTypeWrapper{Value: "celerity/queue"},
+		Spec: core.MappingNodeFields("name", core.MappingNodeFromString("orders")),
+		LinkSelector: &schema.LinkSelector{
+			ByLabel: &schema.StringMap{Values: map[string]string{"stream": "orders-events"}},
+		},
+	}
+	topicRes := &schema.Resource{
+		Type: &schema.ResourceTypeWrapper{Value: "celerity/topic"},
+		Spec: core.MappingNodeFields("name", core.MappingNodeFromString("events")),
+		Metadata: &schema.Metadata{
+			Labels: &schema.StringMap{Values: map[string]string{"stream": "orders-events"}},
+		},
+	}
+
+	bp := &schema.Blueprint{Resources: &schema.ResourceMap{Values: map[string]*schema.Resource{
+		"ordersQueue": q,
+		"eventsTopic": topicRes,
+	}}}
+	out, err := NewTransformer(&shared.Dependencies{}).Transform(
+		context.Background(),
+		&transform.SpecTransformerTransformInput{
+			InputBlueprint: bp,
+			LinkGraph: edges(edgeWithLabels(
+				"ordersQueue", "eventsTopic", "celerity/queue", "celerity/topic",
+				map[string]string{"stream": "orders-events"},
+			)),
+			TransformerContext: validationContext(),
+		},
+	)
+	s.Require().NoError(err)
+	resources := out.TransformedBlueprint.Resources.Values
+
+	// The forwarder function: inline code, index.handler, role reference.
+	fwd := resources["ordersQueue_to_eventsTopic_forwarder"]
+	s.Require().NotNil(fwd, "expected an intermediary forwarder function")
+	s.Equal("aws/lambda/function", fwd.Type.Value)
+	s.Equal("index.handler", core.StringValue(fwd.Spec.Fields["handler"]))
+	s.Require().NotNil(fwd.Spec.Fields["code"])
+	s.NotEmpty(core.StringValue(fwd.Spec.Fields["code"].Fields["zipFile"]), "forwarder must carry inline code")
+
+	// It carries the synthetic forward label and its selector matches the topic.
+	s.Require().NotNil(fwd.Metadata.Labels)
+	s.Equal("true", fwd.Metadata.Labels.Values["celerity.queue.forward.ordersQueue.eventsTopic"])
+	s.Require().NotNil(fwd.LinkSelector)
+	s.Equal("orders-events", fwd.LinkSelector.ByLabel.Values["stream"])
+
+	// It renames the topic-ARN env var the function::sns link injects.
+	s.Equal("CELERITY_FORWARD_TOPIC_ARN",
+		annotationLiteral(fwd.Metadata.Annotations, "aws.lambda.sns.eventsTopic_sns_topic.envVarName"))
+
+	// A base execution role is emitted for it.
+	s.Require().NotNil(resources["ordersQueue_to_eventsTopic_forwarder_role"], "expected a forwarder role")
+
+	// The source queue carries the forward label so it triggers the forwarder,
+	// while keeping its original selector label.
+	src := resources["ordersQueue_sqs_queue"]
+	s.Require().NotNil(src.LinkSelector)
+	s.Equal("true", src.LinkSelector.ByLabel.Values["celerity.queue.forward.ordersQueue.eventsTopic"])
+	s.Equal("orders-events", src.LinkSelector.ByLabel.Values["stream"])
+}
+
 func (s *QueueTransformTestSuite) transform(
 	resources map[string]*schema.Resource,
 ) map[string]*schema.Resource {
