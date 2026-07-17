@@ -32,7 +32,9 @@ func createRunHook(deps *shared.Dependencies) func(ctx context.Context, run *tra
 			// code-asset/entry-point references and surfaces a per-handler warning
 			// (see loadCodeLocationInfo). This lets validation and dry-run/plan run
 			// before "celerity build" has produced a manifest. OnRun has no diagnostic
-			// channel, so the warning is carried by the downstream emit.
+			// channel, so the cause is carried through the run for the downstream emit
+			// to surface in its warning instead of being fully discarded.
+			transformutils.Provide(run, &shared.BuildManifestLoadError{Cause: err})
 			return nil
 		}
 

@@ -30,6 +30,13 @@ const (
 
 	forwarderMemorySize = 128
 	forwarderTimeout    = 30
+
+	// forwarderReportBatchItemFailuresAnnotation is the aws/sqs/queue::aws/lambda/function
+	// poll link annotation (AppliesTo the function) that enables the
+	// ReportBatchItemFailures event source mapping function response type. The
+	// forwarder always returns batchItemFailures (see forwarderSource), so this is
+	// stamped unconditionally rather than being derived from consumer config.
+	forwarderReportBatchItemFailuresAnnotation = "aws.sqs.lambda.reportBatchItemFailures"
 )
 
 // forwarderSource is the inline handler the intermediary forwarder runs: it
@@ -52,19 +59,29 @@ const topicArns = Object.keys(process.env)
   .filter(Boolean);
 exports.handler = async (event) => {
   const records = event.Records || [];
-  const publishes = [];
+  const batchItemFailures = [];
   for (const record of records) {
-    for (const TopicArn of topicArns) {
-      const params = { TopicArn, Message: record.body };
-      const groupId = record.attributes && record.attributes.MessageGroupId;
-      if (groupId) {
-        params.MessageGroupId = groupId;
-        params.MessageDeduplicationId = record.messageId;
-      }
-      publishes.push(sns.send(new PublishCommand(params)));
+    const params = { Message: record.body };
+    const groupId = record.attributes && record.attributes.MessageGroupId;
+    if (groupId) {
+      params.MessageGroupId = groupId;
+      params.MessageDeduplicationId = record.messageId;
+    }
+    const results = await Promise.allSettled(
+      topicArns.map((TopicArn) =>
+        sns.send(new PublishCommand({ ...params, TopicArn }))
+      )
+    );
+    // Report the record itself as failed if any topic publish failed, so SQS
+    // only retries this record (not the whole batch). This is safe to retry:
+    // topics already published to for this record will receive a duplicate,
+    // which SNS/downstream consumers must tolerate, but no other record's
+    // already-succeeded publishes are redone.
+    if (results.some((result) => result.status === "rejected")) {
+      batchItemFailures.push({ itemIdentifier: record.messageId });
     }
   }
-  await Promise.all(publishes);
+  return { batchItemFailures };
 };
 `
 
@@ -118,6 +135,11 @@ func buildTopicForwarder(queueName string, edges []*TopicForwardEdge) (map[strin
 			forwardLabelKey(queueName): "true",
 		}},
 	}
+	// The forwarder always reports per-record batch item failures (see
+	// forwarderSource), so the event source mapping must be configured to honour
+	// them; otherwise a partial failure would fail and redeliver the whole batch,
+	// re-publishing to topics that already succeeded for unrelated records.
+	funcMeta.Annotations.Values[forwarderReportBatchItemFailuresAnnotation] = pluginutils.StringToSubstitutions("true")
 
 	// Union the topics' matched labels for the publish selector, and rename each
 	// topic's injected ARN env var to a distinct CELERITY_FORWARD_TOPIC_ARN_<index>

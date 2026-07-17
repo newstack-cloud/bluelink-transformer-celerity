@@ -295,14 +295,18 @@ func (e *awsServerlessEmitter) loadCodeLocationInfo(
 		// fail the transform: the function is emitted without code-asset references
 		// or an entry point, a warning is logged, and downstream validation rejects
 		// the output unless the deploy is a dry run.
+		message := fmt.Sprintf(
+			"no build manifest available for celerity/handler %q; the function is emitted without a "+
+				"code asset or entry point. Run \"celerity build\" before deploying (a dry run/plan is "+
+				"still valid)",
+			handlerName,
+		)
+		if loadErr, hasLoadErr := transformutils.Use[*shared.BuildManifestLoadError](run); hasLoadErr && loadErr.Cause != nil {
+			message = fmt.Sprintf("%s: %s", message, loadErr.Cause)
+		}
 		return &codeLocationInfo{}, &core.Diagnostic{
-			Level: core.DiagnosticLevelWarning,
-			Message: fmt.Sprintf(
-				"no build manifest available for celerity/handler %q; the function is emitted without a "+
-					"code asset or entry point. Run \"celerity build\" before deploying (a dry run/plan is "+
-					"still valid)",
-				handlerName,
-			),
+			Level:   core.DiagnosticLevelWarning,
+			Message: message,
 		}, nil
 	}
 
