@@ -41,11 +41,7 @@ func createAWSServerlessAggregator() transformutils.Aggregator {
 		// The internal resources namespace config store: one aws/ssm/parameterTree
 		// mapping each linked backing resource's configKey to its physical id, read by
 		// handlers at runtime (see the store-read grant + STORE_ID/KIND env vars).
-		store, err := collectResourcesStore(primaries, shared.ResourceLinksStorePath(run))
-		if err != nil {
-			return &transformutils.EmitPlan{Primaries: primaries, SharedParents: parents}
-		}
-		if store != nil {
+		if store := collectResourcesStore(primaries, shared.ResourceLinksStorePath(run)); store != nil {
 			parents = append(parents, *store)
 		}
 

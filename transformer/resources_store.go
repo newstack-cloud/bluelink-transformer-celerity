@@ -2,6 +2,7 @@ package transformer
 
 import (
 	"fmt"
+	"sort"
 
 	"github.com/newstack-cloud/bluelink-transformer-celerity/resources/bucket"
 	"github.com/newstack-cloud/bluelink-transformer-celerity/resources/datastore"
@@ -48,14 +49,15 @@ var storeBackings = map[string]storeBacking{
 func collectResourcesStore(
 	primaries []transformutils.ResolvedResource,
 	storePath string,
-) (*transformutils.SharedParent, error) {
+) *transformutils.SharedParent {
 	entries := map[string]*core.MappingNode{}
 
-	for _, primary := range primaries {
-		handlerResource, ok := primary.(*handler.ResolvedHandler)
-		if !ok {
-			continue
-		}
+	// Iterate handlers in a stable order. The pipeline passes primaries in Go map
+	// order, so without this the winner of a configKey collision (below) — and hence
+	// the emitted store — would be nondeterministic across runs.
+	handlers := sortedHandlers(primaries)
+
+	for _, handlerResource := range handlers {
 		groups := []struct {
 			celerityType string
 			linked       []*types.LinkedResource
@@ -70,20 +72,24 @@ func collectResourcesStore(
 			for _, linked := range group.linked {
 				configKey := storeConfigKey(linked)
 				if _, seen := entries[configKey]; seen {
+					// configKey uniqueness across all resources is enforced by the CLI
+					// with a fatal check before deploy; a collision here means an invalid
+					// blueprint. Keep the first (deterministic, given the sorted order
+					// above) so the transformer's output stays reproducible rather than
+					// silently varying.
 					continue
 				}
-				ref, err := shared.SubstitutionMappingNode(fmt.Sprintf(
+				// The reference is over concrete names + a fixed attribute, so it is
+				// always a well-formed substitution.
+				ref, _ := shared.SubstitutionMappingNode(fmt.Sprintf(
 					"${resources.%s.spec.%s}", backing.concreteName(linked.Name), backing.idAttribute))
-				if err != nil {
-					return nil, err
-				}
 				entries[configKey] = ref
 			}
 		}
 	}
 
 	if len(entries) == 0 {
-		return nil, nil
+		return nil
 	}
 
 	values := &core.MappingNode{Fields: map[string]*core.MappingNode{}}
@@ -104,7 +110,21 @@ func collectResourcesStore(
 			"path", core.MappingNodeFromString(storePath),
 			"values", values,
 		),
-	}, nil
+	}
+}
+
+// sortedHandlers returns the ResolvedHandler primaries in a stable order (by
+// resource name) so store construction is deterministic regardless of the map
+// iteration order the pipeline passes primaries in.
+func sortedHandlers(primaries []transformutils.ResolvedResource) []*handler.ResolvedHandler {
+	handlers := []*handler.ResolvedHandler{}
+	for _, primary := range primaries {
+		if handlerResource, ok := primary.(*handler.ResolvedHandler); ok {
+			handlers = append(handlers, handlerResource)
+		}
+	}
+	sort.Slice(handlers, func(i, j int) bool { return handlers[i].Name < handlers[j].Name })
+	return handlers
 }
 
 // storeConfigKey derives the store parameter name for a linked resource: its

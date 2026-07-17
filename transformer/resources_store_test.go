@@ -108,6 +108,48 @@ func (s *ResourcesStoreTestSuite) Test_no_backing_links_no_store() {
 	s.Nil(env["CELERITY_CONFIG_RESOURCES_STORE_ID"], "no store env var without backing links")
 }
 
+// Two backing resources of different types sharing a configKey (an invalid
+// blueprint the CLI rejects) must produce a deterministic store — the same winner
+// every time — rather than silently varying. The fixed backing-type order (queue
+// before datastore) makes the queue the stable winner.
+func (s *ResourcesStoreTestSuite) Test_configKey_collision_is_deterministic() {
+	handlerRes := handlerLinkedTo(map[string]string{"app": "orders"})
+	queueRes := &schema.Resource{
+		Type:     &schema.ResourceTypeWrapper{Value: "celerity/queue"},
+		Spec:     core.MappingNodeFields("name", core.MappingNodeFromString("orders")),
+		Metadata: &schema.Metadata{Labels: &schema.StringMap{Values: map[string]string{"app": "orders"}}},
+	}
+	datastoreRes := &schema.Resource{
+		Type:     &schema.ResourceTypeWrapper{Value: "celerity/datastore"},
+		Spec:     core.MappingNodeFields("name", core.MappingNodeFromString("orders")),
+		Metadata: &schema.Metadata{Labels: &schema.StringMap{Values: map[string]string{"app": "orders"}}},
+	}
+
+	for i := 0; i < 5; i++ {
+		bp := &schema.Blueprint{Resources: &schema.ResourceMap{Values: map[string]*schema.Resource{
+			"saveOrder": handlerRes, "ordersQueue": queueRes, "ordersTable": datastoreRes,
+		}}}
+		out, err := NewTransformer(&shared.Dependencies{}).Transform(
+			context.Background(),
+			&transform.SpecTransformerTransformInput{
+				InputBlueprint: bp,
+				LinkGraph: edges(
+					edge("saveOrder", "ordersQueue", "celerity/handler", "celerity/queue"),
+					edge("saveOrder", "ordersTable", "celerity/handler", "celerity/datastore"),
+				),
+				TransformerContext: validationContext(),
+			},
+		)
+		s.Require().NoError(err)
+		store := out.TransformedBlueprint.Resources.Values["celerityResourcesConfigStore"]
+		s.Require().NotNil(store)
+		values := store.Spec.Fields["values"]
+		s.Require().Len(values.Fields, 1, "colliding configKey collapses to one entry")
+		// The queue wins deterministically (queue precedes datastore in the order).
+		s.Equal("ordersQueue_sqs_queue", resourceRefName(values.Fields["orders"]))
+	}
+}
+
 func hasPolicyNamed(role *schema.Resource, name string) bool {
 	policies := role.Spec.Fields["policies"]
 	if policies == nil {

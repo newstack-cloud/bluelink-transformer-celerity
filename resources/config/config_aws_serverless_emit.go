@@ -18,7 +18,7 @@ import (
 
 // placeholderAppName is used for the store path segment during validation
 // contexts, where the "celerity.appName" context variable is not yet available.
-const placeholderAppName = "placeholder-app"
+const placeholderAppName = shared.PlaceholderAppName
 
 func emitConfig(
 	_ context.Context,
