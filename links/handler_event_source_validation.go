@@ -26,6 +26,17 @@ var handlerEventSourceMarkers = []struct {
 	{handler.AnnotationKeyConsumerHandler, "a consumer handler"},
 }
 
+// handlerEventSourceKeys lists the annotation keys of the mutually-exclusive
+// markers, derived from handlerEventSourceMarkers so the diagnostic never drifts
+// from the set actually checked.
+func handlerEventSourceKeys() string {
+	keys := make([]string, len(handlerEventSourceMarkers))
+	for i, marker := range handlerEventSourceMarkers {
+		keys[i] = marker.key
+	}
+	return strings.Join(keys, ", ")
+}
+
 // validateHandlerTargetSingleEventSource resolves the handler at the link target
 // and errors if it carries more than one event-source marker (for example both a
 // schedule and an HTTP handler). It is shared by the api/schedule/consumer ->
@@ -62,9 +73,8 @@ func handlerEventSourceConflict(handlerRes *schema.Resource) *core.Diagnostic {
 		Level: core.DiagnosticLevelError,
 		Message: fmt.Sprintf(
 			"a celerity/handler serves a single event source, but this handler is marked as %s; set "+
-				"only one of the celerity.handler.http, celerity.handler.websocket, "+
-				"celerity.handler.schedule or celerity.handler.consumer annotations",
-			strings.Join(present, ", "),
+				"only one of the %s annotations",
+			strings.Join(present, ", "), handlerEventSourceKeys(),
 		),
 	}
 }
