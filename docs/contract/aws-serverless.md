@@ -51,7 +51,7 @@ The `aws-serverless` target reads its sub-manifest from the top-level `lambda` k
 }
 ```
 
-- `lambda.appCode` is a **single shared code asset** containing the whole app source tree, the generated Celerity Lambda entry point file (`__celerity_lambda_entry__.{py,mjs,js}`), and the generated resource-links routing file (`__celerity_resource_links__.json`). Every Lambda function the transformer emits references the same `appCode` artifact; there is no per-handler code zip.
+- `lambda.appCode` is a **single shared code asset** containing the whole app source tree, the generated Celerity Lambda entry point file (`__celerity_lambda_entry__.{py,mjs,js}`), and the CLI-generated resource-links routing file (currently `resource-links.json` — see the name-discrepancy note in [index.md §3.2](index.md#32-how-the-sdk-finds-values)). Every Lambda function the transformer emits references the same `appCode` artifact; there is no per-handler code zip.
 - `lambda.entryPoint` is the Lambda `Handler` field value, identical for every function in the project (for example `"__celerity_lambda_entry__.handler"`). The transformer reads this verbatim and writes it to every emitted Lambda function (see §7).
 - `lambda.sharedLayer` is the production dependency layer every handler uses by default.
 - `handlers[name].lambda.dependencies` is nullable. `null` means the handler falls back to `lambda.sharedLayer`. A non-null value is a per-handler custom layer; the transformer dedupes layers across handlers by `contentHash` (see §9).
@@ -64,7 +64,7 @@ These rows extend the shared table in [index.md §1.4](index.md#14-celerity-cli-
 | Responsibility | Owner | Notes |
 |---|---|---|
 | Generating the Lambda entry point file (`__celerity_lambda_entry__.{py,mjs,js}`) | CLI | Written into the shared `app.zip` at build time. |
-| Generating the resource-links routing file (`__celerity_resource_links__.json`) | CLI | Written into the shared `app.zip` at build time; read by the SDK from `/var/task/__celerity_resource_links__.json` at cold start. See [index.md §3.2](index.md#32-how-the-sdk-finds-values). |
+| Generating the resource-links routing file (CLI-owned; currently `resource-links.json`) | CLI | Written into the shared `app.zip` at build time; read by the SDK from `/var/task/<routing-file>` at cold start. **Filename is CLI-owned and currently `resource-links.json`** — see the name-discrepancy note in [index.md §3.2](index.md#32-how-the-sdk-finds-values). |
 | Deciding the entry-point string value | CLI | Recorded on `lambda.entryPoint`. The transformer reads it verbatim; it never computes or guesses this value. |
 | Packaging the shared app code zip (`app.zip`) | CLI | Single zip shared by all handlers, recorded on `lambda.appCode`. |
 | Building the shared Lambda layer | CLI | Recorded on `lambda.sharedLayer`. |
@@ -247,7 +247,7 @@ These are the standard AWS SDK vars plus Celerity endpoint overrides for local t
 
 ## 6. Runtime identifier mapping (`aws-serverless`)
 
-See [index.md §2.3](index.md#23-runtime-identifier-mapping-concept) for the shared concept, fallback policy, and unknown-identifier error handling. The mapping table below writes its result into the `runtime` field on every emitted `aws/lambda/function` resource.
+See [index.md §2.3](index.md#23-runtime-identifier-mapping-concept) for the shared concept and unknown/unmapped-identifier error handling. The mapping is an **exact lookup** (`resources/handler/runtimes.go`, `getTargetRuntime`) — there is no nearest-version fallback; an identifier absent from the table is an error and no function is emitted. The mapping table below writes its result into the `runtime` field on every emitted `aws/lambda/function` resource.
 
 | Celerity runtime identifier | AWS Lambda `runtime` value | Notes |
 |---|---|---|
@@ -258,7 +258,7 @@ The list grows as Celerity adds support for new runtimes. Adding a row here is t
 
 **Forward reference: per-handler override**
 
-The upstream spec describes a future `aws.lambda.<handlerName>.runtime` override in the app deploy configuration that lets authors pin a specific AWS Lambda runtime value for a single handler, bypassing the mapping. This is planned for v1 and not available today. When it lands, the transformer reads the override via `TransformerConfigVariable` and uses it in place of the mapping result for the named handler only; the collision and fallback rules in [index.md §2.3](index.md#23-runtime-identifier-mapping-concept) still apply to everything else.
+The upstream spec describes a future `aws.lambda.<handlerName>.runtime` override in the app deploy configuration that lets authors pin a specific AWS Lambda runtime value for a single handler, bypassing the mapping. This is planned for v1 and not available today. When it lands, the transformer reads the override via `TransformerConfigVariable` and uses it in place of the mapping result for the named handler only; the exact-lookup rule and unknown/unmapped-identifier error handling in [index.md §2.3](index.md#23-runtime-identifier-mapping-concept) still apply to everything else.
 
 **Not part of Phase 1**
 
@@ -272,13 +272,13 @@ A subtlety easy to miss: the Lambda runtime entry point is **the CLI-generated b
 
 **Contract**: the transformer sets the Lambda `Handler` field on every emitted function to the constant string read from `manifest.lambda.entryPoint`. It does **not** compute, guess, or transform this value. It is identical across every handler in a project because `__celerity_lambda_entry__` is identical across every handler — the differentiator between functions is the routing env vars, not the `Handler` field.
 
-A missing or empty `lambda.entryPoint` on a non-dry-run deploy is a fatal transform error.
+A missing or unavailable build manifest (and hence a missing `lambda.entryPoint`) is **not fatal**: per the build-manifest fallback contract ([index.md §1.4](index.md#14-celerity-cli-build-manifest)), the transformer emits the function **without** its `code` asset and with an empty `Handler`, attaches a per-handler warning diagnostic (`resources/handler/handler_aws_serverless_emit.go`, `loadCodeLocationInfo`), and relies on downstream validation to reject the output unless the deploy is a dry run/plan. This preserves lint/plan before `celerity build` has run.
 
 | Celerity runtime identifier | `lambda.entryPoint` value observed today | Bootstrap file location in deployment package |
 |---|---|---|
 | `nodejs*` | `__celerity_lambda_entry__.handler` | `/var/task/__celerity_lambda_entry__.mjs` (or `.js`), generated by the CLI |
 | `python*` | `__celerity_lambda_entry__.handler` | `/var/task/__celerity_lambda_entry__.py`, generated by the CLI |
-| anything else | fatal transform error | (none) |
+| unmapped runtime | error diagnostic — unsupported runtime; no function emitted (see §6) | (none) |
 
 The column values above are the CLI's current output, not contract guarantees the transformer enforces. The transformer reads whatever string the CLI wrote and trusts it; changes to bootstrap filename or handler symbol are CLI-side refactors that do not require transformer updates, provided `lambda.entryPoint` stays accurate.
 
@@ -325,7 +325,7 @@ The build manifest's `lambda.sharedLayer` and per-handler `handlers[name].lambda
 
 Because deduplication is by `contentHash`, two handlers that happen to produce byte-identical custom layers share the same emitted `aws/lambda/layerVersion` resource, and a handler whose custom layer happens to match the shared layer byte-for-byte collapses onto the shared layer instead of producing a separate resource.
 
-- Resource name: `celerityLambdaLayer_<hash8>`.
+- Resource name: `celerityLambdaLayer_<contentHash>` — the **full** layer content hash (`resources/handler/handler_aws_serverless_shared_parents.go`, `lambdaLayerResourceName`), not a truncation. (The 8-hex-character truncation is used only for the IAM role fingerprint, `celerityLambdaExec_<fingerprint>`, in §8.)
 - Fields populated: `content.s3Bucket`, `content.s3Key`, and `compatibleRuntimes` (the union of the runtimes of handlers that reference the layer).
 - Framework annotations: `AbstractResourceType = celerity/handler`; `AbstractResourceName` recorded similarly to shared roles; `resourceCategory = code-hosting` because dependencies are part of the shipped code package and should flow through the same auto-approval path as code changes.
 
@@ -369,9 +369,14 @@ The transformer emits a **dedicated store** for the internal resource-links name
 
 The transformer decides each key's sensitivity, since it populates them: a physical identifier goes in the tree's `values` map (`String`), an auto-populated credential in `secureValues` (`SecureString`). There is no author-facing switch and no deploy-config override.
 
-**Emitted resources.** One `aws/ssm/parameterTree` for the namespace (its `path` is the store prefix), carrying one entry per resolved link value across `values`/`secureValues`. Every handler that reads the store declares a single `aws/lambda/function::aws/ssm/parameterTree` link to the tree (§11) — not one link per parameter. The tree's blob-drift posture also suits this namespace: auto-populated credentials that rotate out-of-band are not reverted, while a changed physical identifier (a recreated queue's URL) flows through as an explicit blueprint change.
+**Emitted resources.** One `aws/ssm/parameterTree` (concrete name `celerityResourcesConfigStore`, `transformer/resources_store.go`) for the namespace; its `path` is the store prefix `/celerity/<appName>/resources`. It carries a `values` map with one entry per backing resource a handler links to, keyed by **configKey** and valued by a substitution over the concrete resource's physical-id output: `queue → queueUrl`, `topic → topicArn`, `datastore → tableName`, `bucket → bucketName`. **`cache` and `sqlDatabase` are excluded** — their connection details reach handlers via per-link env vars (see the cache/sqlDatabase mappings in [resource-mapping-aws-serverless.md](resource-mapping-aws-serverless.md)), not the store. The `configKey` is the linked resource's `spec.name`, falling back to its blueprint logical name (matching the CLI's routing-file derivation). The store is emitted only when at least one handler links a store-backed resource; otherwise none is produced. The tree's blob-drift posture suits this namespace: a changed physical identifier (a recreated queue's URL) flows through as an explicit blueprint change while out-of-band writes are not reverted.
 
-**Env vars.** The `parameterTree` link injects `CELERITY_CONFIG_RESOURCES_STORE_ID` (the path prefix) via its `envVarName` annotation; the transformer sets `CELERITY_CONFIG_RESOURCES_STORE_KIND = "parameter-store"` as a literal. It must **not** set `CELERITY_CONFIG_STORE_ID` — see the warning in [index.md §2.2](index.md#22-sdk-runtime-contract-shared-env-vars), which would silently collapse namespace discovery to a single `default` namespace and strip resource-link resolution from every handler.
+**Env vars and IAM — set directly on the handler, not via a link.** The internal store is a **shared-parent resource**, which cannot carry a link-selector label, so — unlike a user `celerity/config` store (§11) — no handler declares an `aws/lambda/function::aws/ssm/parameterTree` link to it. Instead the transformer wires each qualifying handler (one that links at least one store-backed resource) directly:
+
+- it sets `CELERITY_CONFIG_RESOURCES_STORE_ID` to the store's path-prefix **literal** and `CELERITY_CONFIG_RESOURCES_STORE_KIND = "parameter-store"` on the function (`shared/awslambda/env.go`);
+- it grants the handler's execution role a direct, scoped SSM-read policy `celerity-resource-links-store` (`shared/awslambda/iam_planner.go`): `ssm:GetParametersByPath`, `ssm:GetParameters`, `ssm:GetParameter` on `arn:aws:ssm:*:*:parameter<path>` **and** `arn:aws:ssm:*:*:parameter<path>/*`.
+
+It must **not** set `CELERITY_CONFIG_STORE_ID` — see the warning in [index.md §2.2](index.md#22-sdk-runtime-contract-shared-env-vars), which would silently collapse namespace discovery to a single `default` namespace and strip resource-link resolution from every handler. At runtime the SDK still reads the `STORE_ID` path via `GetParametersByPath`, instantiates the backend named by `STORE_KIND`, and resolves each routing-file entry's `configKey` against the returned map.
 
 This is unconditional: no author action is required for projects of any size, and an application needs no `celerity/config` resource to have working resource links.
 
@@ -388,7 +393,7 @@ Secrets Manager's maximum secret size is 64 KB. A store that exceeds it fails at
 
 ### 10.4 Routing-file schema on `aws-serverless`
 
-Per [index.md §3.2](index.md#32-how-the-sdk-finds-values), the routing map for the internal `resources` namespace ships in `__celerity_resource_links__.json` inside the shared `app.zip` (see §1). The schema is backend-agnostic, because the store-lookup step happens at value time, not routing time:
+Per [index.md §3.2](index.md#32-how-the-sdk-finds-values), the routing map for the internal `resources` namespace ships in the CLI-owned routing file (currently `resource-links.json` — see the name-discrepancy note in [index.md §3.2](index.md#32-how-the-sdk-finds-values)) inside the shared `app.zip` (see §1). The schema is backend-agnostic, because the store-lookup step happens at value time, not routing time:
 
 ```json
 {
@@ -404,7 +409,9 @@ At cold start the SDK reads the file, instantiates the `parameter-store` backend
 
 ## 11. IAM implications (config store)
 
-**The transformer emits no config-store IAM policy.** Access is granted by declaring the outbound link from the handler's function to the store resource; the link injects the statement into the execution role (§8) and injects the env var pointing at the store (§3.5).
+**The transformer emits no config-store IAM policy for user `celerity/config` stores.** Access is granted by declaring the outbound link from the handler's function to the store resource; the link injects the statement into the execution role (§8) and injects the env var pointing at the store (§3.5).
+
+> **Exception — the internal `resources` store.** The internal resource-links store (§10.2) is a shared-parent `aws/ssm/parameterTree` with no link-selector label, so no link can grant its access. For that store alone the transformer **does** emit a direct scoped SSM-read policy (`celerity-resource-links-store`) onto each qualifying handler's execution role and sets the `CELERITY_CONFIG_RESOURCES_STORE_ID`/`_KIND` env vars as literals — see §10.2. Everything below concerns user `celerity/config` stores, which use the link mechanism.
 
 | Backend | Link to declare | Link annotations (`<NS>` = the store's resource name) |
 |---|---|---|
