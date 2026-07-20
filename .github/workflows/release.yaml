@@ -247,7 +247,7 @@ jobs:
           cache: true
       - name: Install Plugin Docgen Tool
         run: |
-          go install github.com/newstack-cloud/bluelink/tools/plugin-docgen/cmd/bluelink-plugin-docgen@v0.3.0
+          go install github.com/newstack-cloud/bluelink/tools/plugin-docgen/cmd/bluelink-plugin-docgen@v0.3.1
       - name: Build Transformer for Docgen
         env:
           VERSION: ${{ steps.version.outputs.version }}
