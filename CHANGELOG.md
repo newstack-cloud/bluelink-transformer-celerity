@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.1.1] - 2026-07-20
+
+### Bug Fixes
+
+- Add fix to self-referential schema to prevent infinite recursion in docgen([aa3fab6](https://github.com/newstack-cloud/bluelink-transformer-celerity/commit/aa3fab6c365af903b86fdf43a7711998229f1a5e))
 ## [0.1.0] - 2026-07-20
 
 ### Bug Fixes
