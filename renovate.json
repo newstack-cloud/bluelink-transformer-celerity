@@ -1,0 +1,31 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": [
+    "github>newstack-cloud/renovate-config",
+    "github>newstack-cloud/bluelink//renovate/bluelink-consumers"
+  ],
+  "customManagers": [
+    {
+      "description": "Keep the plugin-docgen version pinned in the release workflow (go install ...@vX.Y.Z) up to date.",
+      "customType": "regex",
+      "managerFilePatterns": ["/^\\.github/workflows/release\\.yaml$/"],
+      "matchStrings": [
+        "bluelink/tools/plugin-docgen/cmd/bluelink-plugin-docgen@(?<currentValue>v[0-9]+\\.[0-9]+\\.[0-9]+)"
+      ],
+      "depNameTemplate": "github.com/newstack-cloud/bluelink/tools/plugin-docgen",
+      "datasourceTemplate": "go"
+    }
+  ],
+  "packageRules": [
+    {
+      "description": "Single Go module, no commit scope, matching the existing deps: convention this repo's svu/git-cliff release flow expects.",
+      "matchManagers": ["gomod", "custom.regex"],
+      "semanticCommitScope": null
+    },
+    {
+      "description": "Group all Go module updates into one PR so simultaneous go.mod/go.sum bumps don't conflict. The plugin-docgen pin (custom.regex, a workflow file) stays its own PR.",
+      "matchManagers": ["gomod"],
+      "groupName": "go dependencies"
+    }
+  ]
+}
