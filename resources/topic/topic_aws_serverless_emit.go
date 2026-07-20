@@ -5,9 +5,11 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/newstack-cloud/bluelink-transformer-celerity/shared"
 	sharedaws "github.com/newstack-cloud/bluelink-transformer-celerity/shared/aws"
 	"github.com/newstack-cloud/bluelink/libs/blueprint/core"
 	"github.com/newstack-cloud/bluelink/libs/blueprint/schema"
+	"github.com/newstack-cloud/bluelink/libs/blueprint/substitutions"
 	"github.com/newstack-cloud/bluelink/libs/blueprint/subwalk"
 	"github.com/newstack-cloud/bluelink/libs/plugin-framework/sdk/pluginutils"
 	"github.com/newstack-cloud/bluelink/libs/plugin-framework/sdk/transformutils"
@@ -44,8 +46,8 @@ func emitTopic(
 	fifoNode, _ := pluginutils.GetValueByPath("$.fifo", r.Resource.Spec)
 	fifo := core.BoolValue(fifoNode)
 
-	if name := core.StringValue(nameNode); name != "" {
-		spec.Fields["topicName"] = core.MappingNodeFromString(topicName(name, fifo))
+	if topicNameNode := physicalTopicName(nameNode, fifo); topicNameNode != nil {
+		spec.Fields["topicName"] = topicNameNode
 	}
 	if fifo {
 		spec.Fields["fifoTopic"] = core.MappingNodeFromBool(true)
@@ -118,6 +120,36 @@ func topicName(name string, fifo bool) string {
 		return name + fifoSuffix
 	}
 	return name
+}
+
+// Maps the abstract spec.name onto the concrete topicName.
+// A substitution-valued name (e.g. "${variables.namePrefix}-events") is passed
+// through as-is so the deploy engine resolves it, rather than being stringified
+// to "" and silently dropped. Returns nil when no name is set so the physical
+// topic name auto-generates.
+func physicalTopicName(nameNode *core.MappingNode, fifo bool) *core.MappingNode {
+	if nameNode == nil {
+		return nil
+	}
+	if nameNode.StringWithSubstitutions != nil {
+		if !fifo || endsWithLiteral(nameNode.StringWithSubstitutions, fifoSuffix) {
+			return nameNode
+		}
+		return shared.AppendLiteral(nameNode.StringWithSubstitutions, fifoSuffix)
+	}
+	name := core.StringValue(nameNode)
+	if name == "" {
+		return nil
+	}
+	return core.MappingNodeFromString(topicName(name, fifo))
+}
+
+func endsWithLiteral(s *substitutions.StringOrSubstitutions, literal string) bool {
+	if len(s.Values) == 0 {
+		return false
+	}
+	last := s.Values[len(s.Values)-1]
+	return last.StringValue != nil && strings.HasSuffix(*last.StringValue, literal)
 }
 
 func topicConcreteName(name string) string {

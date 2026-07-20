@@ -52,6 +52,11 @@ func (s *ConfigTransformTestSuite) Test_all_secret_values_emit_a_secretsmanager_
 	s.Equal("celerity/config", annotationLiteral(secret.Metadata.Annotations, transformutils.AnnotationSourceAbstractType))
 	s.Equal("infrastructure", annotationLiteral(secret.Metadata.Annotations, transformutils.AnnotationResourceCategory))
 
+	// No handler links this config, so no labels are propagated onto the
+	// concrete store: only handler-matched labels are carried over (see
+	// infraMeta in resources/config/config_aws_serverless_emit.go).
+	s.Nil(secret.Metadata.Labels)
+
 	// No Parameter Store resources in the all-secret case.
 	s.NotContains(resources, "myConfig_config_param_path")
 }
@@ -91,6 +96,11 @@ func (s *ConfigTransformTestSuite) Test_plaintext_keys_emit_an_ssm_parameter_tre
 	// tags is a MAP of string -> string on the tree.
 	s.Equal("payments", core.StringValue(tree.Spec.Fields["tags"].Fields["team"]))
 	s.Equal("infrastructure", annotationLiteral(tree.Metadata.Annotations, transformutils.AnnotationResourceCategory))
+
+	// No handler links this config, so no labels are propagated onto the
+	// concrete store: only handler-matched labels are carried over (see
+	// infraMeta in resources/config/config_aws_serverless_emit.go).
+	s.Nil(tree.Metadata.Labels)
 
 	// No Secrets Manager secret, and no legacy parameterPath / per-key parameter resources.
 	s.NotContains(resources, "myConfig_config_secret")
@@ -152,6 +162,84 @@ func (s *ConfigTransformTestSuite) Test_spec_id_reference_rewrites_to_the_config
 	)
 }
 
+// A handler linked to a mixed (parameter-store) config store gets the
+// per-namespace store env vars stamped on its lambda (STORE_ID referencing the
+// config's derived store-id value, STORE_KIND as a literal) and the
+// aws.lambda.ssm.<concreteStore>.* link annotations that make the provider
+// link grant read access under the contract-mandated env var name.
+func (s *ConfigTransformTestSuite) Test_linked_handler_gets_parameter_store_env_and_link_annotations() {
+	out := s.transformHandlerWithConfig(core.MappingNodeFields(
+		"name", core.MappingNodeFromString("appConfig"),
+		"values", core.MappingNodeFields(
+			"logLevel", core.MappingNodeFromString("info"),
+			"dbPassword", core.MappingNodeFromString("s3cr3t"),
+		),
+		"plaintext", &core.MappingNode{
+			Items: []*core.MappingNode{core.MappingNodeFromString("logLevel")},
+		},
+	))
+
+	lambda := out.TransformedBlueprint.Resources.Values["myHandler_lambda_func"]
+	s.Require().NotNil(lambda)
+	env := lambda.Spec.Fields["environment"].Fields["variables"].Fields
+
+	s.Equal("myConfig_config_store_id", valueRefName(env["CELERITY_CONFIG_APPCONFIG_STORE_ID"]),
+		"the store-id env var must reference the config's derived store-id value")
+	s.Equal("parameter-store", core.StringValue(env["CELERITY_CONFIG_APPCONFIG_STORE_KIND"]))
+
+	s.Equal("CELERITY_CONFIG_APPCONFIG_STORE_ID", annotationLiteral(
+		lambda.Metadata.Annotations, "aws.lambda.ssm.myConfig_config_param_tree.envVarName",
+	))
+	s.Equal("read", annotationLiteral(
+		lambda.Metadata.Annotations, "aws.lambda.ssm.myConfig_config_param_tree.accessLevel",
+	))
+
+	// The emitted tree carries the abstract config's labels, so the lambda's
+	// preserved linkSelector matches it and the concrete link can form.
+	tree := out.TransformedBlueprint.Resources.Values["myConfig_config_param_tree"]
+	s.Require().NotNil(tree)
+	s.Require().NotNil(tree.Metadata.Labels)
+	s.Equal("app-store", tree.Metadata.Labels.Values["store"])
+	s.Require().NotNil(lambda.LinkSelector)
+	s.Equal("app-store", lambda.LinkSelector.ByLabel.Values["store"])
+}
+
+// An all-secret (secrets-manager) config store: same wiring shape as the
+// parameter-store case but with the secretsmanager link annotations, the
+// secrets-manager kind literal, and the env namespace derived from the config's
+// blueprint name (no spec.name set here).
+func (s *ConfigTransformTestSuite) Test_linked_handler_gets_secrets_manager_env_and_link_annotations() {
+	out := s.transformHandlerWithConfig(core.MappingNodeFields(
+		"values", core.MappingNodeFields(
+			"apiKey", core.MappingNodeFromString("abc123"),
+		),
+	))
+
+	lambda := out.TransformedBlueprint.Resources.Values["myHandler_lambda_func"]
+	s.Require().NotNil(lambda)
+	env := lambda.Spec.Fields["environment"].Fields["variables"].Fields
+
+	// A secrets-manager store id is the secret's COMPUTED ARN, so the env var
+	// must reference the concrete secret resource DIRECTLY: the framework does
+	// not trace dependencies through derived-value indirection, and routing
+	// through the value deploys the env var as null (proven by e2e).
+	s.Equal("myConfig_config_secret", resourceRefName(env["CELERITY_CONFIG_MYCONFIG_STORE_ID"]),
+		"the store-id env var must reference the concrete secret resource directly")
+	s.Equal("secrets-manager", core.StringValue(env["CELERITY_CONFIG_MYCONFIG_STORE_KIND"]))
+
+	s.Equal("CELERITY_CONFIG_MYCONFIG_STORE_ID", annotationLiteral(
+		lambda.Metadata.Annotations, "aws.lambda.secretsmanager.myConfig_config_secret.envVarName",
+	))
+	s.Equal("read", annotationLiteral(
+		lambda.Metadata.Annotations, "aws.lambda.secretsmanager.myConfig_config_secret.accessLevel",
+	))
+
+	secret := out.TransformedBlueprint.Resources.Values["myConfig_config_secret"]
+	s.Require().NotNil(secret)
+	s.Require().NotNil(secret.Metadata.Labels)
+	s.Equal("app-store", secret.Metadata.Labels.Values["store"])
+}
+
 func (s *ConfigTransformTestSuite) Test_replicate_is_reported_as_an_unsupported_diagnostic() {
 	spec := core.MappingNodeFields(
 		"name", core.MappingNodeFromString("appConfig"),
@@ -176,6 +264,57 @@ func (s *ConfigTransformTestSuite) Test_replicate_is_reported_as_an_unsupported_
 	// No store is emitted when replication is requested.
 	s.NotContains(out.TransformedBlueprint.Resources.Values, "myConfig_config_secret")
 	s.NotContains(out.TransformedBlueprint.Resources.Values, "myConfig_config_param_tree")
+}
+
+// Transforms a blueprint holding one handler that selects one celerity/config
+// store by label, with the handler->config edge present in the link graph, as
+// the container would build it.
+func (s *ConfigTransformTestSuite) transformHandlerWithConfig(
+	configSpec *core.MappingNode,
+) *transform.SpecTransformerTransformOutput {
+	bp := &schema.Blueprint{
+		Resources: &schema.ResourceMap{
+			Values: map[string]*schema.Resource{
+				"myConfig": {
+					Type: &schema.ResourceTypeWrapper{Value: "celerity/config"},
+					Spec: configSpec,
+					Metadata: &schema.Metadata{
+						Labels: &schema.StringMap{
+							Values: map[string]string{"store": "app-store"},
+						},
+					},
+				},
+				"myHandler": {
+					Type: &schema.ResourceTypeWrapper{Value: "celerity/handler"},
+					Spec: core.MappingNodeFields(
+						"handlerName", core.MappingNodeFromString("myHandler"),
+						"handler", core.MappingNodeFromString("handlers.save"),
+						"runtime", core.MappingNodeFromString("nodejs24.x"),
+					),
+					LinkSelector: &schema.LinkSelector{
+						ByLabel: &schema.StringMap{
+							Values: map[string]string{"store": "app-store"},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	out, err := NewTransformer(&shared.Dependencies{}).Transform(
+		context.Background(),
+		&transform.SpecTransformerTransformInput{
+			InputBlueprint: bp,
+			LinkGraph: edges(edgeWithLabels(
+				"myHandler", "myConfig", "celerity/handler", "celerity/config",
+				map[string]string{"store": "app-store"},
+			)),
+			TransformerContext: validationContext(),
+		},
+	)
+	s.Require().NoError(err)
+	s.Require().NotNil(out.TransformedBlueprint)
+	return out
 }
 
 func (s *ConfigTransformTestSuite) transformConfig(

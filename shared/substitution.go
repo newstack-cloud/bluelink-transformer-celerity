@@ -21,3 +21,17 @@ func SubstitutionMappingNode(expr string) (*core.MappingNode, error) {
 		},
 	}, nil
 }
+
+// AppendLiteral returns a new node with a literal segment appended to the
+// substitution string, leaving the abstract spec node untouched.
+func AppendLiteral(s *substitutions.StringOrSubstitutions, literal string) *core.MappingNode {
+	values := make([]*substitutions.StringOrSubstitution, 0, len(s.Values)+1)
+	values = append(values, s.Values...)
+	values = append(values, &substitutions.StringOrSubstitution{StringValue: &literal})
+	return &core.MappingNode{
+		StringWithSubstitutions: &substitutions.StringOrSubstitutions{
+			Values:     values,
+			SourceMeta: s.SourceMeta,
+		},
+	}
+}

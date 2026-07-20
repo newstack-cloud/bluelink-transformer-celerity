@@ -413,11 +413,12 @@ func s3EventForConsumerEvent(consumerEvent string) (string, bool) {
 func emitScheduleRules(
 	r *ResolvedHandler,
 	funcResourceName string,
+	appName string,
 ) (map[string]*schema.Resource, []*core.Diagnostic, error) {
 	rules := map[string]*schema.Resource{}
 	var diagnostics []*core.Diagnostic
 	for _, schedule := range r.Schedules {
-		rule, diag, err := scheduleRule(schedule.Name, schedule.Resource, funcResourceName)
+		rule, diag, err := scheduleRule(schedule.Name, schedule.Resource, funcResourceName, appName)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -435,6 +436,7 @@ func scheduleRule(
 	scheduleName string,
 	scheduleResource *schema.Resource,
 	funcResourceName string,
+	appName string,
 ) (*schema.Resource, *core.Diagnostic, error) {
 	expression := scheduleExpression(scheduleResource)
 	if expression == "" {
@@ -465,7 +467,15 @@ func scheduleRule(
 		target.Fields["input"] = core.MappingNodeFromString(input)
 	}
 
+	// An explicit, app-scoped rule name: the Cloud Control AWS::Events::Rule
+	// handler produces a null pointer exception
+	// ("Cannot invoke CharSequence.length() because this.text is
+	// null") when Name is omitted (verified against the live API),
+	// and app scoping keeps concurrent apps/runs collision-free like every
+	// other deployed name (EventBridge rule names cap at 64 chars).
 	spec := core.MappingNodeFields(
+		"name", core.MappingNodeFromString(
+			shared.AppScopedPhysicalName(appName, scheduleName+"-rule", 64)),
 		"scheduleExpression", core.MappingNodeFromString(expression),
 		"targets", core.MappingNodeItems(target),
 	)
@@ -522,7 +532,7 @@ func emitConsumerSubscriptions(
 	for _, binding := range r.ConsumerBindings {
 		switch binding.SourceKind {
 		case ConsumerSourceTopic:
-			if err := emitTopicFanout(resources, binding, funcResourceName); err != nil {
+			if err := emitTopicFanout(resources, binding); err != nil {
 				return nil, err
 			}
 		case ConsumerSourceExternal:
@@ -541,7 +551,6 @@ func emitConsumerSubscriptions(
 func emitTopicFanout(
 	resources map[string]*schema.Resource,
 	binding *ConsumerBinding,
-	funcResourceName string,
 ) error {
 	queueName := topicQueueResourceName(binding.ConsumerName)
 

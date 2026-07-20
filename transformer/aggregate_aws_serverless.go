@@ -35,7 +35,7 @@ func createAWSServerlessAggregator() transformutils.Aggregator {
 		parents := []transformutils.SharedParent{}
 		parents = append(
 			parents,
-			handler.AWSServerlessSharedParents(ctx, primaries, manifest)...,
+			handler.AWSServerlessSharedParents(ctx, primaries, manifest, shared.ResolveAppName(run))...,
 		)
 
 		// The internal resources namespace config store: one aws/ssm/parameterTree

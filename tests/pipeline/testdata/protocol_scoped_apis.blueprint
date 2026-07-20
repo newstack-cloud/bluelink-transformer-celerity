@@ -1,0 +1,52 @@
+version "2025-11-02"
+
+transform "celerity-2026-02-27-draft"
+
+resource chatApi: celerity/api {
+    select by label {
+        app = "chat"
+    }
+    spec {
+        protocols = ["websocket"]
+    }
+}
+
+resource onMessage: celerity/handler {
+    metadata {
+        labels = { app = "chat" }
+        annotations = {
+            "celerity.handler.websocket" = true,
+            "celerity.handler.websocket.route" = "sendMessage"
+        }
+    }
+    spec {
+        handlerName = "onMessage"
+        handler = "handlers.message"
+        runtime = "nodejs24.x"
+    }
+}
+
+resource shopApi: celerity/api {
+    select by label {
+        app = "shop"
+    }
+    spec {
+        protocols = ["http"]
+    }
+}
+
+resource createOrder: celerity/handler {
+    metadata {
+        labels = { app = "shop" }
+        annotations = {
+            "celerity.handler.http" = true,
+            "celerity.handler.http.method" = "POST",
+            "celerity.handler.http.path" = "/orders"
+        }
+    }
+    spec {
+        handlerName = "createOrder"
+        handler = "handlers.create"
+        runtime = "nodejs24.x"
+    }
+}

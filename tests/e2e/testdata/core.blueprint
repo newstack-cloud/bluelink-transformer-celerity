@@ -1,0 +1,86 @@
+version "2025-11-02"
+
+transform "celerity-2026-02-27-draft"
+
+variable namePrefix: string {}
+
+resource coreApi: celerity/api {
+    select by label {
+        app = "core"
+    }
+    spec {
+        protocols = ["http"]
+    }
+}
+
+resource apiHandler: celerity/handler {
+    metadata {
+        labels = { app = "core" }
+        annotations = {
+            "celerity.handler.http" = true,
+            "celerity.handler.http.method" = "GET",
+            "celerity.handler.http.path" = "/orders"
+        }
+    }
+    select by label {
+        store = "appConfig"
+    }
+    spec {
+        handlerName = "${variables.namePrefix}-api"
+        handler = "handlers.api"
+        runtime = "nodejs24.x"
+    }
+}
+
+resource nightlySync: celerity/schedule {
+    select by label {
+        worker = "sync"
+    }
+    spec {
+        schedule = "rate(1 hour)"
+    }
+}
+
+resource syncHandler: celerity/handler {
+    metadata {
+        labels = { worker = "sync" }
+        annotations = {
+            "celerity.handler.schedule" = true
+        }
+    }
+    spec {
+        handlerName = "${variables.namePrefix}-sync"
+        handler = "handlers.sync"
+        runtime = "nodejs24.x"
+    }
+}
+
+resource appConfig: celerity/config {
+    metadata {
+        labels = { store = "appConfig" }
+    }
+    spec {
+        name = "appconfig"
+        values = {
+            logLevel = "info"
+        }
+        plaintext = ["logLevel"]
+    }
+}
+
+resource appSecrets: celerity/config {
+    metadata {
+        labels = { store = "appConfig" }
+    }
+    spec {
+        name = "appsecrets"
+        values = {
+            apiKey = "e2e-secret-api-key",
+            dbPassword = "e2e-secret-db-pass"
+        }
+    }
+}
+
+export apiBaseUrl: string {
+    field = resources.coreApi.spec.baseUrl
+}

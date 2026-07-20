@@ -177,8 +177,9 @@ func (s *TransformTestSuite) transformOneHandler() *transform.SpecTransformerTra
 
 // A build-manifest path that is set but cannot be loaded (missing/unreadable) must
 // not abort the transform: per the fallback contract it continues without the
-// manifest, emitting a syntactically valid function with no code asset so that
-// validation and dry-run can run before "celerity build".
+// manifest, emitting the function with the same stageable placeholder
+// code/handler values the validation-context path uses (they fail at deploy
+// time by design), so validation and dry-run can run before "celerity build".
 func (s *TransformTestSuite) Test_unloadable_manifest_path_is_not_fatal() {
 	out, err := NewTransformer(manifestDeps()).Transform(
 		context.Background(),
@@ -193,8 +194,21 @@ func (s *TransformTestSuite) Test_unloadable_manifest_path_is_not_fatal() {
 
 	lambda := out.TransformedBlueprint.Resources.Values["myHandler_lambda_func"]
 	s.Require().NotNil(lambda)
-	// No manifest -> no code asset reference is emitted.
-	s.Nil(lambda.Spec.Fields["code"], "no code asset should be emitted without a manifest")
+	// No manifest -> stageable placeholder code/handler values are emitted.
+	s.Require().NotNil(lambda.Spec.Fields["code"],
+		"a placeholder code asset must be emitted without a manifest")
+	s.Equal("placeholder-bucket", core.StringValue(lambda.Spec.Fields["code"].Fields["s3Bucket"]))
+	s.Equal("placeholder-key", core.StringValue(lambda.Spec.Fields["code"].Fields["s3Key"]))
+	s.Equal("placeholder.handler", core.StringValue(lambda.Spec.Fields["handler"]))
+
+	foundWarning := false
+	for _, diag := range out.Diagnostics {
+		if diag.Level == core.DiagnosticLevelWarning &&
+			strings.Contains(diag.Message, "placeholder") {
+			foundWarning = true
+		}
+	}
+	s.True(foundWarning, "expected a warning diagnostic about placeholder code values")
 }
 
 func TestTransformTestSuite(t *testing.T) {

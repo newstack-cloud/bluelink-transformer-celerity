@@ -109,9 +109,15 @@ func forwarderRoleName(queueName string) string {
 // topics' labels). Each topic's function::sns link injects the topic ARN under a
 // distinct CELERITY_FORWARD_TOPIC_ARN_<index> env var (renamed per topic). Both
 // provider links inject the IAM the forwarder needs, so only a base role is emitted.
-func buildTopicForwarder(queueName string, edges []*TopicForwardEdge) (map[string]*schema.Resource, error) {
+func buildTopicForwarder(queueName, appName string, edges []*TopicForwardEdge) (map[string]*schema.Resource, error) {
 	funcName := forwarderFunctionName(queueName)
 	roleName := forwarderRoleName(queueName)
+	// Deployed names are app-scoped (blueprint resource names stay
+	// app-agnostic) so two apps or concurrent runs sharing an account never
+	// collide on create; both Lambda function names and IAM role names cap
+	// at 64 chars.
+	physicalFuncName := shared.AppScopedPhysicalName(appName, queueName+"-fwd", 64)
+	physicalRoleName := shared.AppScopedPhysicalName(appName, queueName+"-fwd-role", 64)
 
 	roleArnRef, err := shared.SubstitutionMappingNode(
 		fmt.Sprintf("${resources.%s.spec.arn}", roleName))
@@ -155,7 +161,7 @@ func buildTopicForwarder(queueName string, edges []*TopicForwardEdge) (map[strin
 	funcRes := &schema.Resource{
 		Type: &schema.ResourceTypeWrapper{Value: "aws/lambda/function"},
 		Spec: core.MappingNodeFields(
-			"functionName", core.MappingNodeFromString(funcName),
+			"functionName", core.MappingNodeFromString(physicalFuncName),
 			"handler", core.MappingNodeFromString("index.handler"),
 			"runtime", core.MappingNodeFromString(forwarderRuntime),
 			"code", core.MappingNodeFields("zipFile", core.MappingNodeFromString(forwarderSource)),
@@ -171,17 +177,17 @@ func buildTopicForwarder(queueName string, edges []*TopicForwardEdge) (map[strin
 
 	return map[string]*schema.Resource{
 		funcName: funcRes,
-		roleName: buildForwarderRole(queueName, roleName),
+		roleName: buildForwarderRole(queueName, physicalRoleName),
 	}, nil
 }
 
 // buildForwarderRole is the forwarder's base execution role. Both provider links
 // (sqs::function, function::sns) inject the SQS-receive and sns:Publish grants at
 // deploy, so no inline policy is seeded.
-func buildForwarderRole(queueName, roleName string) *schema.Resource {
+func buildForwarderRole(queueName, physicalRoleName string) *schema.Resource {
 	return &schema.Resource{
 		Type: &schema.ResourceTypeWrapper{Value: "aws/iam/role"},
-		Spec: awslambda.SeedRoleSpec(roleName, &awslambda.RolePlan{}),
+		Spec: awslambda.SeedRoleSpec(physicalRoleName, &awslambda.RolePlan{}),
 		Metadata: &schema.Metadata{
 			Annotations: transformutils.TransformerBaseAnnotations(
 				&transformutils.TransformerBaseAnnotationsInput{

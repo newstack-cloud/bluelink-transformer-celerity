@@ -616,9 +616,9 @@ func (s *ConsumerTransformTestSuite) Test_two_bucket_consumers_use_unique_s3_eve
 
 	out := s.transformOutput(
 		map[string]*schema.Resource{
-			"bucketHandler":  handlerRes,
-			"invoicesBucket": bucketRes("invoices", "invoice-consumer"),
-			"receiptsBucket": bucketRes("receipts", "receipt-consumer"),
+			"bucketHandler":   handlerRes,
+			"invoicesBucket":  bucketRes("invoices", "invoice-consumer"),
+			"receiptsBucket":  bucketRes("receipts", "receipt-consumer"),
 			"invoiceConsumer": consumerRes("created", "invoice-consumer"),
 			"receiptConsumer": consumerRes("deleted", "receipt-consumer"),
 		},

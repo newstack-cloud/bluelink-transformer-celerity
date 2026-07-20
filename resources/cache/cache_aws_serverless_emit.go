@@ -48,6 +48,11 @@ const (
 	// the Redis protocol choke on): double-quote, at-sign, forward slash,
 	// backslash and space.
 	redisAuthExcludeCharacters = "\"@/\\ "
+
+	// maxCachePhysicalNameLen caps the generated physical base name at the
+	// ElastiCache replication group ID limit (40), the tightest of the
+	// identifiers derived from it.
+	maxCachePhysicalNameLen = 40
 )
 
 // presetsWithoutPrivateSubnets are managed VPC presets that provide no private
@@ -64,9 +69,17 @@ func emitCache(
 	r *ResolvedCache,
 	rw transformutils.ResourcePropertyRewriter,
 ) (*transformutils.EmitResult, error) {
+	// name is the logical cache name: deploy-config lookup key, label value and
+	// description text. physicalName is the base every deployed identifier
+	// derives from, an author-provided spec.name as-is (author owns
+	// uniqueness, matching queue/bucket), otherwise app-scoped so two apps in
+	// one account never collide on generated names.
 	name := core.StringValue(specGet(r, "$.name"))
+	physicalName := name
 	if name == "" {
 		name = r.Name
+		physicalName = shared.AppScopedPhysicalName(
+			shared.ResolveAppName(run), r.Name, maxCachePhysicalNameLen)
 	}
 
 	if diag := cachePresetSuitabilityError(r, name); diag != nil {
@@ -77,16 +90,16 @@ func emitCache(
 	engine := cacheEngine(r)
 	clusterMode := core.BoolValue(specGet(r, "$.clusterMode"))
 
-	rgSpec := replicationGroupBaseSpec(r, run, name, engine, clusterMode)
+	rgSpec := replicationGroupBaseSpec(r, run, name, physicalName, engine, clusterMode)
 
 	var diagnostics []*core.Diagnostic
-	if diag, err := applyVPCPlacement(r, name, rgSpec, resources); err != nil {
+	if diag, err := applyVPCPlacement(r, name, physicalName, rgSpec, resources); err != nil {
 		return nil, err
 	} else if diag != nil {
 		diagnostics = append(diagnostics, diag)
 	}
 
-	rgLinkSelector, err := applyCacheAuth(r, name, engine, rgSpec, resources)
+	rgLinkSelector, err := applyCacheAuth(r, name, physicalName, engine, rgSpec, resources)
 	if err != nil {
 		return nil, err
 	}
@@ -172,11 +185,11 @@ func cacheEngineVersion(r *ResolvedCache) string {
 func replicationGroupBaseSpec(
 	r *ResolvedCache,
 	run *transformutils.Run,
-	name, engine string,
+	name, physicalName, engine string,
 	clusterMode bool,
 ) *core.MappingNode {
 	spec := core.MappingNodeFields(
-		"replicationGroupId", core.MappingNodeFromString(name),
+		"replicationGroupId", core.MappingNodeFromString(physicalName),
 		"replicationGroupDescription", core.MappingNodeFromString(fmt.Sprintf("Celerity cache %s", name)),
 		"engine", core.MappingNodeFromString(engine),
 		"engineVersion", core.MappingNodeFromString(cacheEngineVersion(r)),
@@ -199,7 +212,7 @@ func replicationGroupBaseSpec(
 // diagnostic (the RG is still emitted) and leaves the placement fields unset.
 func applyVPCPlacement(
 	r *ResolvedCache,
-	name string,
+	name, physicalName string,
 	rgSpec *core.MappingNode,
 	resources map[string]*schema.Resource,
 ) (*core.Diagnostic, error) {
@@ -215,7 +228,7 @@ func applyVPCPlacement(
 	}
 
 	vpcConcrete := vpc.ConcreteResourceName(r.VPCName)
-	subnetGroupName := fmt.Sprintf("%s-cache-subnets", name)
+	subnetGroupName := fmt.Sprintf("%s-cache-subnets", physicalName)
 
 	subnetIdsRef, err := shared.SubstitutionMappingNode(
 		fmt.Sprintf("${resources.%s.spec.privateSubnetIds}", vpcConcrete))
@@ -248,12 +261,12 @@ func applyVPCPlacement(
 // mode provisions an auth-token secret and selects it by label.
 func applyCacheAuth(
 	r *ResolvedCache,
-	name, engine string,
+	name, physicalName, engine string,
 	rgSpec *core.MappingNode,
 	resources map[string]*schema.Resource,
 ) (*schema.LinkSelector, error) {
 	if cacheAuthMode(r) != "iam" {
-		resources[authSecretResourceName(r.Name)] = buildAuthSecret(r, name)
+		resources[authSecretResourceName(r.Name)] = buildAuthSecret(r, name, physicalName)
 		// Activate the replicationGroup::secret link: the RG selects the auth
 		// secret by its distinctive label (merged with any existing selector).
 		return mergeLinkSelectorLabel(r.Resource.LinkSelector, cacheAuthLabelKey, name), nil
@@ -262,11 +275,11 @@ func applyCacheAuth(
 	// iam mode: ElastiCache RBAC. Emit an IAM-authenticated user and a user group
 	// that contains it plus the managed "default" user (required in every RBAC
 	// user group), then attach the group to the replication group. No stored
-	// secret is needed — the client generates a short-lived SigV4 token from IAM
+	// secret is needed, the client generates a short-lived SigV4 token from IAM
 	// credentials. The handler that links to the cache stamps
 	// aws.lambda.elasticache.<rg>.authMode=iam so the function::replicationGroup
 	// link creates the elasticache:Connect grant.
-	userRes, groupRes, err := buildIAMUserAndGroup(r, name, engine)
+	userRes, groupRes, err := buildIAMUserAndGroup(r, physicalName, engine)
 	if err != nil {
 		return nil, err
 	}
@@ -337,7 +350,7 @@ func specGet(r *ResolvedCache, path string) *core.MappingNode {
 // secret carries the cache's own labels so a handler that links to the cache
 // also links to the secret (injecting it as a SECRET_<name> env var), plus the
 // distinctive auth label the RG selects on.
-func buildAuthSecret(r *ResolvedCache, name string) *schema.Resource {
+func buildAuthSecret(r *ResolvedCache, name, physicalName string) *schema.Resource {
 	labels := map[string]string{}
 	if r.Resource.Metadata != nil && r.Resource.Metadata.Labels != nil {
 		maps.Copy(labels, r.Resource.Metadata.Labels.Values)
@@ -350,7 +363,7 @@ func buildAuthSecret(r *ResolvedCache, name string) *schema.Resource {
 	return &schema.Resource{
 		Type: &schema.ResourceTypeWrapper{Value: "aws/secretsmanager/secret"},
 		Spec: core.MappingNodeFields(
-			"name", core.MappingNodeFromString(fmt.Sprintf("%s-cache-auth", name)),
+			"name", core.MappingNodeFromString(fmt.Sprintf("%s-cache-auth", physicalName)),
 			"description", core.MappingNodeFromString(
 				fmt.Sprintf("Redis AUTH token for Celerity cache %s", name)),
 			"generateSecretString", core.MappingNodeFields(
@@ -387,8 +400,8 @@ func authSecretResourceName(name string) string {
 
 // The RBAC user group must contain the managed "default" user in addition to
 // the IAM user.
-func buildIAMUserAndGroup(r *ResolvedCache, name, engine string) (*schema.Resource, *schema.Resource, error) {
-	userID := fmt.Sprintf("%s-iam", name)
+func buildIAMUserAndGroup(r *ResolvedCache, physicalName, engine string) (*schema.Resource, *schema.Resource, error) {
+	userID := fmt.Sprintf("%s-iam", physicalName)
 	user := &schema.Resource{
 		Type: &schema.ResourceTypeWrapper{Value: "aws/elasticache/user"},
 		Spec: core.MappingNodeFields(
@@ -413,7 +426,7 @@ func buildIAMUserAndGroup(r *ResolvedCache, name, engine string) (*schema.Resour
 		Type: &schema.ResourceTypeWrapper{Value: "aws/elasticache/userGroup"},
 		Spec: core.MappingNodeFields(
 			"engine", core.MappingNodeFromString(engine),
-			"userGroupId", core.MappingNodeFromString(fmt.Sprintf("%s-users", name)),
+			"userGroupId", core.MappingNodeFromString(fmt.Sprintf("%s-users", physicalName)),
 			"userIds", core.MappingNodeItems(
 				core.MappingNodeFromString("default"),
 				userIDRef,

@@ -71,3 +71,8 @@ misc
 # Claude workflow/plan files used by individuals to streamline
 # resource, link and data source development.
 CLAUDE.md
+
+# Local dev workspace, primarily to temporarily replace
+# dependencies with local versions for testing and development.
+go.work
+go.work.sum

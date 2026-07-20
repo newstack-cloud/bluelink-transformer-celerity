@@ -3,6 +3,7 @@ package sqldatabase
 import (
 	"context"
 	"fmt"
+	"maps"
 
 	"github.com/newstack-cloud/bluelink-transformer-celerity/resources/vpc"
 	"github.com/newstack-cloud/bluelink-transformer-celerity/shared"
@@ -36,6 +37,12 @@ const (
 
 	// policyDocVersion is the IAM policy language version used for the proxy role.
 	policyDocVersion = "2012-10-17"
+
+	// maxSQLPhysicalNameLen caps the generated physical base name so every
+	// identifier derived from it fits its AWS limit: "-reader" within the
+	// 63-char RDS instance identifier, and "-proxy-role" within the 64-char
+	// IAM role name.
+	maxSQLPhysicalNameLen = 52
 )
 
 // presetsUnsuitableForSQL are managed VPC presets that cannot host an RDS
@@ -74,9 +81,19 @@ func emitSQLDatabase(
 	r *ResolvedSQLDatabase,
 	rw transformutils.ResourcePropertyRewriter,
 ) (*transformutils.EmitResult, error) {
+	// name is the logical database name: deploy-config lookup key, the
+	// engine-internal dbName/databaseName and description text. physicalName is
+	// the base every deployed identifier derives from. An author-provided
+	// spec.name is kept as-is (author owns uniqueness, matching queue/bucket),
+	// it is otherwise app-scoped so two apps in one account never collide on
+	// generated names.
 	name := core.StringValue(specGet(r, "$.name"))
+	physicalName := name
 	if name == "" {
 		name = r.Name
+		physicalName = shared.AppScopedPhysicalName(
+			shared.ResolveAppName(run), r.Name, maxSQLPhysicalNameLen,
+		)
 	}
 
 	// Preset-suitability validation (managed VPC only).
@@ -91,7 +108,7 @@ func emitSQLDatabase(
 
 	// Resolve the VPC subnet / security-group references once; every emitted
 	// resource (subnet group, instance, cluster, proxy) shares them.
-	vpcRefs, err := resolveVPCRefs(r, name)
+	vpcRefs, err := resolveVPCRefs(r, name, physicalName)
 	if err != nil {
 		return nil, err
 	}
@@ -122,19 +139,17 @@ func emitSQLDatabase(
 		// The cluster is the resource handlers link to (aws/lambda/function::
 		// aws/rds/dbCluster uses Aurora's built-in connection pooling, so no RDS
 		// Proxy is emitted for this path).
-		resources[clusterResourceName(r.Name)] = buildAuroraCluster(r, run, name, engine, vpcRefs, labels)
-		resources[instanceResourceName(r.Name)] = buildAuroraInstance(r, name, engine, labels)
+		resources[clusterResourceName(r.Name)] = buildAuroraCluster(r, run, name, physicalName, engine, vpcRefs, labels)
+		resources[instanceResourceName(r.Name)] = buildAuroraInstance(r, physicalName, engine, labels)
 	} else {
-		resources[instanceResourceName(r.Name)] = buildStandaloneInstance(r, name, engine, vpcRefs, labels)
+		resources[instanceResourceName(r.Name)] = buildStandaloneInstance(r, name, physicalName, engine, vpcRefs, labels)
 		// Standalone RDS: handlers pool connections through an RDS Proxy
 		// (aws/lambda/function::aws/rds/dbProxy).
-		proxyResources, err := buildProxyResources(r, name, engine, vpcRefs, labels)
+		proxyResources, err := buildProxyResources(r, name, physicalName, engine, vpcRefs, labels)
 		if err != nil {
 			return nil, err
 		}
-		for resName, res := range proxyResources {
-			resources[resName] = res
-		}
+		maps.Copy(resources, proxyResources)
 		proxyEmitted = true
 	}
 
@@ -143,7 +158,7 @@ func emitSQLDatabase(
 	// standalone RDS it is a read replica of the primary instance.
 	readReplicas := core.BoolValue(specGet(r, "$.readReplicas"))
 	if readReplicas {
-		resources[readerResourceName(r.Name)] = buildReaderInstance(r, name, engine, auroraEnabled, labels)
+		resources[readerResourceName(r.Name)] = buildReaderInstance(r, physicalName, engine, auroraEnabled, labels)
 	}
 
 	for _, res := range resources {
@@ -235,12 +250,12 @@ type vpcReferences struct {
 	subnetGroup        *schema.Resource
 }
 
-func resolveVPCRefs(r *ResolvedSQLDatabase, name string) (*vpcReferences, error) {
+func resolveVPCRefs(r *ResolvedSQLDatabase, name, physicalName string) (*vpcReferences, error) {
 	if r.VPCName == "" {
 		return nil, nil
 	}
 	vpcConcrete := vpc.ConcreteResourceName(r.VPCName)
-	subnetGroupName := fmt.Sprintf("%s-db-subnets", name)
+	subnetGroupName := fmt.Sprintf("%s-db-subnets", physicalName)
 
 	subnetIdsRef, err := shared.SubstitutionMappingNode(
 		fmt.Sprintf("${resources.%s.spec.privateSubnetIds}", vpcConcrete))
@@ -284,12 +299,12 @@ func resolveVPCRefs(r *ResolvedSQLDatabase, name string) (*vpcReferences, error)
 // computed masterUserSecret); iam mode -> IAM database authentication.
 func buildStandaloneInstance(
 	r *ResolvedSQLDatabase,
-	name, engine string,
+	name, physicalName, engine string,
 	vpcRefs *vpcReferences,
 	labels *schema.StringMap,
 ) *schema.Resource {
 	spec := core.MappingNodeFields(
-		"dbInstanceIdentifier", core.MappingNodeFromString(name),
+		"dbInstanceIdentifier", core.MappingNodeFromString(physicalName),
 		"dbName", core.MappingNodeFromString(name),
 		"engine", core.MappingNodeFromString(engine),
 		"dbInstanceClass", core.MappingNodeFromString(defaultInstanceClass),
@@ -317,12 +332,12 @@ func buildStandaloneInstance(
 func buildAuroraCluster(
 	r *ResolvedSQLDatabase,
 	run *transformutils.Run,
-	name, engine string,
+	name, physicalName, engine string,
 	vpcRefs *vpcReferences,
 	labels *schema.StringMap,
 ) *schema.Resource {
 	spec := core.MappingNodeFields(
-		"dbClusterIdentifier", core.MappingNodeFromString(name),
+		"dbClusterIdentifier", core.MappingNodeFromString(physicalName),
 		"databaseName", core.MappingNodeFromString(name),
 		"engine", core.MappingNodeFromString(auroraEngine(engine)),
 		"masterUsername", core.MappingNodeFromString(defaultMasterUsername),
@@ -355,11 +370,11 @@ func buildAuroraCluster(
 
 func buildAuroraInstance(
 	r *ResolvedSQLDatabase,
-	name, engine string,
+	physicalName, engine string,
 	labels *schema.StringMap,
 ) *schema.Resource {
 	spec := core.MappingNodeFields(
-		"dbInstanceIdentifier", core.MappingNodeFromString(name),
+		"dbInstanceIdentifier", core.MappingNodeFromString(physicalName),
 		"dbClusterIdentifier", clusterRef(r.Name, "dbClusterIdentifier"),
 		"engine", core.MappingNodeFromString(auroraEngine(engine)),
 		"dbInstanceClass", core.MappingNodeFromString(serverlessInstanceClass),
@@ -377,11 +392,11 @@ func buildAuroraInstance(
 // RDS it is a read replica of the primary instance.
 func buildReaderInstance(
 	r *ResolvedSQLDatabase,
-	name, engine string,
+	physicalName, engine string,
 	auroraEnabled bool,
 	labels *schema.StringMap,
 ) *schema.Resource {
-	readerID := fmt.Sprintf("%s-reader", name)
+	readerID := fmt.Sprintf("%s-reader", physicalName)
 	var spec *core.MappingNode
 	if auroraEnabled {
 		spec = core.MappingNodeFields(
@@ -411,7 +426,7 @@ func buildReaderInstance(
 // sqlDatabase by label pool through it.
 func buildProxyResources(
 	r *ResolvedSQLDatabase,
-	name, engine string,
+	name, physicalName, engine string,
 	vpcRefs *vpcReferences,
 	labels *schema.StringMap,
 ) (map[string]*schema.Resource, error) {
@@ -429,7 +444,7 @@ func buildProxyResources(
 	}
 
 	proxySpec := core.MappingNodeFields(
-		"dbProxyName", core.MappingNodeFromString(name),
+		"dbProxyName", core.MappingNodeFromString(physicalName),
 		"engineFamily", core.MappingNodeFromString(engineFamily(engine)),
 		"roleArn", roleArnRef,
 		"vpcSubnetIds", vpcRefs.subnetIdsRef,
@@ -461,7 +476,7 @@ func buildProxyResources(
 	proxyMeta := infraMeta(r.Name)
 	proxyMeta.Labels = labels
 
-	roleResource, err := buildProxyRole(r, name, iamMode)
+	roleResource, err := buildProxyRole(r, name, physicalName, iamMode)
 	if err != nil {
 		return nil, err
 	}
@@ -491,8 +506,11 @@ func buildProxyResources(
 // secretsmanager:GetSecretValue on the instance's RDS-managed master secret so
 // the proxy can read credentials; in iam mode it instead grants rds-db:connect
 // so the proxy can authenticate to the database with IAM (defaultAuthScheme=IAM_AUTH).
-func buildProxyRole(r *ResolvedSQLDatabase, name string, iamMode bool) (*schema.Resource, error) {
-	roleName := proxyRoleResourceName(r.Name)
+func buildProxyRole(r *ResolvedSQLDatabase, name, physicalName string, iamMode bool) (*schema.Resource, error) {
+	// The deployed role name derives from the physical base (not the blueprint
+	// resource name) so it is app-scoped whenever the base is; "-proxy-role"
+	// keeps a capped generated base within IAM's 64-char role name limit.
+	roleName := fmt.Sprintf("%s-proxy-role", physicalName)
 	spec := core.MappingNodeFields(
 		"roleName", core.MappingNodeFromString(roleName),
 		"assumeRolePolicyDocument", core.MappingNodeFields(

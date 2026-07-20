@@ -25,6 +25,7 @@ func (s *SharedParentsTestSuite) Test_handlers_with_same_tracing_share_one_iam_r
 			sharedParentHandler("h2", "nodejs24.x", true),
 		},
 		nil,
+		"test-app",
 	)
 
 	s.Len(
@@ -42,6 +43,7 @@ func (s *SharedParentsTestSuite) Test_handlers_with_different_tracing_get_separa
 			sharedParentHandler("h2", "nodejs24.x", false),
 		},
 		nil,
+		"test-app",
 	)
 
 	s.Len(
@@ -58,6 +60,7 @@ func (s *SharedParentsTestSuite) Test_nil_manifest_declares_roles_but_no_layers(
 			sharedParentHandler("h1", "nodejs24.x", false),
 		},
 		/* manifest */ nil,
+		"test-app",
 	)
 
 	s.Len(parentsOfType(parents, "aws/iam/role"), 1)
@@ -85,6 +88,7 @@ func (s *SharedParentsTestSuite) Test_handlers_sharing_a_layer_dedup_by_content_
 			sharedParentHandler("h2", "nodejs24.x", false),
 		},
 		manifest,
+		"test-app",
 	)
 
 	layers := parentsOfType(parents, "aws/lambda/layerVersion")
@@ -124,6 +128,7 @@ func (s *SharedParentsTestSuite) Test_custom_dependency_layer_is_preferred_over_
 			sharedParentHandler("h2", "nodejs24.x", false), // shared layer
 		},
 		manifest,
+		"test-app",
 	)
 
 	s.Len(
@@ -140,6 +145,7 @@ func (s *SharedParentsTestSuite) Test_role_carries_correlation_annotations() {
 			sharedParentHandler("h1", "nodejs24.x", true),
 		},
 		nil,
+		"test-app",
 	)
 
 	role := parentsOfType(parents, "aws/iam/role")[0]
@@ -154,7 +160,7 @@ func (s *SharedParentsTestSuite) Test_role_carries_correlation_annotations() {
 }
 
 func (s *SharedParentsTestSuite) Test_no_handlers_returns_no_parents() {
-	parents := AWSServerlessSharedParents(context.Background(), nil, nil)
+	parents := AWSServerlessSharedParents(context.Background(), nil, nil, "test-app")
 	s.Empty(parents)
 }
 

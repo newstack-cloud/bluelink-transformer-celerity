@@ -80,6 +80,28 @@ func (s *BucketTransformTestSuite) Test_emits_an_s3_bucket_with_the_mapped_confi
 	s.Equal("infrastructure", annotationLiteral(s3.Metadata.Annotations, transformutils.AnnotationResourceCategory))
 }
 
+// A substitution-valued name (e.g. "${variables.namePrefix}-uploads") must be
+// passed through to bucketName verbatim so it resolves at deploy time, not
+// stringified to "" and silently dropped (which would auto-generate the
+// physical bucket name).
+func (s *BucketTransformTestSuite) Test_substitution_valued_name_is_passed_through() {
+	nameNode, err := shared.SubstitutionMappingNode("${variables.namePrefix}-uploads")
+	s.Require().NoError(err)
+	b := &schema.Resource{
+		Type: &schema.ResourceTypeWrapper{Value: "celerity/bucket"},
+		Spec: core.MappingNodeFields("name", nameNode),
+	}
+
+	out := s.transformBucket(map[string]*schema.Resource{"myBucket": b})
+
+	s3 := out.TransformedBlueprint.Resources.Values["myBucket_s3_bucket"]
+	s.Require().NotNil(s3)
+	s.Equal(
+		[]string{"${namePrefix}", "-uploads"},
+		substitutionSegments(s3.Spec.Fields["bucketName"]),
+	)
+}
+
 func (s *BucketTransformTestSuite) Test_encryption_defaults_to_sse_s3_without_a_key() {
 	b := &schema.Resource{
 		Type: &schema.ResourceTypeWrapper{Value: "celerity/bucket"},

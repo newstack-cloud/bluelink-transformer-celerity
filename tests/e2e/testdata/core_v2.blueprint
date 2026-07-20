@@ -1,0 +1,57 @@
+version "2025-11-02"
+
+transform "celerity-2026-02-27-draft"
+
+variable namePrefix: string {}
+
+resource nightlySync: celerity/schedule {
+    select by label {
+        worker = "sync"
+    }
+    spec {
+        schedule = "rate(2 hours)"
+    }
+}
+
+resource syncHandler: celerity/handler {
+    metadata {
+        labels = { worker = "sync" }
+        annotations = {
+            "celerity.handler.schedule" = true
+        }
+    }
+    select by label {
+        store = "appConfig",
+        jobs = "buffer"
+    }
+    spec {
+        handlerName = "${variables.namePrefix}-lifecycle"
+        handler = "handlers.sync"
+        runtime = "nodejs24.x"
+        environmentVariables = {
+            SYNC_MODE = "full"
+        }
+    }
+}
+
+resource jobsQueue: celerity/queue {
+    metadata {
+        labels = { jobs = "buffer" }
+    }
+    spec {
+        name = "${variables.namePrefix}-jobs"
+    }
+}
+
+resource appConfig: celerity/config {
+    metadata {
+        labels = { store = "appConfig" }
+    }
+    spec {
+        name = "lifecycleconfig"
+        values = {
+            logLevel = "info"
+        }
+        plaintext = ["logLevel"]
+    }
+}

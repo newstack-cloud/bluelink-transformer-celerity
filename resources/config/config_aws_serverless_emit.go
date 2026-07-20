@@ -125,7 +125,7 @@ func emitSecretsManagerResource(
 			Value: "aws/secretsmanager/secret",
 		},
 		Spec:     spec,
-		Metadata: infraMeta(r.Name),
+		Metadata: infraMeta(r),
 	}
 
 	// The secret's id output IS the ARN (this resource has no arn attribute).
@@ -186,7 +186,7 @@ func emitParameterTreeResource(
 			Value: "aws/ssm/parameterTree",
 		},
 		Spec:     spec,
-		Metadata: infraMeta(r.Name),
+		Metadata: infraMeta(r),
 	}
 
 	// The SSM store id is the path prefix (a literal, not a resource attribute).
@@ -273,16 +273,33 @@ func scalarToString(node *core.MappingNode) string {
 	return ""
 }
 
-func infraMeta(abstractName string) *schema.Metadata {
-	return &schema.Metadata{
+func infraMeta(r *ResolvedConfig) *schema.Metadata {
+	meta := &schema.Metadata{
 		Annotations: transformutils.TransformerBaseAnnotations(
 			&transformutils.TransformerBaseAnnotationsInput{
-				AbstractResourceName: abstractName,
+				AbstractResourceName: r.Name,
 				AbstractResourceType: "celerity/config",
 				ResourceCategory:     transformutils.ResourceCategoryInfrastructure,
 			},
 		),
 	}
+
+	// Carry the labels matched by handler -> config edges so each linked
+	// handler's preserved linkSelector matches the concrete store and the
+	// provider lambda -> store link forms.
+	// This is deliberately not the config's full label set: only handler
+	// links have a concrete lambda -> store implementation, so labels matched
+	// by non-handler selectors (e.g. the api::config association, a no-op on
+	// aws-serverless) would at best be inert and at worst form unintended
+	// concrete associations as the provider's link surface grows.
+	// Handler-matched labels are exactly the set the contract wiring needs.
+	if len(r.HandlerSelectorLabels) > 0 {
+		meta.Labels = &schema.StringMap{
+			Values: r.HandlerSelectorLabels,
+		}
+	}
+
+	return meta
 }
 
 func secretResourceName(configName string) string {

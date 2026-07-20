@@ -86,6 +86,45 @@ func (s *BuildEnvVarsSuite) Test_user_env_overrides_defaults() {
 	}
 }
 
+func (s *BuildEnvVarsSuite) Test_stamps_user_config_store_id_and_kind_per_namespace() {
+	result := BuildEnvironmentVariables(
+		&EnvInput{
+			Platform:     "aws",
+			DeployTarget: "aws-serverless",
+			HandlerID:    core.MappingNodeFromString("handlers.save"),
+			EventSource:  "http",
+			UserConfigStores: []UserConfigStore{
+				{
+					EnvNamespace: "APPCONFIG",
+					StoreID:      core.MappingNodeFromString("/celerity/app/appConfig"),
+					Kind:         "parameter-store",
+				},
+				{
+					EnvNamespace: "SECRETS",
+					StoreID:      core.MappingNodeFromString("arn:aws:secretsmanager:secret"),
+					Kind:         "secrets-manager",
+				},
+			},
+		},
+	)
+
+	expected := map[string]string{
+		"CELERITY_CONFIG_APPCONFIG_STORE_ID":   "/celerity/app/appConfig",
+		"CELERITY_CONFIG_APPCONFIG_STORE_KIND": "parameter-store",
+		"CELERITY_CONFIG_SECRETS_STORE_ID":     "arn:aws:secretsmanager:secret",
+		"CELERITY_CONFIG_SECRETS_STORE_KIND":   "secrets-manager",
+	}
+	for key, expectedValue := range expected {
+		actualValue, ok := envStr(result, key)
+		s.True(ok, "Expected key %s not found in result", key)
+		s.Equal(expectedValue, actualValue, "Value for key %s does not match", key)
+	}
+
+	// The user-store list must never stamp the internal resources namespace vars.
+	_, hasInternal := envStr(result, "CELERITY_CONFIG_RESOURCES_STORE_ID")
+	s.False(hasInternal, "internal resources store vars are wired separately")
+}
+
 func envStr(node *core.MappingNode, key string) (string, bool) {
 	value, ok := node.Fields[key]
 	if !ok {

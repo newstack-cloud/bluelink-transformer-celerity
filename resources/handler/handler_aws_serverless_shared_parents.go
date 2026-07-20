@@ -3,6 +3,8 @@ package handler
 import (
 	"context"
 	"fmt"
+	"sort"
+	"strings"
 
 	"github.com/newstack-cloud/bluelink-transformer-celerity/shared"
 	"github.com/newstack-cloud/bluelink-transformer-celerity/shared/awslambda"
@@ -16,6 +18,7 @@ func AWSServerlessSharedParents(
 	ctx context.Context,
 	primaries []transformutils.ResolvedResource,
 	manifest *build.Manifest,
+	appName string,
 ) []transformutils.SharedParent {
 	handlers := []*ResolvedHandler{}
 	for _, resource := range primaries {
@@ -30,7 +33,7 @@ func AWSServerlessSharedParents(
 
 	parents := []transformutils.SharedParent{}
 
-	parents = append(parents, collectIAMRoles(handlers, manifest)...)
+	parents = append(parents, collectIAMRoles(handlers, appName)...)
 	parents = append(parents, collectLambdaLayers(handlers, manifest)...)
 
 	return parents
@@ -38,36 +41,52 @@ func AWSServerlessSharedParents(
 
 func collectIAMRoles(
 	handlers []*ResolvedHandler,
-	_ *build.Manifest,
+	appName string,
 ) []transformutils.SharedParent {
-	parents := []transformutils.SharedParent{}
-
-	// Collect one IAM role per distinct fingerprint.
-	seen := map[string]bool{}
+	// Collect one IAM role per distinct fingerprint, remembering every handler
+	// that shares it so the role can be annotated with the full sharer set.
+	fingerprints := []string{}
+	plans := map[string]*awslambda.RolePlan{}
+	firstHandler := map[string]string{}
+	sharers := map[string][]string{}
 	for _, handler := range handlers {
 		plan := handler.awsRolePlan()
 		fingerprint := plan.Fingerprint()
-		_, fingerprintSeen := seen[fingerprint]
-		if fingerprintSeen {
-			continue
+		if _, seen := plans[fingerprint]; !seen {
+			fingerprints = append(fingerprints, fingerprint)
+			plans[fingerprint] = plan
+			firstHandler[fingerprint] = handler.Name
 		}
-		seen[fingerprint] = true
+		sharers[fingerprint] = append(sharers[fingerprint], handler.Name)
+	}
 
-		roleName := iamRoleResourceName(fingerprint)
+	parents := []transformutils.SharedParent{}
+	for _, fingerprint := range fingerprints {
+		resourceName := iamRoleResourceName(fingerprint)
+		physicalName := physicalRoleName(appName, fingerprint)
+		annotations := sharedParentAnnotations(
+			firstHandler[fingerprint],
+			transformutils.ResourceCategoryInfrastructure,
+		)
+		// celerity.handler.sharedBy lists every handler using the role, sorted
+		// for a deterministic value regardless of primary iteration order
+		// (docs/contract/aws-serverless.md section 8).
+		sharedBy := sharers[fingerprint]
+		sort.Strings(sharedBy)
+		annotations.Fields[AnnotationKeySharedBy] =
+			core.MappingNodeFromString(strings.Join(sharedBy, ","))
+
 		parents = append(
 			parents,
 			transformutils.SharedParent{
 				Key:          fmt.Sprintf("iam-role:%s", fingerprint),
-				ResourceName: roleName,
+				ResourceName: resourceName,
 				ResourceType: "aws/iam/role",
-				Annotations: sharedParentAnnotations(
-					handler.Name,
-					transformutils.ResourceCategoryInfrastructure,
-				),
-				// The seed is the COMPLETE role spec: provider links inject their
+				Annotations:  annotations,
+				// The seed is the complete role spec, the provider links inject their
 				// own per-link IAM statements at deploy time, so there are no
 				// per-handler contributions to merge into it.
-				SeedSpec: awslambda.SeedRoleSpec(roleName, plan),
+				SeedSpec: awslambda.SeedRoleSpec(physicalName, plans[fingerprint]),
 			},
 		)
 	}
@@ -128,6 +147,15 @@ func handlerSpecName(r *ResolvedHandler) string {
 
 func iamRoleResourceName(fp string) string {
 	return fmt.Sprintf("celerityLambdaExec_%s", fp)
+}
+
+// IAM's hard cap on role names.
+const iamRoleNameMaxLength = 64
+
+func physicalRoleName(appName string, fp string) string {
+	return shared.AppScopedPhysicalName(
+		appName, fmt.Sprintf("lambdaExec-%s", fp), iamRoleNameMaxLength,
+	)
 }
 
 func lambdaLayerResourceName(h string) string {

@@ -71,15 +71,15 @@ func emitVPC(
 	if region, ok := deploymentRegion(ctx); ok {
 		spec.Fields["region"] = core.MappingNodeFromString(region)
 	} else if !transformutils.IsValidationContext(ctx) {
-		return &transformutils.EmitResult{
-			Diagnostics: []*core.Diagnostic{
-				{
-					Level: core.DiagnosticLevelError,
-					Message: "a managed celerity/vpc requires a deployment region; set \"aws.region\" " +
-						"in the deploy configuration",
-				},
-			},
-		}, nil
+		// Cache and sqlDatabase emits reference this VPC's concrete resource by
+		// name; a diagnostic with no emitted resources would leave those
+		// references dangling in the output blueprint, so a missing region
+		// aborts the transform instead.
+		return nil, fmt.Errorf(
+			"a managed celerity/vpc (%q) requires a deployment region; set \"aws.region\" "+
+				"in the deploy configuration",
+			r.Name,
+		)
 	}
 
 	return vpcResult(r, spec, rw), nil

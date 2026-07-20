@@ -1,0 +1,39 @@
+name: Bluelink Transformer for Celerity E2E Tests
+
+# Real-cloud end-to-end deploy tests (build tag `e2e`, tests/e2e).
+# This is deliberately not a part of the per-PR CI workflow,
+# these tests deploy real AWS resources.
+# This runs weekly and on demand.
+on:
+  schedule:
+    # Weekly, Monday 09:30 UTC.
+    - cron: '30 9 * * 1'
+  workflow_dispatch:
+    inputs: {}
+
+permissions:
+  contents: read
+  # Required for OIDC-based AWS credentials.
+  id-token: write
+
+jobs:
+  e2e-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@v6
+        with:
+          go-version: '1.26'
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.E2E_AWS_ROLE_ARN }}
+          aws-region: ${{ vars.E2E_AWS_REGION || 'eu-west-2' }}
+
+      - name: Run E2E Tests
+        env:
+          AWS_REGION: ${{ vars.E2E_AWS_REGION || 'eu-west-2' }}
+        run: bash scripts/run-tests.sh --e2e

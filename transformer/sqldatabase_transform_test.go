@@ -23,6 +23,44 @@ func TestSQLDatabaseTransformTestSuite(t *testing.T) {
 	suite.Run(t, new(SQLDatabaseTransformTestSuite))
 }
 
+// When the author omits spec.name, every deployed identifier derives from an
+// app-scoped base (<app>-<resourceName>) so two apps sharing an account never
+// collide on generated names, while the engine-internal dbName and blueprint
+// RESOURCE names stay app-agnostic. Validation contexts use the placeholder
+// app segment.
+func (s *SQLDatabaseTransformTestSuite) Test_omitted_name_app_scopes_deployed_identifiers() {
+	out := s.transformDBWithVPC(
+		core.MappingNodeFields(
+			"engine", core.MappingNodeFromString("postgres"),
+		),
+		"standard",
+		nil,
+	)
+	resources := out.TransformedBlueprint.Resources.Values
+
+	inst := resources["myDb_rds_instance"]
+	s.Require().NotNil(inst)
+	s.Equal("placeholder-app-myDb",
+		core.StringValue(inst.Spec.Fields["dbInstanceIdentifier"]))
+	s.Equal("myDb", core.StringValue(inst.Spec.Fields["dbName"]),
+		"the engine-internal database name stays logical")
+
+	sng := resources["myDb_rds_subnet_group"]
+	s.Require().NotNil(sng)
+	s.Equal("placeholder-app-myDb-db-subnets",
+		core.StringValue(sng.Spec.Fields["dbSubnetGroupName"]))
+
+	proxy := resources["myDb_rds_proxy"]
+	s.Require().NotNil(proxy)
+	s.Equal("placeholder-app-myDb",
+		core.StringValue(proxy.Spec.Fields["dbProxyName"]))
+
+	role := resources["myDb_rds_proxy_role"]
+	s.Require().NotNil(role)
+	s.Equal("placeholder-app-myDb-proxy-role",
+		core.StringValue(role.Spec.Fields["roleName"]))
+}
+
 func (s *SQLDatabaseTransformTestSuite) Test_database_in_a_managed_vpc_emits_instance_and_subnet_group() {
 	out := s.transformDBWithVPC(
 		core.MappingNodeFields(
@@ -71,10 +109,12 @@ func (s *SQLDatabaseTransformTestSuite) Test_database_in_a_managed_vpc_emits_ins
 	s.Require().NotNil(authItems[0].Fields["secretArn"])
 
 	// The proxy's IAM role trusts rds.amazonaws.com and grants GetSecretValue.
+	// The deployed role name derives from the physical base (the author-provided
+	// spec.name "orders"), not the blueprint resource name.
 	role := resources["myDb_rds_proxy_role"]
 	s.Require().NotNil(role)
 	s.Equal("aws/iam/role", role.Type.Value)
-	s.Equal("myDb_rds_proxy_role", core.StringValue(role.Spec.Fields["roleName"]))
+	s.Equal("orders-proxy-role", core.StringValue(role.Spec.Fields["roleName"]))
 	s.Require().NotNil(role.Spec.Fields["policies"], "password mode grants secret access")
 
 	// A target group registers the instance behind the proxy. dbProxyName

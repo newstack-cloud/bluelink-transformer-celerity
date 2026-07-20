@@ -46,6 +46,10 @@ func (s *APITransformTestSuite) Test_http_only_emits_api_and_stage() {
 	s.Require().NotNil(api)
 	s.Equal("aws/apigatewayv2/api", api.Type.Value)
 	s.Equal("HTTP", core.StringValue(api.Spec.Fields["protocolType"]))
+	// The deployed API name is always transformer-invented (the abstract API
+	// has no name field) and therefore app-scoped; validation contexts use the
+	// placeholder app segment.
+	s.Equal("placeholder-app-ordersApi-http", core.StringValue(api.Spec.Fields["name"]))
 
 	// The concrete API preserves the abstract API's linkSelector.
 	s.Require().NotNil(api.LinkSelector)

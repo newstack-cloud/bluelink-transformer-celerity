@@ -76,6 +76,57 @@ func (s *TopicTransformTestSuite) Test_fifo_topic_appends_the_fifo_suffix() {
 	s.Nil(sns.Spec.Fields["contentBasedDeduplication"])
 }
 
+// A substitution-valued name (e.g. "${variables.namePrefix}-events") must be
+// passed through to topicName verbatim so it resolves at deploy time, not
+// stringified to "" and silently dropped (which would auto-generate the
+// physical topic name).
+func (s *TopicTransformTestSuite) Test_substitution_valued_name_is_passed_through() {
+	nameNode, err := shared.SubstitutionMappingNode("${variables.namePrefix}-events")
+	s.Require().NoError(err)
+	tp := &schema.Resource{
+		Type: &schema.ResourceTypeWrapper{Value: "celerity/topic"},
+		Spec: core.MappingNodeFields("name", nameNode),
+	}
+
+	resources := s.transformTopic(map[string]*schema.Resource{"myTopic": tp})
+
+	sns := resources["myTopic_sns_topic"]
+	s.Require().NotNil(sns)
+	s.Equal(
+		[]string{"${namePrefix}", "-events"},
+		substitutionSegments(sns.Spec.Fields["topicName"]),
+	)
+}
+
+// A FIFO topic with a substitution-valued name keeps the substitution and gets
+// the required .fifo suffix appended as a literal segment; the abstract spec
+// node itself is left untouched.
+func (s *TopicTransformTestSuite) Test_fifo_substitution_valued_name_gets_the_fifo_suffix_appended() {
+	nameNode, err := shared.SubstitutionMappingNode("${variables.namePrefix}-events")
+	s.Require().NoError(err)
+	tp := &schema.Resource{
+		Type: &schema.ResourceTypeWrapper{Value: "celerity/topic"},
+		Spec: core.MappingNodeFields(
+			"name", nameNode,
+			"fifo", core.MappingNodeFromBool(true),
+		),
+	}
+
+	resources := s.transformTopic(map[string]*schema.Resource{"myTopic": tp})
+
+	sns := resources["myTopic_sns_topic"]
+	s.Require().NotNil(sns)
+	s.Equal(
+		[]string{"${namePrefix}", "-events", ".fifo"},
+		substitutionSegments(sns.Spec.Fields["topicName"]),
+	)
+	s.Equal(
+		[]string{"${namePrefix}", "-events"},
+		substitutionSegments(nameNode),
+		"the abstract spec name node must not be mutated",
+	)
+}
+
 // A topic receiving bucket notifications maps its celerity.topic.bucket.* config
 // onto the provider aws.s3.sns.* annotations the aws/s3/bucket::aws/sns/topic link
 // consumes.

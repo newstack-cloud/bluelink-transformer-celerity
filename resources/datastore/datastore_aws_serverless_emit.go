@@ -31,8 +31,8 @@ func emitDatastore(
 ) (*transformutils.EmitResult, error) {
 	spec := &core.MappingNode{Fields: map[string]*core.MappingNode{}}
 
-	if name := core.StringValue(mustGet("$.name", r)); name != "" {
-		spec.Fields["tableName"] = core.MappingNodeFromString(name)
+	if nameNode := passthroughNameNode(mustGet("$.name", r)); nameNode != nil {
+		spec.Fields["tableName"] = nameNode
 	}
 
 	partitionKey := core.StringValue(mustGet("$.keys.partitionKey", r))
@@ -156,6 +156,13 @@ func applyBillingConfig(spec *core.MappingNode, run *transformutils.Run, r *Reso
 		if v.StringValue != nil {
 			billingMode = *v.StringValue
 		}
+	} else {
+		// DynamoDB's own API default is PROVISIONED, which requires explicit
+		// capacity; a table emitted without billingMode and without
+		// provisionedThroughput is rejected at deploy time ("Property
+		// ProvisionedThroughput cannot be empty"). Celerity's default is
+		// on-demand, so emit it explicitly.
+		spec.Fields["billingMode"] = core.MappingNodeFromString("PAY_PER_REQUEST")
 	}
 
 	if billingMode == "PROVISIONED" {
@@ -259,6 +266,24 @@ func attributeDefinition(attributeName string) *core.MappingNode {
 
 func mustGet(path string, r *ResolvedDatastore) *core.MappingNode {
 	node, _ := pluginutils.GetValueByPath(path, r.Resource.Spec)
+	return node
+}
+
+// Returns the abstract name node for the concrete spec. A
+// substitution-valued name (e.g. "${variables.namePrefix}-orders") is passed
+// through as-is so the deploy engine resolves it, rather than being stringified
+// to "" and silently dropped. Returns nil when no name is set so the physical
+// table name auto-generates.
+func passthroughNameNode(node *core.MappingNode) *core.MappingNode {
+	if node == nil {
+		return nil
+	}
+	if node.StringWithSubstitutions != nil {
+		return node
+	}
+	if core.StringValue(node) == "" {
+		return nil
+	}
 	return node
 }
 

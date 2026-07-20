@@ -1,0 +1,105 @@
+version "2025-11-02"
+
+transform "celerity-2026-02-27-draft"
+
+resource ordersApi: celerity/api {
+    select by label {
+        app = "orders"
+    }
+    spec {
+        protocols = ["http"]
+    }
+}
+
+resource saveOrder: celerity/handler {
+    metadata {
+        labels = { app = "orders" }
+        annotations = {
+            "celerity.handler.http" = true,
+            "celerity.handler.http.method" = "POST",
+            "celerity.handler.http.path" = "/orders"
+        }
+    }
+    select by label {
+        ordersData = "primary"
+    }
+    spec {
+        handlerName = "saveOrder"
+        handler = "handlers.save"
+        runtime = "nodejs24.x"
+    }
+}
+
+resource getOrder: celerity/handler {
+    metadata {
+        labels = { app = "orders" }
+        annotations = {
+            "celerity.handler.http" = true,
+            "celerity.handler.http.method" = "GET",
+            "celerity.handler.http.path" = "/orders"
+        }
+    }
+    select by label {
+        ordersData = "primary"
+    }
+    spec {
+        handlerName = "getOrder"
+        handler = "handlers.get"
+        runtime = "nodejs24.x"
+    }
+}
+
+resource publishOrderEvents: celerity/handler {
+    metadata {
+        labels = { app = "orders" }
+        annotations = {
+            "celerity.handler.http" = true,
+            "celerity.handler.http.method" = "POST",
+            "celerity.handler.http.path" = "/order-events"
+        }
+    }
+    select by label {
+        ordersFlow = "events"
+    }
+    spec {
+        handlerName = "publishOrderEvents"
+        handler = "handlers.publish"
+        runtime = "nodejs24.x"
+    }
+}
+
+resource ordersTable: celerity/datastore {
+    metadata {
+        labels = { ordersData = "primary", ordersFlow = "events" }
+    }
+    spec {
+        keys = { partitionKey = "id" }
+    }
+}
+
+resource orderEvents: celerity/topic {
+    metadata {
+        labels = { ordersFlow = "events" }
+    }
+    spec {
+        name = "order-events"
+    }
+}
+
+resource uploadsBucket: celerity/bucket {
+    select by label {
+        uploads = "events"
+    }
+    spec {
+        name = "uploads"
+    }
+}
+
+resource uploadsQueue: celerity/queue {
+    metadata {
+        labels = { uploads = "events" }
+    }
+    spec {
+        name = "uploads-events"
+    }
+}

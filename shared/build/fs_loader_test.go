@@ -22,7 +22,7 @@ func Test_FSResourceLoader_loads_existing_file(t *testing.T) {
 	loader := NewFSResourceLoader(afero.NewOsFs())
 	reader, err := loader.Load(context.Background(), path, newFakeTransformContext(nil, nil))
 	require.NoError(t, err)
-	defer reader.Close()
+	defer func() { require.NoError(t, reader.Close()) }()
 
 	got, err := io.ReadAll(reader)
 	require.NoError(t, err)

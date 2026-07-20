@@ -1,0 +1,116 @@
+version "2025-11-02"
+
+transform "celerity-2026-02-27-draft"
+
+variable namePrefix: string {}
+
+resource mainHandler: celerity/handler {
+    select by label {
+        store = "events"
+    }
+    spec {
+        handlerName = "${variables.namePrefix}-main"
+        handler = "handlers.main"
+        runtime = "nodejs24.x"
+    }
+}
+
+resource eventsTable: celerity/datastore {
+    metadata {
+        labels = { store = "events" }
+    }
+    select by label {
+        streamConsumer = "events"
+    }
+    spec {
+        keys = { partitionKey = "id" }
+    }
+}
+
+resource uploadsBucket: celerity/bucket {
+    select by label {
+        notify = "uploads"
+    }
+    spec {
+        name = "${variables.namePrefix}-uploads"
+    }
+}
+
+resource uploadsQueue: celerity/queue {
+    metadata {
+        labels = { notify = "uploads" }
+        annotations = {
+            "celerity.queue.deadLetterMaxAttempts" = 5
+        }
+    }
+    select by label {
+        consumer = "uploads",
+        dlq = "uploads"
+    }
+    spec {
+        name = "${variables.namePrefix}-uploads"
+        visibilityTimeout = 120
+    }
+}
+
+resource uploadsDLQ: celerity/queue {
+    metadata {
+        labels = { dlq = "uploads" }
+    }
+    spec {
+        name = "${variables.namePrefix}-uploads-dlq"
+    }
+}
+
+resource uploadsTopic: celerity/topic {
+    metadata {
+        labels = { notify = "uploads" }
+        annotations = {
+            "celerity.topic.bucket.events" = "deleted"
+        }
+    }
+    spec {
+        name = "${variables.namePrefix}-uploads-topic"
+    }
+}
+
+resource uploadsConsumer: celerity/consumer {
+    metadata {
+        labels = { consumer = "uploads" }
+    }
+    select by label {
+        worker = "uploads"
+    }
+    spec {
+        batchSize = 5
+    }
+}
+
+resource streamConsumer: celerity/consumer {
+    metadata {
+        labels = { streamConsumer = "events" }
+        annotations = {
+            "celerity.consumer.datastore.startFromBeginning" = true
+        }
+    }
+    select by label {
+        worker = "uploads"
+    }
+    spec {
+        batchSize = 5
+    }
+}
+
+resource processUpload: celerity/handler {
+    metadata {
+        labels = { worker = "uploads" }
+        annotations = {
+            "celerity.handler.consumer" = true
+        }
+    }
+    spec {
+        handlerName = "${variables.namePrefix}-process"
+        handler = "handlers.process"
+        runtime = "nodejs24.x"
+    }
+}

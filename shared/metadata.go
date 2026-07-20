@@ -37,3 +37,21 @@ func ResourceLinksStorePath(run *transformutils.Run) string {
 	}
 	return fmt.Sprintf("/celerity/%s/%s", appName, resourceLinksStoreName)
 }
+
+// AppScopedPhysicalName builds an application-scoped deployed resource name
+// "<appName>-<suffix>", truncating the app segment when needed so the result
+// respects maxLen while the distinguishing suffix always survives. Deployed
+// names must be app-scoped so two applications (or two concurrent test runs)
+// sharing an account never collide on create; blueprint RESOURCE names stay
+// app-agnostic. The placeholder app name is used when the context has no app
+// name (validation).
+func AppScopedPhysicalName(appName, suffix string, maxLen int) string {
+	if appName == "" {
+		appName = PlaceholderAppName
+	}
+	maxApp := maxLen - len(suffix) - 1
+	if len(appName) > maxApp {
+		appName = appName[:maxApp]
+	}
+	return appName + "-" + suffix
+}

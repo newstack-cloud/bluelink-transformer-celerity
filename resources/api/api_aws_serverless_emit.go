@@ -45,13 +45,14 @@ func emitAPI(
 	resources := map[string]*schema.Resource{}
 	var diagnostics []*core.Diagnostic
 
+	appName := shared.ResolveAppName(run)
 	if info.hasHTTP {
-		if err := emitProtocolAPI(r, info, protocolHTTP, resources); err != nil {
+		if err := emitProtocolAPI(r, info, protocolHTTP, appName, resources); err != nil {
 			return nil, err
 		}
 	}
 	if info.hasWS {
-		if err := emitProtocolAPI(r, info, protocolWebSocket, resources); err != nil {
+		if err := emitProtocolAPI(r, info, protocolWebSocket, appName, resources); err != nil {
 			return nil, err
 		}
 	}
@@ -149,10 +150,16 @@ func emitProtocolAPI(
 	r *ResolvedAPI,
 	info protocolInfo,
 	protocol string,
+	appName string,
 	resources map[string]*schema.Resource,
 ) error {
 	spec := core.MappingNodeFields(
-		"name", core.MappingNodeFromString(fmt.Sprintf("%s-%s", r.Name, protocol)),
+		// The abstract API carries no author-facing name field, so the deployed
+		// name is always transformer-invented and therefore app-scoped
+		// (apigatewayv2 API names are account-visible; two apps sharing an
+		// account must not collide). 128 is the apigatewayv2 name limit.
+		"name", core.MappingNodeFromString(
+			shared.AppScopedPhysicalName(appName, fmt.Sprintf("%s-%s", r.Name, protocol), 128)),
 		"protocolType", core.MappingNodeFromString(protocolTypeValue(protocol)),
 	)
 

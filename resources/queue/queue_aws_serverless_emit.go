@@ -5,9 +5,11 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/newstack-cloud/bluelink-transformer-celerity/shared"
 	sharedaws "github.com/newstack-cloud/bluelink-transformer-celerity/shared/aws"
 	"github.com/newstack-cloud/bluelink/libs/blueprint/core"
 	"github.com/newstack-cloud/bluelink/libs/blueprint/schema"
+	"github.com/newstack-cloud/bluelink/libs/blueprint/substitutions"
 	"github.com/newstack-cloud/bluelink/libs/blueprint/subwalk"
 	"github.com/newstack-cloud/bluelink/libs/plugin-framework/sdk/pluginutils"
 	"github.com/newstack-cloud/bluelink/libs/plugin-framework/sdk/transformutils"
@@ -52,8 +54,8 @@ func emitQueue(
 	fifoNode, _ := pluginutils.GetValueByPath("$.fifo", r.Resource.Spec)
 	fifo := core.BoolValue(fifoNode)
 
-	if name := core.StringValue(nameNode); name != "" {
-		spec.Fields["queueName"] = core.MappingNodeFromString(queueName(name, fifo))
+	if queueNameNode := physicalQueueName(nameNode, fifo); queueNameNode != nil {
+		spec.Fields["queueName"] = queueNameNode
 	}
 	if fifo {
 		spec.Fields["fifoQueue"] = core.MappingNodeFromBool(true)
@@ -108,7 +110,7 @@ func emitQueue(
 	// A single intermediary forwarder fans the queue's messages out to every target
 	// topic (SQS has no native SNS forwarding). It is the queue's sole additional
 	// consumer, so it must not coexist with a Celerity consumer on the same queue.
-	forwardDiags, err := emitTopicForwarder(r, resources)
+	forwardDiags, err := emitTopicForwarder(r, shared.ResolveAppName(run), resources)
 	if err != nil {
 		return nil, err
 	}
@@ -125,7 +127,7 @@ func emitQueue(
 // returns an error diagnostic) when the queue is also consumed — an SQS queue cannot
 // feed both a consumer's poller and the forwarder's poller (competing consumers) —
 // or when the forwarding edges carry no selector labels to resolve the topics.
-func emitTopicForwarder(r *ResolvedQueue, resources map[string]*schema.Resource) ([]*core.Diagnostic, error) {
+func emitTopicForwarder(r *ResolvedQueue, appName string, resources map[string]*schema.Resource) ([]*core.Diagnostic, error) {
 	if len(r.TopicForwards) == 0 {
 		return nil, nil
 	}
@@ -153,7 +155,7 @@ func emitTopicForwarder(r *ResolvedQueue, resources map[string]*schema.Resource)
 		}}, nil
 	}
 
-	forwarder, err := buildTopicForwarder(r.Name, r.TopicForwards)
+	forwarder, err := buildTopicForwarder(r.Name, appName, r.TopicForwards)
 	if err != nil {
 		return nil, err
 	}
@@ -213,6 +215,39 @@ func queueName(name string, fifo bool) string {
 		return name + fifoSuffix
 	}
 	return name
+}
+
+// Maps the abstract spec.name onto the concrete queueName.
+// A substitution-valued name (e.g. "${variables.namePrefix}-orders") is passed
+// through as-is so the deploy engine resolves it, rather than being stringified
+// to "" and silently dropped. Returns nil when no name is set so the physical
+// queue name auto-generates.
+func physicalQueueName(nameNode *core.MappingNode, fifo bool) *core.MappingNode {
+	if nameNode == nil {
+		return nil
+	}
+
+	if nameNode.StringWithSubstitutions != nil {
+		if !fifo || endsWithLiteral(nameNode.StringWithSubstitutions, fifoSuffix) {
+			return nameNode
+		}
+		return shared.AppendLiteral(nameNode.StringWithSubstitutions, fifoSuffix)
+	}
+
+	name := core.StringValue(nameNode)
+	if name == "" {
+		return nil
+	}
+
+	return core.MappingNodeFromString(queueName(name, fifo))
+}
+
+func endsWithLiteral(s *substitutions.StringOrSubstitutions, literal string) bool {
+	if len(s.Values) == 0 {
+		return false
+	}
+	last := s.Values[len(s.Values)-1]
+	return last.StringValue != nil && strings.HasSuffix(*last.StringValue, literal)
 }
 
 func queueConcreteName(name string) string {

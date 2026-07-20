@@ -108,6 +108,62 @@ func (s *ResourcesStoreTestSuite) Test_no_backing_links_no_store() {
 	s.Nil(env["CELERITY_CONFIG_RESOURCES_STORE_ID"], "no store env var without backing links")
 }
 
+// Datastore store entries reference the table's computed arn output, not
+// tableName, which the emit only sets when the abstract name is present — so a
+// name-less handler-linked datastore still stages (the reference resolves on
+// deploy) and DynamoDB calls accept the ARN wherever a table name is
+// expected. The name-less entry is keyed by the abstract-name fallback; the
+// value shape is identical whether or not the datastore is named.
+func (s *ResourcesStoreTestSuite) Test_datastore_entries_reference_the_computed_table_arn() {
+	handlerRes := handlerLinkedTo(map[string]string{"data": "orders"})
+	namelessDatastore := &schema.Resource{
+		Type: &schema.ResourceTypeWrapper{Value: "celerity/datastore"},
+		Spec: core.MappingNodeFields(
+			"keys", core.MappingNodeFields("partitionKey", core.MappingNodeFromString("id")),
+		),
+		Metadata: &schema.Metadata{Labels: &schema.StringMap{Values: map[string]string{"data": "orders"}}},
+	}
+	namedDatastore := &schema.Resource{
+		Type: &schema.ResourceTypeWrapper{Value: "celerity/datastore"},
+		Spec: core.MappingNodeFields(
+			"name", core.MappingNodeFromString("archive"),
+			"keys", core.MappingNodeFields("partitionKey", core.MappingNodeFromString("id")),
+		),
+		Metadata: &schema.Metadata{Labels: &schema.StringMap{Values: map[string]string{"data": "orders"}}},
+	}
+
+	bp := &schema.Blueprint{Resources: &schema.ResourceMap{Values: map[string]*schema.Resource{
+		"saveOrder": handlerRes, "ordersTable": namelessDatastore, "archiveTable": namedDatastore,
+	}}}
+	out, err := NewTransformer(&shared.Dependencies{}).Transform(
+		context.Background(),
+		&transform.SpecTransformerTransformInput{
+			InputBlueprint: bp,
+			LinkGraph: edges(
+				edge("saveOrder", "ordersTable", "celerity/handler", "celerity/datastore"),
+				edge("saveOrder", "archiveTable", "celerity/handler", "celerity/datastore"),
+			),
+			TransformerContext: validationContext(),
+		},
+	)
+	s.Require().NoError(err)
+
+	store := out.TransformedBlueprint.Resources.Values["celerityResourcesConfigStore"]
+	s.Require().NotNil(store, "expected the internal resources config store")
+	values := store.Spec.Fields["values"]
+	s.Require().NotNil(values)
+
+	// Name-less: keyed by the abstract resource name.
+	name, path := resourceRefNameAndPath(values.Fields["ordersTable"])
+	s.Equal("ordersTable_dynamodb_table", name)
+	s.Equal([]string{"spec", "arn"}, path)
+
+	// Named: keyed by spec.name, same computed-arn value shape.
+	name, path = resourceRefNameAndPath(values.Fields["archive"])
+	s.Equal("archiveTable_dynamodb_table", name)
+	s.Equal([]string{"spec", "arn"}, path)
+}
+
 // Two backing resources of different types sharing a configKey (an invalid
 // blueprint the CLI rejects) must produce a deterministic store — the same winner
 // every time — rather than silently varying. The fixed backing-type order (queue
@@ -125,7 +181,7 @@ func (s *ResourcesStoreTestSuite) Test_configKey_collision_is_deterministic() {
 		Metadata: &schema.Metadata{Labels: &schema.StringMap{Values: map[string]string{"app": "orders"}}},
 	}
 
-	for i := 0; i < 5; i++ {
+	for range 5 {
 		bp := &schema.Blueprint{Resources: &schema.ResourceMap{Values: map[string]*schema.Resource{
 			"saveOrder": handlerRes, "ordersQueue": queueRes, "ordersTable": datastoreRes,
 		}}}

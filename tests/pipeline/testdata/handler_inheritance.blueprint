@@ -1,0 +1,52 @@
+version "2025-11-02"
+
+transform "celerity-2026-02-27-draft"
+
+resource appApi: celerity/api {
+    select by label {
+        app = "inherit"
+    }
+    spec {
+        protocols = ["http"]
+    }
+}
+
+resource reportStatus: celerity/handler {
+    metadata {
+        labels = { app = "inherit" }
+        annotations = {
+            "celerity.handler.http" = true,
+            "celerity.handler.http.method" = "GET",
+            "celerity.handler.http.path" = "/status"
+        }
+    }
+    select by label {
+        config = "shared-defaults"
+    }
+    spec {
+        handlerName = "reportStatus"
+        handler = "handlers.status"
+    }
+}
+
+resource sharedDefaults: celerity/handlerConfig {
+    metadata {
+        labels = { config = "shared-defaults" }
+    }
+    spec {
+        runtime = "nodejs24.x"
+        memory = 1024
+        timeout = 60
+        environmentVariables = { LOG_LEVEL = "debug" }
+    }
+}
+
+resource appSettings: celerity/config {
+    metadata {
+        labels = { app = "inherit" }
+    }
+    spec {
+        name = "appSettings"
+        values = { apiKey = "abc123" }
+    }
+}

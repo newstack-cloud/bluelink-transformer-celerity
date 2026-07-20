@@ -71,6 +71,55 @@ func (s *VPCTransformTestSuite) Test_managed_vpc_defaults_preset_and_cidr() {
 	s.Nil(flex.Spec.Fields["region"], "region is omitted in a validation context when aws.region is unset")
 }
 
+// Outside a validation context a managed vpc with no "aws.region" deploy config
+// must ABORT the transform: cache/sqlDatabase emits reference the vpc's concrete
+// resource by name, so emitting a diagnostic with no resources would leave the
+// output blueprint with dangling references.
+func (s *VPCTransformTestSuite) Test_managed_vpc_without_region_fails_the_transform_outside_validation() {
+	v := &schema.Resource{
+		Type: &schema.ResourceTypeWrapper{Value: "celerity/vpc"},
+		Spec: core.MappingNodeFields("name", core.MappingNodeFromString("app-network")),
+	}
+	ctx := &fakeTransformContext{
+		contextVars: map[string]*core.ScalarValue{
+			"deployTarget": core.ScalarFromString(shared.AWSServerless),
+		},
+	}
+
+	bp := &schema.Blueprint{Resources: &schema.ResourceMap{Values: map[string]*schema.Resource{"myVpc": v}}}
+	_, err := NewTransformer(&shared.Dependencies{}).Transform(
+		context.Background(),
+		&transform.SpecTransformerTransformInput{
+			InputBlueprint:     bp,
+			LinkGraph:          emptyLinkGraph{},
+			TransformerContext: ctx,
+		},
+	)
+	s.Require().Error(err, "a managed vpc without a deployment region must abort the transform")
+	s.Contains(err.Error(), "requires a deployment region")
+}
+
+// Reference-mode vpcs carry no region, so a missing "aws.region" is not an
+// error for them even outside validation contexts.
+func (s *VPCTransformTestSuite) Test_referenced_vpc_without_region_still_transforms() {
+	v := &schema.Resource{
+		Type: &schema.ResourceTypeWrapper{Value: "celerity/vpc"},
+		Spec: core.MappingNodeFields(
+			"name", core.MappingNodeFromString("shared-network"),
+			"mode", core.MappingNodeFromString("referenced"),
+		),
+	}
+	ctx := &fakeTransformContext{
+		contextVars: map[string]*core.ScalarValue{
+			"deployTarget": core.ScalarFromString(shared.AWSServerless),
+		},
+	}
+
+	flex := s.transformVPC(map[string]*schema.Resource{"myVpc": v}, ctx)["myVpc_flex_vpc"]
+	s.Require().NotNil(flex)
+	s.Equal("reference", core.StringValue(flex.Spec.Fields["mode"]))
+}
+
 func (s *VPCTransformTestSuite) Test_referenced_vpc_emits_reference_mode_with_only_name() {
 	v := &schema.Resource{
 		Type: &schema.ResourceTypeWrapper{Value: "celerity/vpc"},

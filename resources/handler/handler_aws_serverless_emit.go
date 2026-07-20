@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"maps"
 
+	"github.com/newstack-cloud/bluelink-transformer-celerity/resources/config"
 	"github.com/newstack-cloud/bluelink-transformer-celerity/shared"
 	sharedaws "github.com/newstack-cloud/bluelink-transformer-celerity/shared/aws"
 	"github.com/newstack-cloud/bluelink-transformer-celerity/shared/awslambda"
@@ -70,6 +71,10 @@ func (e *awsServerlessEmitter) emit(
 
 	timeout, _ := pluginutils.GetValueByPath("$.timeout", r.Resource.Spec)
 
+	userConfigStores, err := userConfigStoreEnv(r)
+	if err != nil {
+		return nil, err
+	}
 	envInput := &awslambda.EnvInput{
 		Platform:               shared.PlatformAWS,
 		DeployTarget:           shared.AWSServerless,
@@ -79,6 +84,7 @@ func (e *awsServerlessEmitter) emit(
 		HasRoutingTag:          r.HasRoutingTag,
 		Tracing:                r.TracingEnabled,
 		ResourceLinksStorePath: r.resourceLinksStorePath,
+		UserConfigStores:       userConfigStores,
 		UserEnv:                userEnvMap(r),
 	}
 	spec := core.MappingNodeFields(
@@ -96,12 +102,6 @@ func (e *awsServerlessEmitter) emit(
 			r.Resource.Metadata,
 		),
 	)
-	if codeLocationInfo.codeSpec == nil {
-		// No build manifest: omit the code asset (see loadCodeLocationInfo). The
-		// empty handler entry point is left in place for downstream validation.
-		delete(spec.Fields, "code")
-	}
-
 	if r.TracingEnabled {
 		spec.Fields["tracingConfig"] = core.MappingNodeFields(
 			"mode",
@@ -186,12 +186,22 @@ func (e *awsServerlessEmitter) emit(
 	// the execution role rds-db:connect.
 	stampSQLDatabaseAnnotations(r, run, lambdaResource)
 
+	// Stamp the config-store link annotations for each linked user
+	// celerity/config store so the aws/lambda/function::aws/ssm/parameterTree
+	// (or ::aws/secretsmanager/secret) link grants read access and maintains the
+	// CELERITY_CONFIG_<NS>_STORE_ID env var at deploy time.
+	stampConfigStoreAnnotations(r, lambdaResource)
+
 	resources := map[string]*schema.Resource{
 		funcResourceName: lambdaResource,
 	}
 
 	// Absorbed schedules emit an aws/events/rule targeting the function.
-	scheduleRules, scheduleDiags, err := emitScheduleRules(r, funcResourceName)
+	scheduleRules, scheduleDiags, err := emitScheduleRules(
+		r,
+		funcResourceName,
+		shared.ResolveAppName(run),
+	)
 	if err != nil {
 		return nil, err
 	}
@@ -239,6 +249,65 @@ func rewriteTriggerSpecs(
 			continue
 		}
 		resource.Spec = subwalk.WalkMappingNode(resource.Spec, visitor)
+	}
+}
+
+// One CELERITY_CONFIG_<NS>_STORE_ID/_STORE_KIND pair per linked user
+// celerity/config store.
+// The STORE_ID carries the abstract ${resources.<config>.spec.id} reference the
+// resource-property rewriter resolves to the emitted store's derived id value,
+// the same rewrite applied to user-authored spec.id references. The internal
+// resources namespace keeps its separate direct-literal treatment
+// (EnvInput.ResourceLinksStorePath).
+func userConfigStoreEnv(r *ResolvedHandler) ([]awslambda.UserConfigStore, error) {
+	stores := make([]awslambda.UserConfigStore, 0, len(r.Configs))
+	for _, linked := range r.Configs {
+		if linked == nil || linked.Resource == nil {
+			continue
+		}
+
+		wiring := config.StoreWiringFor(linked.Name, linked.Resource)
+		storeIDRef := fmt.Sprintf("${resources.%s.spec.id}", linked.Name)
+		if wiring.Kind == config.StoreKindSecretsManager {
+			storeIDRef = fmt.Sprintf("${resources.%s.spec.id}", wiring.ConcreteResourceName)
+		}
+		storeID, err := shared.SubstitutionMappingNode(storeIDRef)
+		if err != nil {
+			return nil, err
+		}
+		stores = append(stores, awslambda.UserConfigStore{
+			EnvNamespace: wiring.EnvNamespace,
+			StoreID:      storeID,
+			Kind:         wiring.Kind,
+		})
+	}
+	return stores, nil
+}
+
+// Stamps the aws.lambda.ssm.<store>.* / aws.lambda.secretsmanager.<store>.*
+// annotations for each linked user celerity/config store, keyed by the concrete
+// store resource name (the provider resolves annotation keys from
+// otherResourceInfo.ResourceName). accessLevel makes the link inject the scoped
+// read grant into the execution role, and envVarName renames the link-injected
+// store-identifier env var to the CELERITY_CONFIG_<NS>_STORE_ID name the SDK
+// runtime contract requires, matching the transformer-stamped value.
+func stampConfigStoreAnnotations(r *ResolvedHandler, lambda *schema.Resource) {
+	for _, linked := range r.Configs {
+		if linked == nil || linked.Resource == nil {
+			continue
+		}
+		wiring := config.StoreWiringFor(linked.Name, linked.Resource)
+		prefix := fmt.Sprintf(
+			"aws.lambda.%s.%s",
+			wiring.LinkAnnotationService,
+			wiring.ConcreteResourceName,
+		)
+		setStringAnnotation(
+			lambda.Metadata,
+			fmt.Sprintf("%s.envVarName", prefix),
+			awslambda.ConfigStoreIDEnvVarName(wiring.EnvNamespace),
+		)
+		setStringAnnotation(lambda.Metadata, fmt.Sprintf("%s.accessLevel", prefix), "read")
 	}
 }
 
@@ -291,20 +360,21 @@ func (e *awsServerlessEmitter) loadCodeLocationInfo(
 
 	manifest, hasManifest := transformutils.Use[*build.Manifest](run)
 	if !hasManifest || manifest.Lambda == nil {
-		// Per the build-manifest fallback contract, a missing manifest does not
-		// fail the transform: the function is emitted without code-asset references
-		// or an entry point, a warning is logged, and downstream validation rejects
-		// the output unless the deploy is a dry run.
+		// Per the build-manifest fallback contract, a missing manifest does not fail the transform: the
+		// function is emitted with the same stageable placeholder code/handler
+		// values the validation-context path uses, a warning is recorded, and the
+		// placeholders fail at deploy time by design. This keeps validation and
+		// dry-run/plan working before "celerity build" has run.
 		message := fmt.Sprintf(
-			"no build manifest available for celerity/handler %q; the function is emitted without a "+
-				"code asset or entry point. Run \"celerity build\" before deploying (a dry run/plan is "+
-				"still valid)",
+			"no build manifest available for celerity/handler %q; the function is emitted with "+
+				"placeholder code and entry-point values that cannot deploy. Run \"celerity build\" "+
+				"before deploying (validation and a dry run/plan are still valid)",
 			handlerName,
 		)
 		if loadErr, hasLoadErr := transformutils.Use[*shared.BuildManifestLoadError](run); hasLoadErr && loadErr.Cause != nil {
 			message = fmt.Sprintf("%s: %s", message, loadErr.Cause)
 		}
-		return &codeLocationInfo{}, &core.Diagnostic{
+		return placeholderCodeLocationInfo(), &core.Diagnostic{
 			Level:   core.DiagnosticLevelWarning,
 			Message: message,
 		}, nil

@@ -75,6 +75,31 @@ func (s *DatastoreTransformTestSuite) Test_emits_a_dynamodb_table_with_key_schem
 	s.Equal("infrastructure", annotationLiteral(table.Metadata.Annotations, transformutils.AnnotationResourceCategory))
 }
 
+// A substitution-valued name (e.g. "${variables.namePrefix}-orders") must be
+// passed through to tableName as-is so it resolves at deploy time, not
+// stringified to "" and silently dropped (which would auto-generate the
+// physical table name).
+func (s *DatastoreTransformTestSuite) Test_substitution_valued_name_is_passed_through() {
+	nameNode, err := shared.SubstitutionMappingNode("${variables.namePrefix}-orders")
+	s.Require().NoError(err)
+	ds := &schema.Resource{
+		Type: &schema.ResourceTypeWrapper{Value: "celerity/datastore"},
+		Spec: core.MappingNodeFields(
+			"name", nameNode,
+			"keys", core.MappingNodeFields(
+				"partitionKey", core.MappingNodeFromString("id"),
+			),
+		),
+	}
+
+	table := s.transformDatastore(map[string]*schema.Resource{"myStore": ds})["myStore_dynamodb_table"]
+	s.Require().NotNil(table)
+	s.Equal(
+		[]string{"${namePrefix}", "-orders"},
+		substitutionSegments(table.Spec.Fields["tableName"]),
+	)
+}
+
 func (s *DatastoreTransformTestSuite) Test_index_fields_become_a_gsi_and_extra_attribute_definitions() {
 	ds := &schema.Resource{
 		Type: &schema.ResourceTypeWrapper{Value: "celerity/datastore"},

@@ -82,6 +82,57 @@ func (s *QueueTransformTestSuite) Test_fifo_queue_appends_the_fifo_suffix() {
 		"a fifo queue name must carry the .fifo suffix")
 }
 
+// A substitution-valued name (e.g. "${variables.namePrefix}-orders") must be
+// passed through to queueName verbatim so it resolves at deploy time, not
+// stringified to "" and silently dropped (which would auto-generate the
+// physical queue name).
+func (s *QueueTransformTestSuite) Test_substitution_valued_name_is_passed_through() {
+	nameNode, err := shared.SubstitutionMappingNode("${variables.namePrefix}-orders")
+	s.Require().NoError(err)
+	q := &schema.Resource{
+		Type: &schema.ResourceTypeWrapper{Value: "celerity/queue"},
+		Spec: core.MappingNodeFields("name", nameNode),
+	}
+
+	resources := s.transform(map[string]*schema.Resource{"myQueue": q})
+
+	sqs := resources["myQueue_sqs_queue"]
+	s.Require().NotNil(sqs)
+	s.Equal(
+		[]string{"${namePrefix}", "-orders"},
+		substitutionSegments(sqs.Spec.Fields["queueName"]),
+	)
+}
+
+// A FIFO queue with a substitution-valued name keeps the substitution and gets
+// the required .fifo suffix appended as a literal segment; the abstract spec
+// node itself is left untouched.
+func (s *QueueTransformTestSuite) Test_fifo_substitution_valued_name_gets_the_fifo_suffix_appended() {
+	nameNode, err := shared.SubstitutionMappingNode("${variables.namePrefix}-orders")
+	s.Require().NoError(err)
+	q := &schema.Resource{
+		Type: &schema.ResourceTypeWrapper{Value: "celerity/queue"},
+		Spec: core.MappingNodeFields(
+			"name", nameNode,
+			"fifo", core.MappingNodeFromBool(true),
+		),
+	}
+
+	resources := s.transform(map[string]*schema.Resource{"myQueue": q})
+
+	sqs := resources["myQueue_sqs_queue"]
+	s.Require().NotNil(sqs)
+	s.Equal(
+		[]string{"${namePrefix}", "-orders", ".fifo"},
+		substitutionSegments(sqs.Spec.Fields["queueName"]),
+	)
+	s.Equal(
+		[]string{"${namePrefix}", "-orders"},
+		substitutionSegments(nameNode),
+		"the abstract spec name node must not be mutated",
+	)
+}
+
 func (s *QueueTransformTestSuite) Test_dead_letter_parent_preserves_linkSelector_and_maps_redrive() {
 	// A parent queue points at its DLQ via linkSelector and sets the celerity
 	// dead-letter annotation; the concrete queue must keep the linkSelector and
@@ -518,6 +569,25 @@ func deployConfigContext(configVars map[string]*core.ScalarValue) transform.Cont
 			"deployTarget":                     core.ScalarFromString(shared.AWSServerless),
 		},
 	}
+}
+
+// substitutionSegments flattens a StringWithSubstitutions node into a readable
+// []string form — variable references as "${<name>}", literals verbatim — so
+// tests can assert substitution-valued spec fields without walking the AST.
+func substitutionSegments(node *core.MappingNode) []string {
+	if node == nil || node.StringWithSubstitutions == nil {
+		return nil
+	}
+	segments := []string{}
+	for _, value := range node.StringWithSubstitutions.Values {
+		switch {
+		case value.StringValue != nil:
+			segments = append(segments, *value.StringValue)
+		case value.SubstitutionValue != nil && value.SubstitutionValue.Variable != nil:
+			segments = append(segments, "${"+value.SubstitutionValue.Variable.VariableName+"}")
+		}
+	}
+	return segments
 }
 
 func literalAnnotation(value string) *substitutions.StringOrSubstitutions {

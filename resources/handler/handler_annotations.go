@@ -72,6 +72,11 @@ const (
 	// AnnotationKeyGuardCustom names the custom auth guard that this handler
 	// implements for the linked API.
 	AnnotationKeyGuardCustom = "celerity.handler.guard.custom"
+
+	// AnnotationKeySharedBy records, on a shared execution role, the
+	// comma-separated (sorted) abstract names of every handler using the role,
+	// for traceability.
+	AnnotationKeySharedBy = "celerity.handler.sharedBy"
 )
 
 const (

@@ -30,8 +30,8 @@ func emitBucket(
 ) (*transformutils.EmitResult, error) {
 	spec := &core.MappingNode{Fields: map[string]*core.MappingNode{}}
 
-	if name := core.StringValue(specGet(r, "$.name")); name != "" {
-		spec.Fields["bucketName"] = core.MappingNodeFromString(name)
+	if nameNode := passthroughNameNode(specGet(r, "$.name")); nameNode != nil {
+		spec.Fields["bucketName"] = nameNode
 	}
 	if enc := buildEncryption(r); enc != nil {
 		spec.Fields["bucketEncryption"] = enc
@@ -186,6 +186,27 @@ func bucketMetadata(r *ResolvedBucket) *schema.Metadata {
 
 func specGet(r *ResolvedBucket, path string) *core.MappingNode {
 	node, _ := pluginutils.GetValueByPath(path, r.Resource.Spec)
+	return node
+}
+
+// Returns the abstract name node for the concrete spec. A
+// substitution-valued name (e.g. "${variables.namePrefix}-uploads") is passed
+// through as-is so the deploy engine resolves it, rather than being stringified
+// to "" and silently dropped. Returns nil when no name is set so the physical
+// bucket name auto-generates.
+func passthroughNameNode(node *core.MappingNode) *core.MappingNode {
+	if node == nil {
+		return nil
+	}
+
+	if node.StringWithSubstitutions != nil {
+		return node
+	}
+
+	if core.StringValue(node) == "" {
+		return nil
+	}
+
 	return node
 }
 

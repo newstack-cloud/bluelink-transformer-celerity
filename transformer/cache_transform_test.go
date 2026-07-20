@@ -76,6 +76,30 @@ func (s *CacheTransformTestSuite) Test_cache_in_a_managed_vpc_emits_rg_and_subne
 	s.False(hasWarningContaining(out.Diagnostics, "authMode"), "no auth-deferred warning in password mode")
 }
 
+// When the author omits spec.name, every deployed identifier derives from an
+// app-scoped base (<app>-<resourceName>) so two apps sharing an account never
+// collide on generated names; blueprint RESOURCE names stay app-agnostic.
+// Validation contexts use the placeholder app segment.
+func (s *CacheTransformTestSuite) Test_omitted_name_app_scopes_deployed_identifiers() {
+	out := s.transformCacheWithVPC(core.MappingNodeFields(), "standard", nil)
+	resources := out.TransformedBlueprint.Resources.Values
+
+	rg := resources["myCache_elasticache_rg"]
+	s.Require().NotNil(rg)
+	s.Equal("placeholder-app-myCache",
+		core.StringValue(rg.Spec.Fields["replicationGroupId"]))
+
+	sng := resources["myCache_elasticache_subnet_group"]
+	s.Require().NotNil(sng)
+	s.Equal("placeholder-app-myCache-cache-subnets",
+		core.StringValue(sng.Spec.Fields["cacheSubnetGroupName"]))
+
+	secret := resources["myCache_cache_auth_secret"]
+	s.Require().NotNil(secret)
+	s.Equal("placeholder-app-myCache-cache-auth",
+		core.StringValue(secret.Spec.Fields["name"]))
+}
+
 // A user label that reuses the internal auth selector key must not displace the
 // value the secret carries and the replication group selects on.
 func (s *CacheTransformTestSuite) Test_user_label_cannot_override_auth_selector() {

@@ -31,13 +31,21 @@ type storeBacking struct {
 }
 
 // storeBackings maps each celerity resource type registered in the store to its
-// concrete resource name and physical-identifier attribute (verified against the
-// provider's primary identifiers). cache and sqlDatabase are excluded — their
-// connection details reach handlers via per-link env vars, not the store.
+// concrete resource name and physical-identifier attribute. queue, topic and
+// datastore point at computed provider outputs (queueUrl, topicArn and the table
+// arn — DynamoDB data-plane calls accept a table ARN wherever a table name is
+// expected) so a name-less resource still stages: the reference resolves on
+// deploy instead of failing with missing_resource_spec_property. bucket must stay
+// on bucketName (S3 data-plane calls cannot address a bucket by its ARN), which
+// the emit only sets when the abstract name is present — a name-less
+// handler-linked bucket therefore cannot stage until the provider marks
+// bucketName computed or the SDK accepts bucket ARNs. cache and sqlDatabase are
+// excluded — their connection details reach handlers via per-link env vars, not
+// the store.
 var storeBackings = map[string]storeBacking{
 	"celerity/queue":     {queue.ConcreteResourceName, "queueUrl"},
 	"celerity/topic":     {topic.ConcreteResourceName, "topicArn"},
-	"celerity/datastore": {datastore.ConcreteResourceName, "tableName"},
+	"celerity/datastore": {datastore.ConcreteResourceName, "arn"},
 	"celerity/bucket":    {bucket.ConcreteResourceName, "bucketName"},
 }
 
