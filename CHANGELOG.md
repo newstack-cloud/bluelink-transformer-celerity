@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.2.0] - 2026-08-07
+
+### Features
+
+- **vpc:** Egress control and placement inheritance for app components([bb7768a](https://github.com/newstack-cloud/bluelink-transformer-celerity/commit/bb7768afdfda99a590811c29eca9be167da1fae4))
 ## [0.1.1] - 2026-07-20
 
 ### Bug Fixes
