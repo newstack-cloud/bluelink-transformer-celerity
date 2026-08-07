@@ -13,14 +13,25 @@ func Resource(deps *shared.Dependencies) *transformerv1.AbstractResourceDefiniti
 	awsServerlessEmitter := newAWSServerlessEmitter(deps)
 
 	return &transformerv1.AbstractResourceDefinition{
-		Type:                 "celerity/handler",
-		Label:                "Celerity Handler",
-		PlainTextSummary:     "",
-		FormattedSummary:     "",
-		PlainTextDescription: "",
-		FormattedDescription: "",
-		Schema:               handlerResourceSchema(),
-		Resolve:              resolveHandler,
+		Type:  "celerity/handler",
+		Label: "Celerity Handler",
+		PlainTextSummary: "A handler that processes requests, messages or events in a Celerity " +
+			"application.",
+		FormattedSummary: "A handler that processes requests, messages or events in a Celerity " +
+			"application.",
+		PlainTextDescription: "The abstract resource type used to define a handler that can process HTTP " +
+			"requests, WebSocket messages, events from queues and message brokers, " +
+			"scheduled events or events from cloud services, along with steps in a " +
+			"workflow.",
+		FormattedDescription: "The abstract resource type used to define a handler that can process HTTP " +
+			"requests, WebSocket messages, events from queues and message brokers, " +
+			"scheduled events or events from cloud services, along with steps in a " +
+			"workflow.\n\n" +
+			"See the " +
+			"[`celerity/handler` specification](https://www.celerityframework.io/docs/framework/applications/resources/celerity-handler) " +
+			"for more information.",
+		Schema:  handlerResourceSchema(),
+		Resolve: resolveHandler,
 		PropertyMaps: map[string]transformutils.PropertyMap{
 			shared.AWSServerless: awsPropertyMap,
 		},

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"maps"
 	"slices"
+	"strings"
 
 	"github.com/newstack-cloud/bluelink-transformer-celerity/shared"
 	"github.com/newstack-cloud/bluelink-transformer-celerity/shared/awslambda"
@@ -56,12 +57,29 @@ type ResolvedHandler struct {
 	// Absorbed inbound API link to this handler.
 	APILink *types.LinkedResource
 	// Network config for the handler, if any.
-	VPC            *types.LinkedResource
-	EventSource    EventSource
-	RoutingTag     string
-	HasRoutingTag  bool
-	VPCSubnetType  string
+	VPC *types.LinkedResource
+	// The application component the VPC placement was inherited from, empty when
+	// the handler is linked to the VPC directly or is not VPC-attached.
+	InheritedVPCFrom string
+	EventSource      EventSource
+	RoutingTag       string
+	HasRoutingTag    bool
+	VPCSubnetType    string
+	// What the handler may reach outside the VPC, empty when the author set no
+	// egress annotation anywhere in the cascade. Empty is passed through as absent
+	// rather than as a value, leaving the deploy target to resolve the reach from
+	// the network's topology.
+	VPCEgress      string
 	TracingEnabled bool
+	// Subnet tier declared by the component the placement was inherited from,
+	// overridden by the handler's own subnet-type annotation.
+	inheritedVPCSubnetType string
+	// Outbound reach declared by the component the placement was inherited from,
+	// overridden by the handler's own egress annotation.
+	inheritedVPCEgress string
+	// Labels the VPC's selector matched the component on, carried onto the
+	// emitted function so the concrete VPC-to-compute link selects it as well.
+	inheritedVPCSelectorLabels map[string]string
 	// memoised AWS serverless role plan.
 	rolePlan *awslambda.RolePlan
 	// resourceLinksStorePath is the internal resources config store's SSM path prefix,
@@ -166,6 +184,13 @@ func resolveHandler(
 	// Classify each absorbed consumer's event source now that all inbound consumer
 	// links are collected; the emit reads these bindings to wire the triggers.
 	resolveConsumerBindings(resolved, linkGraph, blueprint)
+
+	// Placement can be declared on the application components the handler is
+	// bound to rather than on the handler itself, so it is resolved once all
+	// inbound component links are known.
+	if err := resolveInheritedVPCPlacement(resolved, linkGraph, blueprint); err != nil {
+		return nil, err
+	}
 
 	// Once backing links are known, record the internal resources config store path
 	// so the role plan grants store-read and the emit sets the store env vars.
@@ -332,6 +357,7 @@ func resolveInheritedSpec(
 	target.HasRoutingTag = hasRoutingTag
 
 	target.VPCSubnetType = deriveVPCSubnetType(target)
+	target.VPCEgress = deriveVPCEgress(target)
 
 	target.TracingEnabled = core.BoolValue(handlerSpec.Fields["tracingEnabled"])
 
@@ -563,9 +589,35 @@ func deriveVPCSubnetType(resolvedHandler *ResolvedHandler) string {
 		AnnotationKeyVPCSubnetType,
 		"",
 	)
-	if !ok {
-		return SubnetTypePrivate
+	if ok {
+		return core.StringValue(subnetType)
 	}
 
-	return core.StringValue(subnetType)
+	if resolvedHandler.inheritedVPCSubnetType != "" {
+		return resolvedHandler.inheritedVPCSubnetType
+	}
+
+	return SubnetTypePrivate
+}
+
+// Resolves the handler's outbound reach from its own annotation, falling back to
+// the one cascaded from the component the placement came from.
+//
+// Unlike the subnet tier there is no default here, deliberately. Unset means the
+// deploy target resolves the reach from the network's topology, which is the only
+// place that knows whether an outbound path exists at all; defaulting it here
+// would either promise reach the network cannot deliver or withdraw reach the
+// handler had before it was placed. Returning empty is how "the author said
+// nothing" reaches the emitter intact.
+func deriveVPCEgress(resolvedHandler *ResolvedHandler) string {
+	egress, ok := transformutils.GetAnnotation(
+		resolvedHandler.Resource,
+		AnnotationKeyVPCEgress,
+		"",
+	)
+	if ok {
+		return strings.TrimSpace(core.StringValue(egress))
+	}
+
+	return strings.TrimSpace(resolvedHandler.inheritedVPCEgress)
 }

@@ -69,6 +69,10 @@ func emitAPI(
 							"websocketConfig object in spec.protocols",
 						r.Name,
 					),
+					Range: shared.DiagnosticRange(
+						shared.NodeMeta(specNode(r.Resource.Spec, "$.protocols")),
+						shared.ResourceMeta(r.Resource),
+					),
 				},
 			},
 		}, nil
@@ -88,7 +92,8 @@ func emitAPI(
 	}
 	diagnostics = append(diagnostics, domainDiags...)
 
-	if core.BoolValue(specNode(r.Resource.Spec, "$.tracingEnabled")) {
+	tracingNode := specNode(r.Resource.Spec, "$.tracingEnabled")
+	if core.BoolValue(tracingNode) {
 		// AWS API Gateway v2 (HTTP and WebSocket) APIs do not expose an X-Ray
 		// active-tracing toggle: aws/apigatewayv2/stage has no tracing/X-Ray field
 		// (X-Ray active tracing is only available on API Gateway REST/v1 stages via
@@ -103,6 +108,10 @@ func emitAPI(
 					"API Gateway REST/v1 stages); no stage-level tracing has been enabled. Enable X-Ray tracing "+
 					"on the linked Lambda handlers to trace requests on aws-serverless",
 				r.Name,
+			),
+			Range: shared.DiagnosticRange(
+				shared.NodeMeta(tracingNode),
+				shared.ResourceMeta(r.Resource),
 			),
 		})
 	}
@@ -254,6 +263,10 @@ func emitAuthorizers(
 						"API; WebSocket APIs authenticate via the in-message authMessage strategy on aws-serverless",
 					r.Name, guardName,
 				),
+				Range: shared.DiagnosticRange(
+					shared.NodeMeta(cfg),
+					shared.ResourceMeta(r.Resource),
+				),
 			})
 			continue
 		}
@@ -278,12 +291,24 @@ func emitAuthorizers(
 	return diagnostics, nil
 }
 
+// guardConfigNode locates a named guard's configuration in the API spec, so a
+// diagnostic about that guard can point at where it was declared.
+func guardConfigNode(r *ResolvedAPI, guardName string) *core.MappingNode {
+	guards, ok := pluginutils.GetValueByPath("$.auth.guards", r.Resource.Spec)
+	if !ok || guards == nil {
+		return nil
+	}
+
+	return guards.Fields[guardName]
+}
+
 // Raises scoped warnings for guard configuration that aws-serverless (API
 // Gateway) cannot honour: oauth2 discovery (JWT authorizers only support OIDC)
 // and non-bearer auth schemes (only bearer is applied).
 func guardConfigWarnings(apiName, guardName string, cfg *core.MappingNode) []*core.Diagnostic {
 	var diagnostics []*core.Diagnostic
-	if core.StringValue(specNode(cfg, "$.discoveryMode")) == "oauth2" {
+	discoveryModeNode := specNode(cfg, "$.discoveryMode")
+	if core.StringValue(discoveryModeNode) == "oauth2" {
 		diagnostics = append(diagnostics, &core.Diagnostic{
 			Level: core.DiagnosticLevelWarning,
 			Message: fmt.Sprintf(
@@ -292,15 +317,24 @@ func guardConfigWarnings(apiName, guardName string, cfg *core.MappingNode) []*co
 					"authorizer and oauth2 discovery is ignored on aws-serverless",
 				apiName, guardName,
 			),
+			Range: shared.DiagnosticRange(
+				shared.NodeMeta(discoveryModeNode),
+				shared.NodeMeta(cfg),
+			),
 		})
 	}
-	if scheme := core.StringValue(specNode(cfg, "$.authScheme")); scheme != "" && scheme != "bearer" {
+	authSchemeNode := specNode(cfg, "$.authScheme")
+	if scheme := core.StringValue(authSchemeNode); scheme != "" && scheme != "bearer" {
 		diagnostics = append(diagnostics, &core.Diagnostic{
 			Level: core.DiagnosticLevelWarning,
 			Message: fmt.Sprintf(
 				"celerity/api %q guard %q sets authScheme %q, but AWS API Gateway authorizers only apply "+
 					"the \"bearer\" scheme; the %q scheme is ignored on aws-serverless",
 				apiName, guardName, scheme, scheme,
+			),
+			Range: shared.DiagnosticRange(
+				shared.NodeMeta(authSchemeNode),
+				shared.NodeMeta(cfg),
 			),
 		})
 	}
@@ -333,6 +367,9 @@ func jwtGuardError(apiName, guardName string, cfg *core.MappingNode) *core.Diagn
 				"set issuer, audience and tokenSource to emit a valid API Gateway JWT authorizer",
 			apiName, guardName, strings.Join(missing, ", "),
 		),
+		// The fields are missing, so the guard block itself is the closest thing
+		// to point at.
+		Range: shared.DiagnosticRange(shared.NodeMeta(cfg)),
 	}
 }
 
@@ -373,6 +410,11 @@ func customAuthorizer(
 	guardName string,
 	apiIDRef *core.MappingNode,
 ) (*schema.Resource, *core.Diagnostic) {
+	guardRange := shared.DiagnosticRange(
+		shared.NodeMeta(guardConfigNode(r, guardName)),
+		shared.ResourceMeta(r.Resource),
+	)
+
 	handlerName, found := customGuardHandler(r, guardName)
 	if !found {
 		return nil, &core.Diagnostic{
@@ -382,6 +424,7 @@ func customAuthorizer(
 					"annotation naming it; the authorizer has been skipped",
 				r.Name, guardName, handler.AnnotationKeyGuardCustom,
 			),
+			Range: guardRange,
 		}
 	}
 
@@ -394,6 +437,7 @@ func customAuthorizer(
 					"invoke URI; set \"aws.region\" in the deploy configuration. The authorizer has been skipped",
 				r.Name, guardName,
 			),
+			Range: guardRange,
 		}
 	}
 
@@ -406,6 +450,7 @@ func customAuthorizer(
 		return nil, &core.Diagnostic{
 			Level:   core.DiagnosticLevelWarning,
 			Message: fmt.Sprintf("celerity/api %q custom guard %q: %s", r.Name, guardName, err.Error()),
+			Range:   guardRange,
 		}
 	}
 
@@ -498,6 +543,11 @@ func emitAPIMappings(
 							"cannot map both protocols at the same base path. Configure protocol-specific base "+
 							"paths (a domain.basePaths entry per protocol) or a separate custom domain per protocol",
 						r.Name,
+					),
+					Range: shared.DiagnosticRange(
+						shared.NodeMeta(specNode(domain, "$.basePaths")),
+						shared.NodeMeta(domain),
+						shared.ResourceMeta(r.Resource),
 					),
 				},
 			}, nil
@@ -630,6 +680,7 @@ func synthesizeIDValue(
 					"ARN has been approximated with an empty region segment",
 				r.Name,
 			),
+			Range: shared.DiagnosticRange(shared.ResourceMeta(r.Resource)),
 		}
 	}
 
@@ -640,6 +691,7 @@ func synthesizeIDValue(
 		return nil, &core.Diagnostic{
 			Level:   core.DiagnosticLevelWarning,
 			Message: fmt.Sprintf("celerity/api %q: failed to synthesise spec.id ARN: %s", r.Name, err.Error()),
+			Range:   shared.DiagnosticRange(shared.ResourceMeta(r.Resource)),
 		}
 	}
 
@@ -767,11 +819,20 @@ func websocketAuthWarnings(r *ResolvedAPI) []*core.Diagnostic {
 		if !ok || wsCfg == nil {
 			continue
 		}
-		strategy := core.StringValue(specNode(wsCfg, "$.authStrategy"))
-		_, hasGuard := pluginutils.GetValueByPath("$.authGuard", wsCfg)
+		strategyNode := specNode(wsCfg, "$.authStrategy")
+		strategy := core.StringValue(strategyNode)
+		guardNode, hasGuard := pluginutils.GetValueByPath("$.authGuard", wsCfg)
 		if strategy == "" && !hasGuard {
 			continue
 		}
+		// Anchor to whichever of the two fields the user actually wrote, so the
+		// warning lands on the ignored configuration rather than the resource.
+		authRange := shared.DiagnosticRange(
+			shared.NodeMeta(strategyNode),
+			shared.NodeMeta(guardNode),
+			shared.NodeMeta(wsCfg),
+			shared.ResourceMeta(r.Resource),
+		)
 		if strategy == "connect" {
 			diagnostics = append(diagnostics, &core.Diagnostic{
 				Level: core.DiagnosticLevelWarning,
@@ -781,6 +842,7 @@ func websocketAuthWarnings(r *ResolvedAPI) []*core.Diagnostic {
 						"WebSocket connection authorization has been ignored",
 					r.Name,
 				),
+				Range: authRange,
 			})
 			continue
 		}
@@ -792,6 +854,7 @@ func websocketAuthWarnings(r *ResolvedAPI) []*core.Diagnostic {
 					"aws-serverless; the configuration has been ignored",
 				r.Name,
 			),
+			Range: authRange,
 		})
 	}
 	return diagnostics

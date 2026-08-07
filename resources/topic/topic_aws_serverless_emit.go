@@ -93,7 +93,7 @@ func stampBucketNotifications(r *ResolvedTopic, meta *schema.Metadata) []*core.D
 		CelerityFilterSuffix: AnnotationKeyBucketFilterSuffix,
 		ProviderPrefix:       "aws.s3.sns",
 	})
-	return sharedaws.BucketNotificationDiagnostics("celerity/topic", r.Name, result)
+	return sharedaws.BucketNotificationDiagnostics("celerity/topic", r.Name, r.Resource, result)
 }
 
 // topicMetadata carries the abstract topic's labels through to the concrete

@@ -72,6 +72,7 @@ func presetSuitabilityError(r *ResolvedSQLDatabase, name string) *core.Diagnosti
 				"use \"standard\" or \"isolated\"",
 			name, r.VPCPreset,
 		),
+		Range: core.DiagnosticRangeFromSourceMeta(r.Resource.SourceMeta, nil),
 	}
 }
 
@@ -124,6 +125,7 @@ func emitSQLDatabase(
 							"placement on aws-serverless, so no database resources have been emitted",
 						name,
 					),
+					Range: core.DiagnosticRangeFromSourceMeta(r.Resource.SourceMeta, nil),
 				},
 			},
 		}, nil

@@ -88,6 +88,9 @@ func abstractLinks() map[string]*transformerv1.AbstractLinkDefinition {
 		"celerity/vpc::celerity/handler":     links.VPCToHandlerLink(),
 		"celerity/vpc::celerity/cache":       links.VPCToCacheLink(),
 		"celerity/vpc::celerity/sqlDatabase": links.VPCToSqlDatabaseLink(),
+		"celerity/vpc::celerity/api":         links.VPCToAPILink(),
+		"celerity/vpc::celerity/consumer":    links.VPCToConsumerLink(),
+		"celerity/vpc::celerity/schedule":    links.VPCToScheduleLink(),
 		// Schedule links
 		"celerity/schedule::celerity/handler": links.ScheduleToHandlerLink(),
 		"celerity/schedule::celerity/config":  links.ScheduleToConfigLink(),

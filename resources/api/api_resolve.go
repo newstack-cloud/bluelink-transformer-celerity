@@ -43,6 +43,12 @@ func resolveAPI(
 		Resource: resource,
 	}
 
+	// The link graph may be absent (e.g. a host that does not send it over the
+	// plugin boundary); degrade to no linked handlers rather than panicking.
+	if linkGraph == nil {
+		return resolved, nil
+	}
+
 	for _, edge := range linkGraph.EdgesFrom(name) {
 		if edge.TargetType != "celerity/handler" {
 			continue

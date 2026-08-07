@@ -11,8 +11,20 @@ func Resource() *transformerv1.AbstractResourceDefinition {
 	awsPropertyMap := createAWSPropertyMap()
 
 	return &transformerv1.AbstractResourceDefinition{
-		Type:    "celerity/bucket",
-		Label:   "Celerity Bucket",
+		Type:             "celerity/bucket",
+		Label:            "Celerity Bucket",
+		PlainTextSummary: "An object storage bucket for a Celerity application.",
+		FormattedSummary: "An object storage bucket for a Celerity application.",
+		PlainTextDescription: "The abstract resource type used to define an object storage bucket that stores " +
+			"files and other data for a Celerity application. Handlers can be triggered by " +
+			"events emitted for objects in a bucket through a consumer.",
+		FormattedDescription: "The abstract resource type used to define an object storage bucket that stores " +
+			"files and other data for a Celerity application.\n\n" +
+			"Handlers can be triggered by events emitted for objects in a bucket through a " +
+			"`celerity/consumer` resource.\n\n" +
+			"See the " +
+			"[`celerity/bucket` specification](https://www.celerityframework.io/docs/framework/applications/resources/celerity-bucket) " +
+			"for more information.",
 		Schema:  bucketResourceSchema(),
 		Resolve: resolveBucket,
 		Emitters: map[string]transformutils.EmitterRegistration{

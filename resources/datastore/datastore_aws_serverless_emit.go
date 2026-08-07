@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/newstack-cloud/bluelink-transformer-celerity/shared"
 	sharedaws "github.com/newstack-cloud/bluelink-transformer-celerity/shared/aws"
 	"github.com/newstack-cloud/bluelink/libs/blueprint/core"
 	"github.com/newstack-cloud/bluelink/libs/blueprint/schema"
@@ -118,6 +119,10 @@ func buildGlobalSecondaryIndexes(r *ResolvedDatastore, attrNames *orderedSet) ([
 					"celerity/datastore %q index %q must cover one or two fields (a partition key and an "+
 						"optional sort key) but has %d; the index has been skipped",
 					r.Name, name, fieldCount,
+				),
+				Range: shared.DiagnosticRange(
+					shared.NodeMeta(index),
+					shared.ResourceMeta(r.Resource),
 				),
 			})
 			continue

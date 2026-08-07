@@ -4,6 +4,7 @@ package transformer
 
 import (
 	"context"
+	"maps"
 	"testing"
 
 	"github.com/newstack-cloud/bluelink-transformer-celerity/shared"
@@ -204,6 +205,284 @@ func (s *VPCTransformTestSuite) Test_vpc_placement_defaults_subnet_type_to_priva
 	s.Require().NotNil(lambda)
 	s.Equal("private", annotationLiteral(lambda.Metadata.Annotations, "aws.flexvpc.lambda.subnetType"))
 	s.Nil(lambda.Spec.Fields["vpcConfig"])
+}
+
+// A serverless API is not itself placed in a customer-managed network, so a
+// vpc -> api placement cascades to the API's handlers. The label the VPC's
+// selector matched the API on is carried onto the function so the concrete
+// flex vpc -> function link selects it too.
+func (s *VPCTransformTestSuite) Test_vpc_placement_cascades_from_an_api_to_its_handlers() {
+	out := s.runTransformVPC(
+		map[string]*schema.Resource{
+			"ordersApi":   vpcPlacedAPI(nil),
+			"createOrder": vpcCascadeHandler(nil),
+			"appVpc":      vpcSelectingNetwork(),
+		},
+		edges(
+			edgeWithLabels(
+				"appVpc", "ordersApi", "celerity/vpc", "celerity/api",
+				map[string]string{"network": "app-network"},
+			),
+			edge("ordersApi", "createOrder", "celerity/api", "celerity/handler"),
+		),
+	)
+
+	lambda := out.TransformedBlueprint.Resources.Values["createOrder_lambda_func"]
+	s.Require().NotNil(lambda)
+	s.Equal("private", annotationLiteral(lambda.Metadata.Annotations, "aws.flexvpc.lambda.subnetType"))
+	s.Require().NotNil(lambda.Metadata.Labels)
+	s.Equal("app-network", lambda.Metadata.Labels.Values["network"])
+	s.Nil(lambda.Spec.Fields["vpcConfig"])
+}
+
+// The component's subnet-type annotation sets the tier for every handler that
+// inherits its placement.
+func (s *VPCTransformTestSuite) Test_inherited_placement_uses_the_api_subnet_type_annotation() {
+	out := s.runTransformVPC(
+		map[string]*schema.Resource{
+			"ordersApi": vpcPlacedAPI(annotationMap(
+				"celerity.api.vpc.subnetType", "public",
+			)),
+			"createOrder": vpcCascadeHandler(nil),
+			"appVpc":      vpcSelectingNetwork(),
+		},
+		edges(
+			edgeWithLabels(
+				"appVpc", "ordersApi", "celerity/vpc", "celerity/api",
+				map[string]string{"network": "app-network"},
+			),
+			edge("ordersApi", "createOrder", "celerity/api", "celerity/handler"),
+		),
+	)
+
+	lambda := out.TransformedBlueprint.Resources.Values["createOrder_lambda_func"]
+	s.Require().NotNil(lambda)
+	s.Equal("public", annotationLiteral(lambda.Metadata.Annotations, "aws.flexvpc.lambda.subnetType"))
+}
+
+// A handler's own subnet-type annotation wins over the tier inherited from the
+// component it is bound to.
+func (s *VPCTransformTestSuite) Test_handler_subnet_type_overrides_the_inherited_subnet_type() {
+	out := s.runTransformVPC(
+		map[string]*schema.Resource{
+			"ordersApi": vpcPlacedAPI(annotationMap(
+				"celerity.api.vpc.subnetType", "public",
+			)),
+			"createOrder": vpcCascadeHandler(annotationMap(
+				"celerity.handler.vpc.subnetType", "private",
+			)),
+			"appVpc": vpcSelectingNetwork(),
+		},
+		edges(
+			edgeWithLabels(
+				"appVpc", "ordersApi", "celerity/vpc", "celerity/api",
+				map[string]string{"network": "app-network"},
+			),
+			edge("ordersApi", "createOrder", "celerity/api", "celerity/handler"),
+		),
+	)
+
+	lambda := out.TransformedBlueprint.Resources.Values["createOrder_lambda_func"]
+	s.Require().NotNil(lambda)
+	s.Equal("private", annotationLiteral(lambda.Metadata.Annotations, "aws.flexvpc.lambda.subnetType"))
+}
+
+// A consumer placement cascades to the handlers that absorb the consumer.
+func (s *VPCTransformTestSuite) Test_vpc_placement_cascades_from_a_consumer_to_its_handlers() {
+	consumerRes := &schema.Resource{
+		Type: &schema.ResourceTypeWrapper{Value: "celerity/consumer"},
+		Spec: core.MappingNodeFields(
+			"sourceId", core.MappingNodeFromString("celerity::queue::orderEvents"),
+		),
+		Metadata: &schema.Metadata{
+			Annotations: annotationMap("celerity.consumer.vpc.subnetType", "public"),
+			Labels:      &schema.StringMap{Values: map[string]string{"network": "app-network"}},
+		},
+	}
+
+	out := s.runTransformVPC(
+		map[string]*schema.Resource{
+			"orderEventsConsumer": consumerRes,
+			"processOrderEvent":   vpcCascadeConsumerHandler(),
+			"appVpc":              vpcSelectingNetwork(),
+		},
+		edges(
+			edgeWithLabels(
+				"appVpc", "orderEventsConsumer", "celerity/vpc", "celerity/consumer",
+				map[string]string{"network": "app-network"},
+			),
+			edge(
+				"orderEventsConsumer", "processOrderEvent",
+				"celerity/consumer", "celerity/handler",
+			),
+		),
+	)
+
+	lambda := out.TransformedBlueprint.Resources.Values["processOrderEvent_lambda_func"]
+	s.Require().NotNil(lambda)
+	s.Equal("public", annotationLiteral(lambda.Metadata.Annotations, "aws.flexvpc.lambda.subnetType"))
+	s.Require().NotNil(lambda.Metadata.Labels)
+	s.Equal("app-network", lambda.Metadata.Labels.Values["network"])
+}
+
+// A direct vpc -> handler link is the per-handler override, so no placement is
+// inherited and the component's selector label is not carried onto the function.
+func (s *VPCTransformTestSuite) Test_direct_handler_placement_overrides_an_inherited_placement() {
+	handlerRes := vpcCascadeHandler(nil)
+	handlerRes.Metadata.Labels = &schema.StringMap{
+		Values: map[string]string{"tier": "data"},
+	}
+
+	out := s.runTransformVPC(
+		map[string]*schema.Resource{
+			"ordersApi":   vpcPlacedAPI(annotationMap("celerity.api.vpc.subnetType", "public")),
+			"createOrder": handlerRes,
+			"appVpc":      vpcSelectingNetwork(),
+			"dataVpc": {
+				Type: &schema.ResourceTypeWrapper{Value: "celerity/vpc"},
+				Spec: core.MappingNodeFields("name", core.MappingNodeFromString("data-network")),
+				LinkSelector: &schema.LinkSelector{
+					ByLabel: &schema.StringMap{Values: map[string]string{"tier": "data"}},
+				},
+			},
+		},
+		edges(
+			edgeWithLabels(
+				"appVpc", "ordersApi", "celerity/vpc", "celerity/api",
+				map[string]string{"network": "app-network"},
+			),
+			edge("ordersApi", "createOrder", "celerity/api", "celerity/handler"),
+			edgeWithLabels(
+				"dataVpc", "createOrder", "celerity/vpc", "celerity/handler",
+				map[string]string{"tier": "data"},
+			),
+		),
+	)
+
+	lambda := out.TransformedBlueprint.Resources.Values["createOrder_lambda_func"]
+	s.Require().NotNil(lambda)
+	// The direct link's placement defaults to private, rather than picking up the
+	// API's "public" tier.
+	s.Equal("private", annotationLiteral(lambda.Metadata.Annotations, "aws.flexvpc.lambda.subnetType"))
+	s.Require().NotNil(lambda.Metadata.Labels)
+	s.Equal("data", lambda.Metadata.Labels.Values["tier"])
+	s.NotContains(lambda.Metadata.Labels.Values, "network")
+}
+
+// A handler cannot be attached to two VPCs, so inheriting different placements
+// from the components it is bound to has no resolution and must abort.
+func (s *VPCTransformTestSuite) Test_conflicting_inherited_placements_fail_the_transform() {
+	consumerRes := &schema.Resource{
+		Type: &schema.ResourceTypeWrapper{Value: "celerity/consumer"},
+		Spec: core.MappingNodeFields(
+			"sourceId", core.MappingNodeFromString("celerity::queue::orderEvents"),
+		),
+		Metadata: &schema.Metadata{
+			Labels: &schema.StringMap{Values: map[string]string{"tier": "data"}},
+		},
+	}
+	bp := &schema.Blueprint{Resources: &schema.ResourceMap{Values: map[string]*schema.Resource{
+		"ordersApi":           vpcPlacedAPI(nil),
+		"orderEventsConsumer": consumerRes,
+		"createOrder":         vpcCascadeHandler(nil),
+		"appVpc":              vpcSelectingNetwork(),
+		"dataVpc": {
+			Type: &schema.ResourceTypeWrapper{Value: "celerity/vpc"},
+			Spec: core.MappingNodeFields("name", core.MappingNodeFromString("data-network")),
+			LinkSelector: &schema.LinkSelector{
+				ByLabel: &schema.StringMap{Values: map[string]string{"tier": "data"}},
+			},
+		},
+	}}}
+
+	_, err := NewTransformer(&shared.Dependencies{}).Transform(
+		context.Background(),
+		&transform.SpecTransformerTransformInput{
+			InputBlueprint: bp,
+			LinkGraph: edges(
+				edgeWithLabels(
+					"appVpc", "ordersApi", "celerity/vpc", "celerity/api",
+					map[string]string{"network": "app-network"},
+				),
+				edge("ordersApi", "createOrder", "celerity/api", "celerity/handler"),
+				edgeWithLabels(
+					"dataVpc", "orderEventsConsumer", "celerity/vpc", "celerity/consumer",
+					map[string]string{"tier": "data"},
+				),
+				edge(
+					"orderEventsConsumer", "createOrder",
+					"celerity/consumer", "celerity/handler",
+				),
+			),
+			TransformerContext: validationContext(),
+		},
+	)
+
+	s.Require().Error(err)
+	s.Contains(err.Error(), "inherits conflicting VPC placements")
+	s.Contains(err.Error(), `"appVpc" (from "ordersApi")`)
+	s.Contains(err.Error(), `"dataVpc" (from "orderEventsConsumer")`)
+}
+
+func vpcSelectingNetwork() *schema.Resource {
+	return &schema.Resource{
+		Type: &schema.ResourceTypeWrapper{Value: "celerity/vpc"},
+		Spec: core.MappingNodeFields("name", core.MappingNodeFromString("app-network")),
+		LinkSelector: &schema.LinkSelector{
+			ByLabel: &schema.StringMap{Values: map[string]string{"network": "app-network"}},
+		},
+	}
+}
+
+func vpcPlacedAPI(annotations *schema.StringOrSubstitutionsMap) *schema.Resource {
+	return &schema.Resource{
+		Type: &schema.ResourceTypeWrapper{Value: "celerity/api"},
+		Spec: core.MappingNodeFields(
+			"protocols", core.MappingNodeItems(core.MappingNodeFromString("http")),
+		),
+		Metadata: &schema.Metadata{
+			Annotations: annotations,
+			Labels:      &schema.StringMap{Values: map[string]string{"network": "app-network"}},
+		},
+		LinkSelector: &schema.LinkSelector{
+			ByLabel: &schema.StringMap{Values: map[string]string{"application": "orders"}},
+		},
+	}
+}
+
+func vpcCascadeConsumerHandler() *schema.Resource {
+	return &schema.Resource{
+		Type: &schema.ResourceTypeWrapper{Value: "celerity/handler"},
+		Spec: core.MappingNodeFields(
+			"handlerName", core.MappingNodeFromString("processOrderEvent"),
+			"handler", core.MappingNodeFromString("handlers.process"),
+			"runtime", core.MappingNodeFromString("nodejs24.x"),
+		),
+		Metadata: &schema.Metadata{
+			Annotations: annotationMap("celerity.handler.consumer", "true"),
+		},
+	}
+}
+
+func vpcCascadeHandler(extraAnnotations *schema.StringOrSubstitutionsMap) *schema.Resource {
+	annotations := annotationMap(
+		"celerity.handler.http", "true",
+		"celerity.handler.http.method", "POST",
+		"celerity.handler.http.path", "/orders",
+	)
+	if extraAnnotations != nil {
+		maps.Copy(annotations.Values, extraAnnotations.Values)
+	}
+
+	return &schema.Resource{
+		Type: &schema.ResourceTypeWrapper{Value: "celerity/handler"},
+		Spec: core.MappingNodeFields(
+			"handlerName", core.MappingNodeFromString("createOrder"),
+			"handler", core.MappingNodeFromString("handlers.create"),
+			"runtime", core.MappingNodeFromString("nodejs24.x"),
+		),
+		Metadata: &schema.Metadata{Annotations: annotations},
+	}
 }
 
 func (s *VPCTransformTestSuite) runTransformVPC(

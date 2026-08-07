@@ -69,7 +69,7 @@ Consumers are poll (except S3-sourced consumers, which are push); schedules are 
 ### 2. VPC wiring is two complementary mechanisms
 
 - **Attach** — `flex/vpc::lambda/function` fills the function's `vpcConfig` (subnet IDs by tier + the VPC's managed security group). Subnet tier is chosen by `aws.flexvpc.lambda.subnetType` (default `private`). The transformer emits the function **without** `vpcConfig`; the link supplies it.
-- **Reach** — once a function is VPC-attached, `linkutils.ActivateLinkNetworking` on its *other* access links reads that same `vpcConfig` and adds what the target needs: an **interface/gateway VPC endpoint** for managed services (SSM, Secrets Manager, KMS, S3, DynamoDB) or **security-group pairing** for in-VPC targets (ElastiCache, RDS). It is a no-op for non-VPC functions.
+- **Reach** — once a function is VPC-attached, `linkutils.ReconcileLinkNetworking` on its *other* access links reads that same `vpcConfig` and adds what the target needs: an **interface/gateway VPC endpoint** for managed services (SSM, Secrets Manager, KMS, S3, DynamoDB) or **security-group pairing** for in-VPC targets (ElastiCache, RDS). It is a no-op for non-VPC functions.
 
 ### 3. Backing-target has two sub-shapes
 
@@ -290,7 +290,7 @@ The absorbing handler emits the rule; its `targets[].arn` reference to the handl
 
 **Outputs:** `spec.id` → **synthesise ARN** (no ARN attribute); `host` → `configurationEndPoint`/`primaryEndPoint.address`; `port` → default 6379. Connection details reach the handler as **per-link env vars** (`<PREFIX>_HOST`/`_PORT`), not the config store; only the AUTH token is a secret.
 
-**Links.** From: handler (`lambda/function::elasticache/replicationGroup` — SG ingress via `ActivateLinkNetworking`, `elasticache:Connect` IAM for iam-mode, `<PREFIX>_HOST/_PORT` env vars) + the password secret (`lambda/function::secretsmanager/secret`). `vpc→cache` has **no provider link** (create-only placement, see gaps).
+**Links.** From: handler (`lambda/function::elasticache/replicationGroup` — SG ingress via `ReconcileLinkNetworking`, `elasticache:Connect` IAM for iam-mode, `<PREFIX>_HOST/_PORT` env vars) + the password secret (`lambda/function::secretsmanager/secret`). `vpc→cache` has **no provider link** (create-only placement, see gaps).
 
 **Annotation map:** `aws.lambda.elasticache.<cache>.{authMode,userId,port,envVarPrefix,populateEnvVars}`; handler VPC tier via `aws.flexvpc.lambda.subnetType` on the handler↔VPC link. The `replicationGroup::secret` link exposes `aws.elasticache.secretsmanager.authTokenUpdateStrategy` on the **replication group** (resourceA) — the transformer leaves it unset (provider default). Cache spec has no other linking annotations (spec-field-driven).
 
@@ -315,7 +315,7 @@ Two provisioning shapes:
 
 **Links.** From: handler (`lambda/function::rds/dbProxy` default, or `::rds/dbCluster` direct — SG ingress, `rds-db:connect` for iam, `<PREFIX>_HOST/_PORT/_DATABASE`/`_READER_HOST` env vars) + managed password secret (`lambda/function::secretsmanager/secret`). `vpc→sqlDatabase` has **no provider link**.
 
-**Annotation map:** `aws.lambda.rds.<target>.{authMode,dbUser,port,databaseName,envVarPrefix,populateEnvVars}`, plus `aws.lambda.rds.<cluster>.readerEndpoint` (**cluster only**). `celerity.sqlDatabase.allowDestructive` is a schema-migration control with **no `aws.*` counterpart**.
+**Annotation map:** `aws.lambda.rds.<target>.{authMode,dbUser,port,databaseName,envVarPrefix,populateEnvVars}`, plus `aws.lambda.rds.<cluster>.readerEndpoint` (**cluster only**).
 
 #### `celerity/config` → `aws/secretsmanager/secret` | `aws/ssm/parameterTree`
 

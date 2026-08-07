@@ -47,22 +47,22 @@ func (s *LinksRegistryTestSuite) Test_every_registered_link_is_structurally_comp
 // the suffix equals the annotation's own Name.
 func (s *LinksRegistryTestSuite) Test_annotation_definition_keys_are_consistent() {
 	for key, def := range abstractLinks() {
-		for annKey, ann := range def.AnnotationDefinitions {
-			s.Require().NotNilf(ann, "link %q annotation %q is nil", key, annKey)
+		for annotationKey, annotationDef := range def.AnnotationDefinitions {
+			s.Require().NotNilf(annotationDef, "link %q annotation %q is nil", key, annotationKey)
 
-			parts := strings.SplitN(annKey, "::", 2)
-			s.Require().Lenf(parts, 2, "link %q annotation key %q is not <resourceType>::<name>", key, annKey)
+			parts := strings.SplitN(annotationKey, "::", 2)
+			s.Require().Lenf(parts, 2, "link %q annotation key %q is not <resourceType>::<name>", key, annotationKey)
 			resType, name := parts[0], parts[1]
 
-			s.Equalf(ann.Name, name, "link %q annotation key %q suffix does not match Name %q", key, annKey, ann.Name)
+			s.Equalf(annotationDef.Name, name, "link %q annotation key %q suffix does not match Name %q", key, annotationKey, annotationDef.Name)
 
 			wantResType := def.ResourceTypeB
-			if ann.AppliesTo == provider.LinkAnnotationResourceA {
+			if annotationDef.AppliesTo == provider.LinkAnnotationResourceA {
 				wantResType = def.ResourceTypeA
 			}
 			s.Equalf(wantResType, resType,
 				"link %q annotation %q prefix %q does not match its AppliesTo resource type %q",
-				key, annKey, resType, wantResType)
+				key, annotationKey, resType, wantResType)
 		}
 	}
 }

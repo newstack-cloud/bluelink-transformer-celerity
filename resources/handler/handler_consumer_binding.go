@@ -47,9 +47,9 @@ const celerityTopicSourcePrefix = "celerity::topic::"
 // link selector of multiple sources of the same type, these name the source to
 // bind to.
 const (
-	annConsumerSourceQueue     = AnnotationKeyConsumerSourceQueue
-	annConsumerSourceDatastore = AnnotationKeyConsumerSourceDatastore
-	annConsumerSourceBucket    = AnnotationKeyConsumerSourceBucket
+	annotationConsumerSourceQueue     = AnnotationKeyConsumerSourceQueue
+	annotationConsumerSourceDatastore = AnnotationKeyConsumerSourceDatastore
+	annotationConsumerSourceBucket    = AnnotationKeyConsumerSourceBucket
 )
 
 // ExternalStreamBinding captures one externalEvents stream entry (dbStream or
@@ -193,11 +193,11 @@ func namedDisambiguatedSource(
 	edges []linkedSourceEdge,
 ) (linkedSourceEdge, bool) {
 	for _, edge := range edges {
-		annKey, ok := disambiguationAnnotationKey(edge.kind)
+		annotationKey, ok := disambiguationAnnotationKey(edge.kind)
 		if !ok {
 			continue
 		}
-		value, present := transformutils.GetAnnotation(resource, annKey, "")
+		value, present := transformutils.GetAnnotation(resource, annotationKey, "")
 		if present && core.StringValue(value) == edge.source {
 			return edge, true
 		}
@@ -208,11 +208,11 @@ func namedDisambiguatedSource(
 func disambiguationAnnotationKey(kind ConsumerSourceKind) (string, bool) {
 	switch kind {
 	case ConsumerSourceQueue:
-		return annConsumerSourceQueue, true
+		return annotationConsumerSourceQueue, true
 	case ConsumerSourceDatastore:
-		return annConsumerSourceDatastore, true
+		return annotationConsumerSourceDatastore, true
 	case ConsumerSourceBucket:
-		return annConsumerSourceBucket, true
+		return annotationConsumerSourceBucket, true
 	default:
 		return "", false
 	}
@@ -418,6 +418,12 @@ func consumerLabelUnion(r *ResolvedHandler) (map[string]string, []*core.Diagnost
 							"values (%q vs %q); the function keeps %q. Give the consumers matching labels to "+
 							"avoid ambiguous link resolution",
 						r.Name, origin[key], consumer.Name, key, existing, value, existing,
+					),
+					// The conflict is between two consumers, so point at the one
+					// whose value is being dropped.
+					Range: shared.DiagnosticRange(
+						shared.ResourceMeta(consumer.Resource),
+						shared.ResourceMeta(r.Resource),
 					),
 				})
 				continue

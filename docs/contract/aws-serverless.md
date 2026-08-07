@@ -434,7 +434,7 @@ Because the config-store link is part of a handler's link set, it participates i
 
 Neither config-store link checks for this. The `parameterTree` link cannot see the encryption setting of parameters beneath the path, and the provider's own link docs (`bluelink-provider-aws: inter-service-links/lambda_ssm/descriptions/function__parameter_tree.md`) state the requirement as a note for the practitioner to satisfy, not a validation. So there is **no diagnostic** — a missing KMS link surfaces as an `AccessDenied` at first read (runtime), not at transform or deploy. The transformer must therefore declare the `aws/kms/key` link itself whenever it emits a store key encrypted with a non-default key; it is the only component positioned to know a customer-managed key is in play.
 
-> All these links also call `ActivateLinkNetworking` to ensure an interface VPC endpoint exists for `ssm` / `secretsmanager` / `kms` when the function is VPC-attached — another reason not to hand-roll this wiring.
+> All these links also call `ReconcileLinkNetworking` to ensure an interface VPC endpoint exists for `ssm` / `secretsmanager` / `kms` when the function is VPC-attached — another reason not to hand-roll this wiring.
 
 ---
 

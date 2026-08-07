@@ -141,6 +141,7 @@ func emitTopicForwarder(r *ResolvedQueue, appName string, resources map[string]*
 					"emitted. Use separate queues, or subscribe the consumer to the topic instead",
 				r.Name,
 			),
+			Range: shared.DiagnosticRange(shared.ResourceMeta(r.Resource)),
 		}}, nil
 	}
 
@@ -152,6 +153,7 @@ func emitTopicForwarder(r *ResolvedQueue, appName string, resources map[string]*
 					"the target topic; no forwarder was emitted",
 				r.Name,
 			),
+			Range: shared.DiagnosticRange(shared.ResourceMeta(r.Resource)),
 		}}, nil
 	}
 
@@ -175,7 +177,7 @@ func stampBucketNotifications(r *ResolvedQueue, meta *schema.Metadata) []*core.D
 		CelerityFilterSuffix: AnnotationKeyBucketFilterSuffix,
 		ProviderPrefix:       "aws.s3.sqs",
 	})
-	return sharedaws.BucketNotificationDiagnostics("celerity/queue", r.Name, result)
+	return sharedaws.BucketNotificationDiagnostics("celerity/queue", r.Name, r.Resource, result)
 }
 
 // Carries the abstract queue's labels through to the concrete resource (so a

@@ -1,0 +1,43 @@
+version "2025-11-02"
+
+transform "celerity-2026-02-27-draft"
+
+# A handler placed in a standard-preset network, narrowing its outbound reach to
+# one destination. The standard preset has private subnets and a NAT gateway, so
+# the request is satisfiable and the transform should be clean.
+resource egressHandler: celerity/handler {
+    metadata {
+        labels = { network = "egress" }
+        annotations = {
+            "celerity.handler.vpc.egress" = "10.20.0.0/16"
+        }
+    }
+    spec {
+        handlerName = "egressHandler"
+        handler = "handlers.work"
+        runtime = "nodejs24.x"
+    }
+}
+
+# A second handler in the same network that says nothing about egress, so its
+# reach is left to the deploy target to resolve from the topology.
+resource quietHandler: celerity/handler {
+    metadata {
+        labels = { network = "egress" }
+    }
+    spec {
+        handlerName = "quietHandler"
+        handler = "handlers.quiet"
+        runtime = "nodejs24.x"
+    }
+}
+
+resource egressNetwork: celerity/vpc {
+    select by label {
+        network = "egress"
+    }
+    spec {
+        name = "egress-net"
+        preset = "standard"
+    }
+}

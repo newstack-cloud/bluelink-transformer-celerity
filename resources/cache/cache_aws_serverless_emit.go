@@ -157,6 +157,7 @@ func cachePresetSuitabilityError(r *ResolvedCache, name string) *core.Diagnostic
 				"provides none; use a preset with private subnets (standard, isolated, or light)",
 			name, r.VPCPreset,
 		),
+		Range: core.DiagnosticRangeFromSourceMeta(r.Resource.SourceMeta, nil),
 	}
 }
 
@@ -224,6 +225,7 @@ func applyVPCPlacement(
 					"secure network access",
 				name,
 			),
+			Range: core.DiagnosticRangeFromSourceMeta(r.Resource.SourceMeta, nil),
 		}, nil
 	}
 

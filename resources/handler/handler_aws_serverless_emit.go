@@ -63,7 +63,7 @@ func (e *awsServerlessEmitter) emit(
 	codeLocationInfo, codeDiag, err := e.loadCodeLocationInfo(
 		run,
 		isValidationCtx,
-		r.Name,
+		r,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("failed to load code location info: %w", err)
@@ -163,6 +163,10 @@ func (e *awsServerlessEmitter) emit(
 	// Stamp VPC-placement and consumer event-source link annotations.
 	diagnostics := stampTriggerAnnotations(r, lambdaResource)
 	diagnostics = append(diagnostics, labelDiagnostics...)
+	// Placements the VPC's own topology cannot honour, then the ones that fail on
+	// how Lambda in particular attaches to a network.
+	diagnostics = append(diagnostics, vpcPlacementDiagnostics(r)...)
+	diagnostics = append(diagnostics, awsServerlessEgressDiagnostics(r)...)
 	if codeDiag != nil {
 		diagnostics = append(diagnostics, codeDiag)
 	}
@@ -350,7 +354,7 @@ type codeLocationInfo struct {
 func (e *awsServerlessEmitter) loadCodeLocationInfo(
 	run *transformutils.Run,
 	isValidationCtx bool,
-	handlerName string,
+	handler *ResolvedHandler,
 ) (*codeLocationInfo, *core.Diagnostic, error) {
 	if isValidationCtx {
 		// During validation, a build manifest won't be provided or available,
@@ -369,7 +373,7 @@ func (e *awsServerlessEmitter) loadCodeLocationInfo(
 			"no build manifest available for celerity/handler %q; the function is emitted with "+
 				"placeholder code and entry-point values that cannot deploy. Run \"celerity build\" "+
 				"before deploying (validation and a dry run/plan are still valid)",
-			handlerName,
+			handler.Name,
 		)
 		if loadErr, hasLoadErr := transformutils.Use[*shared.BuildManifestLoadError](run); hasLoadErr && loadErr.Cause != nil {
 			message = fmt.Sprintf("%s: %s", message, loadErr.Cause)
@@ -377,6 +381,7 @@ func (e *awsServerlessEmitter) loadCodeLocationInfo(
 		return placeholderCodeLocationInfo(), &core.Diagnostic{
 			Level:   core.DiagnosticLevelWarning,
 			Message: message,
+			Range:   shared.DiagnosticRange(shared.ResourceMeta(handler.Resource)),
 		}, nil
 	}
 

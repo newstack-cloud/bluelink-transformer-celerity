@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/newstack-cloud/bluelink-transformer-celerity/resources/handler"
+	"github.com/newstack-cloud/bluelink-transformer-celerity/shared"
 	"github.com/newstack-cloud/bluelink/libs/blueprint/core"
 	"github.com/newstack-cloud/bluelink/libs/blueprint/schema"
 	"github.com/newstack-cloud/bluelink/libs/plugin-framework/sdk/transformerv1"
@@ -76,5 +77,6 @@ func handlerEventSourceConflict(handlerRes *schema.Resource) *core.Diagnostic {
 				"only one of the %s annotations",
 			strings.Join(present, ", "), handlerEventSourceKeys(),
 		),
+		Range: shared.DiagnosticRange(shared.ResourceMeta(handlerRes)),
 	}
 }

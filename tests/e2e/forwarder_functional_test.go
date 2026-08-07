@@ -18,7 +18,16 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-const messageDeliveryTimeout = 2 * time.Minute
+const (
+	// The whole budget for a message to travel source queue -> forwarder -> topic
+	// -> observer queue. Generous because the first invocation pays a cold start
+	// and the event source mapping may still be coming up, both of which are
+	// slower when the suite is deploying several stacks at once.
+	messageDeliveryTimeout = 3 * time.Minute
+
+	// How long one send is given to show up before another is sent.
+	messageResendInterval = 20 * time.Second
+)
 
 // TestForwarderDeliversQueueMessagesToTopic deploys the queue::topic fixture
 // and functionally proves the transformer-authored inline forwarder lambda:
@@ -54,17 +63,63 @@ func TestForwarderDeliversQueueMessagesToTopic(t *testing.T) {
 	subscribeObserverToTopic(t, h, snsClient, topicARN, observerARN)
 
 	marker := "celerity-e2e-forwarder-" + uniqueSuffix()
-	_, err := sqsClient.SendMessage(h.Ctx, &sqs.SendMessageInput{
-		QueueUrl:    aws.String(queueURL),
-		MessageBody: aws.String(marker),
-	})
-	require.NoError(t, err, "send test message to the deployed source queue")
+	requireForwardedDelivery(t, h, sqsClient, queueURL, observerURL, marker)
+}
 
-	waitFor(t, messageDeliveryTimeout, time.Second,
-		"forwarded message to arrive on the observer queue",
-		func() (bool, error) {
-			return observerReceivedMarker(h, sqsClient, observerURL, marker)
+// Sends the marker to the source queue until it comes back out of the observer
+// queue, or the budget runs out.
+//
+// Sending once is not enough, for two independent reasons, and neither is fixed
+// by waiting longer.
+//
+// SNS delivers to the subscriptions that exist at the instant of publish. The
+// observer's subscription was created moments earlier and may not be effective
+// on the publish path yet, so a message the forwarder republishes in that window
+// is discarded: no error, no retry, nothing to wait for.
+//
+// Separately, the source queue sets a 120s visibility timeout. A message the
+// forwarder receives and fails to process is then invisible for two minutes,
+// which was longer than the entire budget this test used to allow.
+//
+// Both look identical from here and nothing ever arrives. Re-sending turns either
+// into a retry. Duplicates are harmless: the assertion needs one message to
+// arrive, not exactly one.
+func requireForwardedDelivery(
+	t *testing.T,
+	h *Harness,
+	client *sqs.Client,
+	sourceQueueURL string,
+	observerQueueURL string,
+	marker string,
+) {
+	t.Helper()
+
+	deadline := time.Now().Add(messageDeliveryTimeout)
+	attempts := 0
+
+	for time.Now().Before(deadline) {
+		attempts += 1
+		_, err := client.SendMessage(h.Ctx, &sqs.SendMessageInput{
+			QueueUrl:    aws.String(sourceQueueURL),
+			MessageBody: aws.String(marker),
 		})
+		require.NoErrorf(t, err, "send test message to the source queue (attempt %d)", attempts)
+
+		nextSend := time.Now().Add(messageResendInterval)
+		for time.Now().Before(nextSend) && time.Now().Before(deadline) {
+			// Long-polls for 10s per call, so this is a wait rather than a spin.
+			received, err := observerReceivedMarker(h, client, observerQueueURL, marker)
+			require.NoError(t, err, "receive from the observer queue")
+			if received {
+				return
+			}
+		}
+	}
+
+	t.Fatalf(
+		"timed out after %s waiting for a forwarded message on the observer queue (%d send attempts)",
+		messageDeliveryTimeout, attempts,
+	)
 }
 
 // Asserts the forwarder lambda carries at

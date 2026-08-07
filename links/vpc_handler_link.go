@@ -7,7 +7,18 @@ import (
 	"github.com/newstack-cloud/bluelink/libs/plugin-framework/sdk/transformerv1"
 )
 
-const vpcSubnetTypeAnnotationDefKey = "celerity/handler::" + handler.AnnotationKeyVPCSubnetType
+const (
+	vpcSubnetTypeAnnotationDefKey = "celerity/handler::" + handler.AnnotationKeyVPCSubnetType
+	vpcEgressAnnotationDefKey     = "celerity/handler::" + handler.AnnotationKeyVPCEgress
+)
+
+// Shared by the handler link and the application-component links, which offer the
+// same choice at the level they cascade from.
+const vpcEgressDescription = "Narrows what the handler may reach outside the VPC: " +
+	"\"internet\", \"none\", or a comma-separated list of CIDR ranges. Leave it unset to keep " +
+	"whatever outbound access the network's topology provides, which is not the same as " +
+	"\"none\": placing a handler in a VPC never silently withdraws access it had before, and " +
+	"this annotation only ever narrows."
 
 func VPCToHandlerLink() *transformerv1.AbstractLinkDefinition {
 	return &transformerv1.AbstractLinkDefinition{
@@ -42,6 +53,15 @@ func VPCToHandlerLink() *transformerv1.AbstractLinkDefinition {
 				},
 				Description: "Selects whether the handler runs in the VPC's public or private subnets. " +
 					"Defaults to private.",
+			},
+			// No default value and no allowed-values list, unset is a meaningful third
+			// state the deploy target resolves, and a CIDR list cannot be enumerated.
+			vpcEgressAnnotationDefKey: {
+				Name:        handler.AnnotationKeyVPCEgress,
+				Label:       "VPC egress",
+				Type:        core.ScalarTypeString,
+				AppliesTo:   provider.LinkAnnotationResourceB,
+				Description: vpcEgressDescription,
 			},
 		},
 	}

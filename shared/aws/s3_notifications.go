@@ -96,8 +96,18 @@ func StampBucketNotifications(
 // result: one per unsupported event, and — when an events set was requested but
 // nothing mapped — a note that the receiver falls back to the default object-created
 // events (so the caller does not silently subscribe to created when the author asked
-// for something else). resourceType/name identify the receiver in the messages.
-func BucketNotificationDiagnostics(resourceType, name string, result BucketNotificationResult) []*core.Diagnostic {
+// for something else). resourceType/name identify the receiver in the messages, and
+// receiver locates it in the source document so the warnings can be positioned.
+func BucketNotificationDiagnostics(
+	resourceType string,
+	name string,
+	receiver *schema.Resource,
+	result BucketNotificationResult,
+) []*core.Diagnostic {
+	var receiverRange *core.DiagnosticRange
+	if receiver != nil && receiver.SourceMeta != nil {
+		receiverRange = core.DiagnosticRangeFromSourceMeta(receiver.SourceMeta, nil)
+	}
 	var diagnostics []*core.Diagnostic
 	for _, event := range result.Unsupported {
 		diagnostics = append(diagnostics, &core.Diagnostic{
@@ -107,6 +117,7 @@ func BucketNotificationDiagnostics(resourceType, name string, result BucketNotif
 					"and is ignored; use created or deleted",
 				resourceType, name, event,
 			),
+			Range: receiverRange,
 		})
 	}
 	if result.Mapped == 0 && len(result.Unsupported) > 0 {
@@ -117,6 +128,7 @@ func BucketNotificationDiagnostics(resourceType, name string, result BucketNotif
 					"the default object-created (created) events will apply",
 				resourceType, name,
 			),
+			Range: receiverRange,
 		})
 	}
 	return diagnostics

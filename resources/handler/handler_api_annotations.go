@@ -15,11 +15,11 @@ const (
 	// The aws/apigatewayv2/api::aws/lambda/function link annotation (AppliesTo the
 	// function) naming the route this handler serves, e.g. "GET /orders" for HTTP
 	// or "$connect"/"myAction" for WebSocket.
-	annAPIRouteKey = "aws.apigatewayv2.lambda.routeKey"
+	annotationAPIRouteKey = "aws.apigatewayv2.lambda.routeKey"
 	// References the authorizer that protects this route.
-	annAPIAuthorizerID = "aws.apigatewayv2.lambda.authorizerId"
+	annotationAPIAuthorizerID = "aws.apigatewayv2.lambda.authorizerId"
 	// "JWT" or "CUSTOM" for the protected route.
-	annAPIAuthorizationType = "aws.apigatewayv2.lambda.authorizationType"
+	annotationAPIAuthorizationType = "aws.apigatewayv2.lambda.authorizationType"
 
 	// LabelKeyAPIProtocol scopes an emitted handler function to the API of its own
 	// protocol. Its value is the handler's event source ("http" or "websocket"). The
@@ -64,7 +64,7 @@ func stampAPIRouteAnnotations(r *ResolvedHandler, lambda *schema.Resource) error
 	// the matching concrete API (see LabelKeyAPIProtocol).
 	setLabel(lambda.Metadata, LabelKeyAPIProtocol, string(r.EventSource))
 
-	setStringAnnotation(lambda.Metadata, annAPIRouteKey, routeKeyForHandler(r))
+	setStringAnnotation(lambda.Metadata, annotationAPIRouteKey, routeKeyForHandler(r))
 	return stampRouteAuth(r, lambda)
 }
 
@@ -118,8 +118,8 @@ func stampRouteAuth(r *ResolvedHandler, lambda *schema.Resource) error {
 	if err != nil {
 		return err
 	}
-	lambda.Metadata.Annotations.Values[annAPIAuthorizerID] = authorizerRef.StringWithSubstitutions
-	setStringAnnotation(lambda.Metadata, annAPIAuthorizationType, authType)
+	lambda.Metadata.Annotations.Values[annotationAPIAuthorizerID] = authorizerRef.StringWithSubstitutions
+	setStringAnnotation(lambda.Metadata, annotationAPIAuthorizationType, authType)
 	return nil
 }
 

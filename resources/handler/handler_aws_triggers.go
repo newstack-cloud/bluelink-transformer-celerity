@@ -3,6 +3,7 @@ package handler
 import (
 	"encoding/json"
 	"fmt"
+	"maps"
 	"sort"
 	"strconv"
 	"strings"
@@ -12,28 +13,35 @@ import (
 	"github.com/newstack-cloud/bluelink-transformer-celerity/shared/awslambda"
 	"github.com/newstack-cloud/bluelink/libs/blueprint/core"
 	"github.com/newstack-cloud/bluelink/libs/blueprint/schema"
+	"github.com/newstack-cloud/bluelink/libs/blueprint/source"
 	"github.com/newstack-cloud/bluelink/libs/blueprint/substitutions"
 	"github.com/newstack-cloud/bluelink/libs/plugin-framework/sdk/pluginutils"
 	"github.com/newstack-cloud/bluelink/libs/plugin-framework/sdk/transformutils"
 )
 
 const (
-	// annVPCSubnetType is the aws/flex/vpc::aws/lambda/function link annotation
+	// annotationVPCSubnetType is the aws/flex/vpc::aws/lambda/function link annotation
 	// (AppliesTo resourceB, the function) selecting which subnet tier the function
 	// is placed in.
-	annVPCSubnetType = "aws.flexvpc.lambda.subnetType"
+	annotationVPCSubnetType = "aws.flexvpc.lambda.subnetType"
+
+	// annotationVPCEgress is the aws/flex/vpc::aws/lambda/function link annotation
+	// (AppliesTo resourceB, the function) narrowing what the function may reach
+	// outside the VPC. Stamped only when the author set it: the provider reads its
+	// absence as "resolve the reach from the VPC's topology".
+	annotationVPCEgress = "aws.flexvpc.lambda.egress"
 
 	// SQS event-source-mapping link annotations (AppliesTo the function).
-	annSQSBatchSize            = "aws.sqs.lambda.batchSize"
-	annSQSReportBatchItemFails = "aws.sqs.lambda.reportBatchItemFailures"
+	annotationSQSBatchSize               = "aws.sqs.lambda.batchSize"
+	annotationSQSReportBatchItemFailures = "aws.sqs.lambda.reportBatchItemFailures"
 
 	// DynamoDB stream event-source-mapping link annotations (AppliesTo the function).
-	annDDBBatchSize            = "aws.dynamodb.lambda.stream.batchSize"
-	annDDBStartingPosition     = "aws.dynamodb.lambda.stream.startingPosition"
-	annDDBReportBatchItemFails = "aws.dynamodb.lambda.stream.reportBatchItemFailures"
+	annotationDynamoDBBatchSize               = "aws.dynamodb.lambda.stream.batchSize"
+	annotationDynamoDBStartingPosition        = "aws.dynamodb.lambda.stream.startingPosition"
+	annotationDynamoDBReportBatchItemFailures = "aws.dynamodb.lambda.stream.reportBatchItemFailures"
 
 	// S3 object-event notification link annotation (AppliesTo the function).
-	annS3Event = "aws.s3.lambda.event.%d"
+	annotationS3Event = "aws.s3.lambda.event.%d"
 
 	// batchSizePath is the consumer spec path for the poll batch size.
 	batchSizePath = "$.batchSize"
@@ -55,22 +63,22 @@ const reportBatchItemFailures = "ReportBatchItemFailures"
 
 // Consumer annotation keys read from the abstract consumer.
 const (
-	annConsumerDatastoreStartFromBeginning = AnnotationKeyConsumerDatastoreStartFromBeginning
-	annConsumerBucketEvents                = AnnotationKeyConsumerBucketEvents
+	annotationConsumerDatastoreStartFromBeginning = AnnotationKeyConsumerDatastoreStartFromBeginning
+	annotationConsumerBucketEvents                = AnnotationKeyConsumerBucketEvents
 
-	// annConsumerDeadLetterQueue toggles creation of a dead-letter queue for a
+	// annotationConsumerDeadLetterQueue toggles creation of a dead-letter queue for a
 	// Celerity-topic consumer (default true).
-	annConsumerDeadLetterQueue = AnnotationKeyConsumerDeadLetterQueue
-	// annConsumerDeadLetterQueueMaxAttempts sets the DLQ redrive maxReceiveCount.
-	annConsumerDeadLetterQueueMaxAttempts = AnnotationKeyConsumerDeadLetterQueueMaxAttempts
+	annotationConsumerDeadLetterQueue = AnnotationKeyConsumerDeadLetterQueue
+	// annotationConsumerDeadLetterQueueMaxAttempts sets the DLQ redrive maxReceiveCount.
+	annotationConsumerDeadLetterQueueMaxAttempts = AnnotationKeyConsumerDeadLetterQueueMaxAttempts
 
-	// annConsumerTopicPollPrefix is a synthetic per-consumer label key (value
+	// annotationConsumerTopicPollPrefix is a synthetic per-consumer label key (value
 	// "true") stamped on the function and the topic fan-out queue's linkSelector so
 	// the aws/sqs/queue::aws/lambda/function event-source-mapping link (and the
 	// queue's redrive link to its DLQ) activate by label-on-source. It is namespaced
 	// by consumer name so a handler absorbing several topic consumers keeps one
 	// distinct wiring label per consumer.
-	annConsumerTopicPollPrefix = "celerity.consumer.topicPoll."
+	annotationConsumerTopicPollPrefix = "celerity.consumer.topicPoll."
 )
 
 // Sets the emitted function's labels to the union of the handler's own labels and
@@ -80,10 +88,14 @@ const (
 func applyLambdaLabels(r *ResolvedHandler, lambda *schema.Resource) []*core.Diagnostic {
 	labels, diagnostics := consumerLabelUnion(r)
 	if r.Resource.Metadata != nil && r.Resource.Metadata.Labels != nil {
-		for key, value := range r.Resource.Metadata.Labels.Values {
-			labels[key] = value
-		}
+		maps.Copy(labels, r.Resource.Metadata.Labels.Values)
 	}
+	// A placement inherited from an application component is matched on the
+	// component's labels, which the function does not otherwise carry. Adding
+	// only the labels the VPC's selector matched lets the concrete
+	// VPC-to-function link select the function without widening it to every
+	// label on the component.
+	maps.Copy(labels, r.inheritedVPCSelectorLabels)
 	if len(labels) == 0 {
 		return diagnostics
 	}
@@ -96,7 +108,12 @@ func applyLambdaLabels(r *ResolvedHandler, lambda *schema.Resource) []*core.Diag
 // could not be fully wired on aws-serverless.
 func stampTriggerAnnotations(r *ResolvedHandler, lambda *schema.Resource) []*core.Diagnostic {
 	if r.VPC != nil {
-		setStringAnnotation(lambda.Metadata, annVPCSubnetType, r.VPCSubnetType)
+		setStringAnnotation(lambda.Metadata, annotationVPCSubnetType, r.VPCSubnetType)
+		// Absent rather than empty when the author said nothing, so the provider
+		// resolves the reach from the VPC's topology instead of reading a value.
+		if r.VPCEgress != "" {
+			setStringAnnotation(lambda.Metadata, annotationVPCEgress, r.VPCEgress)
+		}
 	}
 
 	diagnostics := []*core.Diagnostic{}
@@ -138,18 +155,18 @@ func perFunctionTriggerConflicts(r *ResolvedHandler) []*core.Diagnostic {
 	var diagnostics []*core.Diagnostic
 	if batchOrFailuresConflict(sqs) {
 		diagnostics = append(diagnostics, sharedSettingWarning(
-			r.Name, sqs, "queue/topic",
+			r, sqs, "queue/topic",
 			"SQS event-source-mapping settings (batchSize, reportBatchItemFailures)",
 		))
 	}
 	if batchOrFailuresConflict(ddb) || startingPositionConflict(ddb) {
 		diagnostics = append(diagnostics, sharedSettingWarning(
-			r.Name, ddb, "datastore",
+			r, ddb, "datastore",
 			"DynamoDB stream settings (batchSize, reportBatchItemFailures, startingPosition)",
 		))
 	}
 	if bucketEventSetsDiverge(bucket) {
-		diagnostics = append(diagnostics, bucketEventUnionWarning(r.Name, bucket))
+		diagnostics = append(diagnostics, bucketEventUnionWarning(r, bucket))
 	}
 	return diagnostics
 }
@@ -201,7 +218,7 @@ func bucketEventSetsDiverge(bindings []*ConsumerBinding) bool {
 }
 
 func sharedSettingWarning(
-	handlerName string,
+	r *ResolvedHandler,
 	bindings []*ConsumerBinding,
 	kindLabel string,
 	settingLabel string,
@@ -213,12 +230,13 @@ func sharedSettingWarning(
 				"aws-serverless the %s are a single per-function value applied to every source of this "+
 				"kind, so only one consumer's settings take effect. Split the consumers across separate "+
 				"handlers to configure them independently.",
-			handlerName, kindLabel, consumerNameList(bindings), settingLabel,
+			r.Name, kindLabel, consumerNameList(bindings), settingLabel,
 		),
+		Range: shared.DiagnosticRange(shared.ResourceMeta(r.Resource)),
 	}
 }
 
-func bucketEventUnionWarning(handlerName string, bindings []*ConsumerBinding) *core.Diagnostic {
+func bucketEventUnionWarning(r *ResolvedHandler, bindings []*ConsumerBinding) *core.Diagnostic {
 	return &core.Diagnostic{
 		Level: core.DiagnosticLevelWarning,
 		Message: fmt.Sprintf(
@@ -226,8 +244,9 @@ func bucketEventUnionWarning(handlerName string, bindings []*ConsumerBinding) *c
 				"but on aws-serverless the S3 notification events are combined into one list applied to "+
 				"every linked bucket, so each bucket triggers on the union rather than only its own events. "+
 				"Split the consumers across separate handlers for independent event sets.",
-			handlerName, consumerNameList(bindings),
+			r.Name, consumerNameList(bindings),
 		),
+		Range: shared.DiagnosticRange(shared.ResourceMeta(r.Resource)),
 	}
 }
 
@@ -267,6 +286,7 @@ func routingKeyDeferred(r *ResolvedHandler, binding *ConsumerBinding) *core.Diag
 			key,
 			r.Name,
 		),
+		Range: consumerRange(binding, node),
 	}
 }
 
@@ -304,24 +324,24 @@ func stampConsumerBinding(
 func stampQueueBinding(lambda *schema.Resource, binding *ConsumerBinding) {
 	spec := consumerSpec(binding)
 	if node, ok := pluginutils.GetValueByPath(batchSizePath, spec); ok {
-		setIntAnnotation(lambda.Metadata, annSQSBatchSize, core.IntValue(node))
+		setIntAnnotation(lambda.Metadata, annotationSQSBatchSize, core.IntValue(node))
 	}
 	if partialFailures(spec) {
-		setBoolAnnotation(lambda.Metadata, annSQSReportBatchItemFails, true)
+		setBoolAnnotation(lambda.Metadata, annotationSQSReportBatchItemFailures, true)
 	}
 }
 
 func stampDatastoreBinding(lambda *schema.Resource, binding *ConsumerBinding) {
 	// startingPosition is required by the provider link; derive it from the
 	// consumer's celerity.consumer.datastore.startFromBeginning annotation.
-	setStringAnnotation(lambda.Metadata, annDDBStartingPosition, startingPosition(binding))
+	setStringAnnotation(lambda.Metadata, annotationDynamoDBStartingPosition, startingPosition(binding))
 
 	spec := consumerSpec(binding)
 	if node, ok := pluginutils.GetValueByPath(batchSizePath, spec); ok {
-		setIntAnnotation(lambda.Metadata, annDDBBatchSize, core.IntValue(node))
+		setIntAnnotation(lambda.Metadata, annotationDynamoDBBatchSize, core.IntValue(node))
 	}
 	if partialFailures(spec) {
-		setBoolAnnotation(lambda.Metadata, annDDBReportBatchItemFails, true)
+		setBoolAnnotation(lambda.Metadata, annotationDynamoDBReportBatchItemFailures, true)
 	}
 }
 
@@ -331,7 +351,7 @@ func stampDatastoreBinding(lambda *schema.Resource, binding *ConsumerBinding) {
 func stampBucketBinding(lambda *schema.Resource, binding *ConsumerBinding, baseIndex int) (int, []*core.Diagnostic) {
 	events, unsupported := bucketEvents(binding)
 	for offset, event := range events {
-		setStringAnnotation(lambda.Metadata, fmt.Sprintf(annS3Event, baseIndex+offset), event)
+		setStringAnnotation(lambda.Metadata, fmt.Sprintf(annotationS3Event, baseIndex+offset), event)
 	}
 
 	diagnostics := []*core.Diagnostic{}
@@ -347,10 +367,10 @@ func stampBucketBinding(lambda *schema.Resource, binding *ConsumerBinding, baseI
 func stampTopicBinding(lambda *schema.Resource, binding *ConsumerBinding) {
 	spec := consumerSpec(binding)
 	if node, ok := pluginutils.GetValueByPath(batchSizePath, spec); ok {
-		setIntAnnotation(lambda.Metadata, annSQSBatchSize, core.IntValue(node))
+		setIntAnnotation(lambda.Metadata, annotationSQSBatchSize, core.IntValue(node))
 	}
 	if partialFailures(spec) {
-		setBoolAnnotation(lambda.Metadata, annSQSReportBatchItemFails, true)
+		setBoolAnnotation(lambda.Metadata, annotationSQSReportBatchItemFailures, true)
 	}
 	setLabel(lambda.Metadata, topicPollLabelKey(binding.ConsumerName), "true")
 }
@@ -358,7 +378,7 @@ func stampTopicBinding(lambda *schema.Resource, binding *ConsumerBinding) {
 func startingPosition(binding *ConsumerBinding) string {
 	value, ok := transformutils.GetAnnotation(
 		binding.ConsumerResource,
-		annConsumerDatastoreStartFromBeginning,
+		annotationConsumerDatastoreStartFromBeginning,
 		"",
 	)
 	if ok && core.BoolValue(value) {
@@ -374,7 +394,7 @@ func startingPosition(binding *ConsumerBinding) string {
 func bucketEvents(binding *ConsumerBinding) (mapped []string, unsupported []string) {
 	value, ok := transformutils.GetAnnotation(
 		binding.ConsumerResource,
-		annConsumerBucketEvents,
+		annotationConsumerBucketEvents,
 		"",
 	)
 	if !ok {
@@ -449,6 +469,7 @@ func scheduleRule(
 					"been emitted. Set a rate() or cron() expression",
 				scheduleName,
 			),
+			Range: shared.DiagnosticRange(shared.ResourceMeta(scheduleResource)),
 		}, nil
 	}
 
@@ -579,7 +600,7 @@ func topicFanoutQueue(binding *ConsumerBinding) *schema.Resource {
 	}
 	if attempts, ok := transformutils.GetAnnotation(
 		binding.ConsumerResource,
-		annConsumerDeadLetterQueueMaxAttempts,
+		annotationConsumerDeadLetterQueueMaxAttempts,
 		"",
 	); ok && deadLetterQueueEnabled(binding) {
 		setStringAnnotation(meta, redriveMaxReceiveCountAnnotation, core.StringValue(attempts))
@@ -765,7 +786,7 @@ func consumerBaseAnnotations(consumerName string) *schema.StringOrSubstitutionsM
 func deadLetterQueueEnabled(binding *ConsumerBinding) bool {
 	value, ok := transformutils.GetAnnotation(
 		binding.ConsumerResource,
-		annConsumerDeadLetterQueue,
+		annotationConsumerDeadLetterQueue,
 		"",
 	)
 	if !ok {
@@ -775,7 +796,7 @@ func deadLetterQueueEnabled(binding *ConsumerBinding) bool {
 }
 
 func topicPollLabelKey(consumerName string) string {
-	return annConsumerTopicPollPrefix + consumerName
+	return annotationConsumerTopicPollPrefix + consumerName
 }
 
 func consumerSpec(binding *ConsumerBinding) *core.MappingNode {
@@ -794,7 +815,7 @@ func partialFailures(spec *core.MappingNode) bool {
 }
 
 func ambiguousSourceWarning(binding *ConsumerBinding) *core.Diagnostic {
-	annKey, _ := disambiguationAnnotationKey(binding.SourceKind)
+	annotationKey, _ := disambiguationAnnotationKey(binding.SourceKind)
 	return &core.Diagnostic{
 		Level: core.DiagnosticLevelWarning,
 		Message: fmt.Sprintf(
@@ -803,10 +824,11 @@ func ambiguousSourceWarning(binding *ConsumerBinding) *core.Diagnostic {
 				"to make the binding explicit.",
 			binding.ConsumerName,
 			binding.SourceKind,
-			annKey,
+			annotationKey,
 			binding.SourceAbstractName,
-			annKey,
+			annotationKey,
 		),
+		Range: consumerRange(binding),
 	}
 }
 
@@ -819,6 +841,7 @@ func bucketEventUnsupported(binding *ConsumerBinding, event string) *core.Diagno
 			binding.ConsumerName,
 			event,
 		),
+		Range: consumerRange(binding),
 	}
 }
 
@@ -836,6 +859,7 @@ func externalObjectStorageDeferred(binding *ConsumerBinding) []*core.Diagnostic 
 				binding.ConsumerName,
 				bucket,
 			),
+			Range: consumerRange(binding),
 		})
 	}
 	return diagnostics
@@ -850,7 +874,22 @@ func unknownSourceDeferred(binding *ConsumerBinding) *core.Diagnostic {
 				"been skipped",
 			binding.ConsumerName,
 		),
+		Range: consumerRange(binding),
 	}
+}
+
+// Anchors a diagnostic to the consumer resource a binding came
+// from. Diagnostics about a binding are almost always about what the consumer
+// declared, so the consumer is the useful place to point even when the concrete
+// source lives elsewhere.
+func consumerRange(binding *ConsumerBinding, nodes ...*core.MappingNode) *core.DiagnosticRange {
+	candidates := make([]*source.Meta, 0, len(nodes)+1)
+	for _, node := range nodes {
+		candidates = append(candidates, shared.NodeMeta(node))
+	}
+	candidates = append(candidates, shared.ResourceMeta(binding.ConsumerResource))
+
+	return shared.DiagnosticRange(candidates...)
 }
 
 func setStringAnnotation(meta *schema.Metadata, key, value string) {

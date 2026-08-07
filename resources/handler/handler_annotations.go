@@ -52,6 +52,38 @@ const (
 	// AnnotationKeyVPCSubnetType specifies the subnet type for a handler's VPC configuration.
 	AnnotationKeyVPCSubnetType = "celerity.handler.vpc.subnetType"
 
+	// AnnotationKeyAPIVPCSubnetType specifies the subnet type applied to the
+	// handlers that inherit their VPC placement from a celerity/api.
+	AnnotationKeyAPIVPCSubnetType = "celerity.api.vpc.subnetType"
+
+	// AnnotationKeyConsumerVPCSubnetType specifies the subnet type applied to the
+	// handlers that inherit their VPC placement from a celerity/consumer.
+	AnnotationKeyConsumerVPCSubnetType = "celerity.consumer.vpc.subnetType"
+
+	// AnnotationKeyScheduleVPCSubnetType specifies the subnet type applied to the
+	// handlers that inherit their VPC placement from a celerity/schedule.
+	AnnotationKeyScheduleVPCSubnetType = "celerity.schedule.vpc.subnetType"
+
+	// AnnotationKeyVPCEgress narrows what a VPC-attached handler may reach outside
+	// the VPC: "internet", "none", or a comma-separated list of CIDR ranges.
+	//
+	// Left unset the reach is resolved by the deploy target from the network's own
+	// topology, which is why the transformer passes this through only when the
+	// author sets it. Unset and "none" are different states.
+	AnnotationKeyVPCEgress = "celerity.handler.vpc.egress"
+
+	// AnnotationKeyAPIVPCEgress specifies the outbound reach applied to the
+	// handlers that inherit their VPC placement from a celerity/api.
+	AnnotationKeyAPIVPCEgress = "celerity.api.vpc.egress"
+
+	// AnnotationKeyConsumerVPCEgress specifies the outbound reach applied to the
+	// handlers that inherit their VPC placement from a celerity/consumer.
+	AnnotationKeyConsumerVPCEgress = "celerity.consumer.vpc.egress"
+
+	// AnnotationKeyScheduleVPCEgress specifies the outbound reach applied to the
+	// handlers that inherit their VPC placement from a celerity/schedule.
+	AnnotationKeyScheduleVPCEgress = "celerity.schedule.vpc.egress"
+
 	// AnnotationKeyHTTPMethod is the HTTP method an HTTP handler responds to.
 	AnnotationKeyHTTPMethod = "celerity.handler.http.method"
 
@@ -85,6 +117,16 @@ const (
 
 	// SubnetTypePublic places a handler's VPC configuration in public subnets.
 	SubnetTypePublic = "public"
+)
+
+const (
+	// VPCEgressInternet lets a VPC-attached handler reach the internet, to the
+	// extent the network's topology provides an outbound path.
+	VPCEgressInternet = "internet"
+
+	// VPCEgressNone closes a VPC-attached handler's outbound access, leaving it
+	// able to reach only what it is linked to inside the network.
+	VPCEgressNone = "none"
 )
 
 func sharedParentAnnotations(abstractName string, category string) *core.MappingNode {
