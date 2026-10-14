@@ -25,6 +25,10 @@ type StoreWiring struct {
 	// CELERITY_CONFIG_<NS>_STORE_ID / _STORE_KIND env-var names, derived from the
 	// store name (spec.name, falling back to the blueprint resource name).
 	EnvNamespace string
+	// Namespace is that same store name before sanitization, which is the name
+	// handlers resolve the config namespace by. Sanitization is lossy, so the SDK
+	// is given the authored name rather than left to infer it from EnvNamespace.
+	Namespace string
 	// Kind is the backend kind literal selected by the store's plaintext keys:
 	// at least one plaintext key selects parameter-store, none selects
 	// secrets-manager.
@@ -47,8 +51,10 @@ func StoreWiringFor(configName string, resource *schema.Resource) StoreWiring {
 		spec = resource.Spec
 	}
 
+	storeName := storeNameFor(configName, spec)
 	wiring := StoreWiring{
-		EnvNamespace:          envNamespaceSegment(storeNameFor(configName, spec)),
+		EnvNamespace:          envNamespaceSegment(storeName),
+		Namespace:             storeName,
 		Kind:                  StoreKindParameterStore,
 		LinkAnnotationService: "ssm",
 		ConcreteResourceName:  paramTreeResourceName(configName),

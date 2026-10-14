@@ -52,6 +52,15 @@ func emitQueue(
 
 	nameNode, _ := pluginutils.GetValueByPath("$.name", r.Resource.Spec)
 	fifoNode, _ := pluginutils.GetValueByPath("$.fifo", r.Resource.Spec)
+
+	if diagnostics := shared.DeferredValueErrors(
+		shared.AWSServerless,
+		"queue", r.Name, r.Resource,
+		shared.StructuralField{Name: "fifo", Value: fifoNode},
+	); len(diagnostics) > 0 {
+		return &transformutils.EmitResult{Diagnostics: diagnostics}, nil
+	}
+
 	fifo := core.BoolValue(fifoNode)
 
 	if queueNameNode := physicalQueueName(nameNode, fifo); queueNameNode != nil {
@@ -80,7 +89,11 @@ func emitQueue(
 		spec.Fields["maximumMessageSize"] = v
 	}
 	// aws/sqs/queue.tags is a list of {key, value} objects.
-	if tags := sharedaws.SpecTagsFromResourceMetadata(r.Resource.Metadata); tags != nil {
+	if tags := sharedaws.SpecTagsFor(r.Resource.Metadata, sharedaws.Identity{
+		AppName:      shared.ResolveAppName(run),
+		ResourceName: r.Name,
+		ResourceType: "celerity/queue",
+	}); tags != nil {
 		spec.Fields["tags"] = tags
 	}
 

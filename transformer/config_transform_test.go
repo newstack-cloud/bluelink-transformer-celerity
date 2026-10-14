@@ -44,9 +44,9 @@ func (s *ConfigTransformTestSuite) Test_all_secret_values_emit_a_secretsmanager_
 	// tags is a LIST of {key, value} for aws/secretsmanager/secret.
 	tags := secret.Spec.Fields["tags"]
 	s.Require().NotNil(tags)
-	s.Require().Len(tags.Items, 1)
-	s.Equal("team", core.StringValue(tags.Items[0].Fields["key"]))
-	s.Equal("payments", core.StringValue(tags.Items[0].Fields["value"]))
+	s.Equal("payments", specTagValue(tags, "team"), "author label")
+	s.Equal("myConfig", specTagValue(tags, "celerity:resource"), "identity: abstract resource")
+	s.Equal("celerity/config", specTagValue(tags, "celerity:resource-type"), "identity: abstract type")
 
 	// framework annotations, infrastructure category.
 	s.Equal("celerity/config", annotationLiteral(secret.Metadata.Annotations, transformutils.AnnotationSourceAbstractType))
@@ -357,6 +357,20 @@ func configContext(appName string) transform.Context {
 			shared.AppNameContextVarKey: core.ScalarFromString(appName),
 		},
 	}
+}
+
+// specTagValue looks a tag up by key rather than position. Tags are a merge of the
+// author's labels and Celerity's identity tags, sorted, so an index says nothing.
+func specTagValue(tags *core.MappingNode, key string) string {
+	if tags == nil {
+		return ""
+	}
+	for _, item := range tags.Items {
+		if core.StringValue(item.Fields["key"]) == key {
+			return core.StringValue(item.Fields["value"])
+		}
+	}
+	return ""
 }
 
 func annotationLiteral(annos *schema.StringOrSubstitutionsMap, key string) string {

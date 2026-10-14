@@ -47,8 +47,8 @@ func (s *TopicTransformTestSuite) Test_emits_an_sns_topic_from_the_topic_spec() 
 	// tags is a LIST of {key, value} for aws/sns/topic.
 	tags := sns.Spec.Fields["tags"]
 	s.Require().NotNil(tags)
-	s.Require().Len(tags.Items, 1)
-	s.Equal("team", core.StringValue(tags.Items[0].Fields["key"]))
+	s.Equal("payments", specTagValue(tags, "team"), "author label")
+	s.Equal("celerity/topic", specTagValue(tags, "celerity:resource-type"), "identity: abstract type")
 
 	// Labels preserved so a handler's linkSelector can match the topic.
 	s.Equal("payments", sns.Metadata.Labels.Values["team"])

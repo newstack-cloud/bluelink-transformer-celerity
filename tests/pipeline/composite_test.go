@@ -194,7 +194,9 @@ func pipelineParams(
 			"aws": {"region": core.ScalarFromString(testRegion)},
 		},
 		map[string]map[string]*core.ScalarValue{
-			h.TransformName: mergedTransformerConfig,
+			// See transformerNamespace: a host keys transformer configuration by
+			// plugin namespace, which is what the loader reads it back under.
+			transformerNamespace: mergedTransformerConfig,
 		},
 		contextVars,
 		map[string]*core.ScalarValue{},

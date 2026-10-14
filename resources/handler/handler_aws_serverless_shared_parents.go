@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/newstack-cloud/bluelink-transformer-celerity/shared"
+	sharedaws "github.com/newstack-cloud/bluelink-transformer-celerity/shared/aws"
 	"github.com/newstack-cloud/bluelink-transformer-celerity/shared/awslambda"
 	"github.com/newstack-cloud/bluelink-transformer-celerity/shared/build"
 	"github.com/newstack-cloud/bluelink/libs/blueprint/core"
@@ -35,6 +36,15 @@ func AWSServerlessSharedParents(
 
 	parents = append(parents, collectIAMRoles(handlers, appName)...)
 	parents = append(parents, collectLambdaLayers(handlers, manifest)...)
+
+	// An error here means a fan-out reference could not be built, which would
+	// otherwise surface as a missing queue far from its cause. Shared parent
+	// collection cannot report errors, so it is dropped and the per-handler emit
+	// path reports it against the handler that owns the binding.
+	fanouts, err := collectTopicFanouts(handlers, appName)
+	if err == nil {
+		parents = append(parents, fanouts...)
+	}
 
 	return parents
 }
@@ -86,7 +96,7 @@ func collectIAMRoles(
 				// The seed is the complete role spec, the provider links inject their
 				// own per-link IAM statements at deploy time, so there are no
 				// per-handler contributions to merge into it.
-				SeedSpec: awslambda.SeedRoleSpec(physicalName, plans[fingerprint]),
+				SeedSpec: taggedRoleSeed(appName, physicalName, plans[fingerprint]),
 			},
 		)
 	}
@@ -158,6 +168,51 @@ func physicalRoleName(appName string, fp string) string {
 	)
 }
 
+// A build manifest content hash names its algorithm ("sha256:<hex>"), and a
+// resource name is lexed as part of a ${resources.<name>...} reference, where a
+// colon is not a legal character. Folding anything outside the reference
+// alphabet to an underscore keeps the declared name and every reference to it
+// in agreement, since both are built here.
 func lambdaLayerResourceName(h string) string {
-	return fmt.Sprintf("celerityLambdaLayer_%s", h)
+	return fmt.Sprintf("celerityLambdaLayer_%s", referenceSafe(h))
+}
+
+func referenceSafe(value string) string {
+	return strings.Map(func(r rune) rune {
+		switch {
+		case r >= 'a' && r <= 'z',
+			r >= 'A' && r <= 'Z',
+			r >= '0' && r <= '9',
+			r == '_':
+			return r
+		default:
+			return '_'
+		}
+	}, value)
+}
+
+// The execution role's seed spec with Celerity's identity attached.
+//
+// A role is shared by every handler with the same permission set, so it names no
+// single abstract resource, tagging it with one would attribute shared
+// infrastructure to whichever handler happened to be first. The app and the type
+// are true of it, and are what a cost or ownership query needs.
+func taggedRoleSeed(
+	appName string,
+	physicalName string,
+	plan *awslambda.RolePlan,
+) *core.MappingNode {
+	seed := awslambda.SeedRoleSpec(physicalName, plan)
+	if seed == nil || seed.Fields == nil {
+		return seed
+	}
+
+	if tags := sharedaws.SpecTagsFor(nil, sharedaws.Identity{
+		AppName:      appName,
+		ResourceType: "celerity/handler",
+	}); tags != nil {
+		seed.Fields["tags"] = tags
+	}
+
+	return seed
 }

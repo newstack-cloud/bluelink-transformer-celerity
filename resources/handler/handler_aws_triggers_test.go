@@ -16,9 +16,13 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// Residual 1: an in-blueprint celerity/topic consumer's emitted SNS subscription
-// must have its topicArn rewritten from the abstract topic reference to the
-// concrete <topic>_sns_topic, exactly like the Lambda spec is rewritten.
+// Residual 1: an in-blueprint celerity/topic consumer's SNS subscription must
+// have its topicArn rewritten from the abstract topic reference to the concrete
+// <topic>_sns_topic, exactly like the Lambda spec is rewritten.
+//
+// The subscription itself is a shared parent (one fan-out per consumer, however
+// many handlers absorb it), so the handler contributes the topicArn rather than
+// emitting the resource.
 func Test_emit_rewrites_in_blueprint_topic_subscription_topicArn(t *testing.T) {
 	topicSourceID := mustSubNode(t, "${resources.ordersTopic.spec.id}")
 	r := topicConsumerHandler("orderHandler", "orderConsumer", topicSourceID)
@@ -32,10 +36,10 @@ func Test_emit_rewrites_in_blueprint_topic_subscription_topicArn(t *testing.T) {
 
 	result := emitForTest(t, r, rw)
 
-	subscription := result.Resources["orderConsumer_sns_subscription"]
-	require.NotNil(t, subscription, "expected an SNS subscription for the topic consumer")
+	contribution := result.SharedParentContributions["topicSubscription:orderConsumer"]
+	require.NotNil(t, contribution, "expected a topic subscription contribution for the consumer")
 
-	name, path := resourcePropertyRef(t, subscription.Spec.Fields["topicArn"])
+	name, path := resourcePropertyRef(t, contribution.Fields["topicArn"])
 	assert.Equal(t, "ordersTopic_sns_topic", name,
 		"subscription topicArn must reference the concrete SNS topic, not the abstract name")
 	assert.Equal(t, []string{"spec", "topicArn"}, path)
@@ -53,11 +57,11 @@ func Test_emit_leaves_literal_topic_subscription_arn_unchanged(t *testing.T) {
 
 	result := emitForTest(t, r, rw)
 
-	subscription := result.Resources["orderConsumer_sns_subscription"]
-	require.NotNil(t, subscription)
+	contribution := result.SharedParentContributions["topicSubscription:orderConsumer"]
+	require.NotNil(t, contribution)
 	assert.Equal(t,
 		"arn:aws:sns:us-east-1:123456789012:orders",
-		core.StringValue(subscription.Spec.Fields["topicArn"]),
+		core.StringValue(contribution.Fields["topicArn"]),
 	)
 }
 

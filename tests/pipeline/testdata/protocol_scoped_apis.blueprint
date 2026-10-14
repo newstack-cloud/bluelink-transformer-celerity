@@ -50,3 +50,60 @@ resource createOrder: celerity/handler {
         runtime = "nodejs24.x"
     }
 }
+
+# A hybrid API: one celerity/api declaring both protocols, which becomes two
+# concrete API Gateway APIs that both select from the same set of handlers.
+#
+# The two APIs above have disjoint label selections, so nothing about them can
+# tell whether protocol scoping works: they would attach only their own handler
+# even with no scoping at all. Here both handlers carry app = "notifications"
+# and are selected by the same author selector, so an HTTP API that attaches
+# the WebSocket handler builds a route with a "$disconnect" route key, which
+# API Gateway rejects at deploy time.
+resource notificationsApi: celerity/api {
+    select by label {
+        app = "notifications"
+    }
+    spec {
+        protocols = [
+            "http",
+            {
+                websocketConfig = {
+                    routeKey = "action"
+                }
+            }
+        ]
+    }
+}
+
+resource notificationsStatus: celerity/handler {
+    metadata {
+        labels = { app = "notifications" }
+        annotations = {
+            "celerity.handler.http" = true,
+            "celerity.handler.http.method" = "GET",
+            "celerity.handler.http.path" = "/status"
+        }
+    }
+    spec {
+        handlerName = "notificationsStatus"
+        handler = "handlers.status"
+        runtime = "nodejs24.x"
+    }
+}
+
+resource notificationsDisconnect: celerity/handler {
+    metadata {
+        labels = { app = "notifications" }
+        annotations = {
+            "celerity.handler.websocket" = true,
+            "celerity.handler.websocket.eventType" = "disconnect",
+            "celerity.handler.websocket.route" = "$disconnect"
+        }
+    }
+    spec {
+        handlerName = "notificationsDisconnect"
+        handler = "handlers.disconnect"
+        runtime = "nodejs24.x"
+    }
+}

@@ -24,12 +24,31 @@ const defaultAttributeType = "S"
 // The abstract index carries no projection setting, so this is the default.
 const allAttributesProjection = "ALL"
 
+const streamViewTypeNewAndOldImages = "NEW_AND_OLD_IMAGES"
+
 func emitDatastore(
 	_ context.Context,
 	run *transformutils.Run,
 	r *ResolvedDatastore,
 	rw transformutils.ResourcePropertyRewriter,
 ) (*transformutils.EmitResult, error) {
+	// The key schema and the attribute definitions built from it are part of the
+	// table's shape, not values passed through to it.
+	if diagnostics := shared.DeferredValueErrors(
+		shared.AWSServerless,
+		"datastore", r.Name, r.Resource,
+		shared.StructuralField{
+			Name:  "keys.partitionKey",
+			Value: mustGet("$.keys.partitionKey", r),
+		},
+		shared.StructuralField{
+			Name:  "keys.sortKey",
+			Value: mustGet("$.keys.sortKey", r),
+		},
+	); len(diagnostics) > 0 {
+		return &transformutils.EmitResult{Diagnostics: diagnostics}, nil
+	}
+
 	spec := &core.MappingNode{Fields: map[string]*core.MappingNode{}}
 
 	if nameNode := passthroughNameNode(mustGet("$.name", r)); nameNode != nil {
@@ -66,11 +85,19 @@ func emitDatastore(
 		spec.Fields["timeToLiveSpecification"] = ttl
 	}
 
+	if r.Consumed {
+		spec.Fields["streamSpecification"] = buildStreamSpecification()
+	}
+
 	// Deploy-config-sourced settings (per-datastore only, no global).
 	applyBillingConfig(spec, run, r)
 
 	// aws/dynamodb/table.tags is a list of {key, value} objects.
-	if tags := sharedaws.SpecTagsFromResourceMetadata(r.Resource.Metadata); tags != nil {
+	if tags := sharedaws.SpecTagsFor(r.Resource.Metadata, sharedaws.Identity{
+		AppName:      shared.ResolveAppName(run),
+		ResourceName: r.Name,
+		ResourceType: "celerity/datastore",
+	}); tags != nil {
 		spec.Fields["tags"] = tags
 	}
 
@@ -212,6 +239,18 @@ func applyGSIProvisionedThroughput(spec *core.MappingNode, throughput *core.Mapp
 		}
 		gsi.Fields["provisionedThroughput"] = throughput
 	}
+}
+
+// The stream a consumer reads, enabled on the table itself.
+//
+// The block's presence is what turns streams on; the table schema has no separate
+// enabled flag, only the view type it requires. NEW_AND_OLD_IMAGES matches the default
+// the AWS provider's table-to-function link applies, so a table created here and one
+// that link configures agree rather than fighting over the view type.
+func buildStreamSpecification() *core.MappingNode {
+	return core.MappingNodeFields(
+		"streamViewType", core.MappingNodeFromString(streamViewTypeNewAndOldImages),
+	)
 }
 
 func buildTimeToLive(r *ResolvedDatastore) *core.MappingNode {

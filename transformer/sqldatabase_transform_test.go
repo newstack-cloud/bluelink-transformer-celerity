@@ -61,6 +61,46 @@ func (s *SQLDatabaseTransformTestSuite) Test_omitted_name_app_scopes_deployed_id
 		core.StringValue(role.Spec.Fields["roleName"]))
 }
 
+// Every deployed identifier derives from the name, so a name set from a
+// variable has to survive as a reference through all of them. Resolving it with
+// core.StringValue produced an empty name, which app-scoped the identifiers as
+// though no name had been given.
+func (s *SQLDatabaseTransformTestSuite) Test_name_set_from_a_variable_reaches_the_deployed_identifiers() {
+	nameRef, err := shared.SubstitutionMappingNode("${variables.dbName}")
+	s.Require().NoError(err)
+
+	out := s.transformDBWithVPC(
+		core.MappingNodeFields(
+			"engine", core.MappingNodeFromString("postgres"),
+			"name", nameRef,
+		),
+		"standard",
+		nil,
+	)
+	resources := out.TransformedBlueprint.Resources.Values
+
+	inst := resources["myDb_rds_instance"]
+	s.Require().NotNil(inst)
+	s.Require().NotNil(inst.Spec.Fields["dbInstanceIdentifier"].StringWithSubstitutions)
+
+	// The engine-internal database name stays logical, falling back to the
+	// resource name: it is read while transforming, so it cannot be a reference.
+	s.Equal("myDb", core.StringValue(inst.Spec.Fields["dbName"]))
+
+	for resourceName, field := range map[string]string{
+		"myDb_rds_subnet_group": "dbSubnetGroupName",
+		"myDb_rds_proxy":        "dbProxyName",
+		"myDb_rds_proxy_role":   "roleName",
+	} {
+		res := resources[resourceName]
+		s.Require().NotNil(res, resourceName)
+		s.NotNil(
+			res.Spec.Fields[field].StringWithSubstitutions,
+			"%s.%s keeps the reference", resourceName, field,
+		)
+	}
+}
+
 func (s *SQLDatabaseTransformTestSuite) Test_database_in_a_managed_vpc_emits_instance_and_subnet_group() {
 	out := s.transformDBWithVPC(
 		core.MappingNodeFields(
@@ -100,13 +140,16 @@ func (s *SQLDatabaseTransformTestSuite) Test_database_in_a_managed_vpc_emits_ins
 	s.Require().NotNil(proxy.Spec.Fields["vpcSubnetIds"])
 	s.Require().NotNil(proxy.Spec.Fields["roleArn"])
 	s.Equal("orders", proxy.Metadata.Labels.Values["app"])
-	// Password mode -> SECRETS auth against the instance's RDS-managed secret;
-	// the IAM_AUTH default scheme is iam-mode only.
+	// Password mode -> SECRETS auth, one registered secret per role the proxy
+	// authenticates: the instance's RDS-managed master secret and the
+	// application user's. The IAM_AUTH default scheme is iam-mode only.
 	s.Nil(proxy.Spec.Fields["defaultAuthScheme"])
 	authItems := proxy.Spec.Fields["auth"].Items
-	s.Require().Len(authItems, 1)
-	s.Equal("SECRETS", core.StringValue(authItems[0].Fields["authScheme"]))
-	s.Require().NotNil(authItems[0].Fields["secretArn"])
+	s.Require().Len(authItems, 2)
+	for _, entry := range authItems {
+		s.Equal("SECRETS", core.StringValue(entry.Fields["authScheme"]))
+		s.Require().NotNil(entry.Fields["secretArn"])
+	}
 
 	// The proxy's IAM role trusts rds.amazonaws.com and grants GetSecretValue.
 	// The deployed role name derives from the physical base (the author-provided
@@ -117,12 +160,62 @@ func (s *SQLDatabaseTransformTestSuite) Test_database_in_a_managed_vpc_emits_ins
 	s.Equal("orders-proxy-role", core.StringValue(role.Spec.Fields["roleName"]))
 	s.Require().NotNil(role.Spec.Fields["policies"], "password mode grants secret access")
 
-	// A target group registers the instance behind the proxy. dbProxyName
-	// references the proxy so the target group depends on it.
-	tg := resources["myDb_rds_proxy_target_group"]
-	s.Require().NotNil(tg)
-	s.Equal("aws/rds/dbProxyTargetGroup", tg.Type.Value)
-	s.Equal("myDb_rds_proxy", resourceRefName(tg.Spec.Fields["dbProxyName"]))
+	// No target group resource. Registering the instance is done by the
+	// aws/rds/dbProxy::aws/rds/dbInstance link instead, because
+	// AWS::RDS::DBProxyTargetGroup blocks its create until the registered target
+	// reports healthy, and the security group rule that makes it healthy is written
+	// by that same link. As a resource it ran a whole phase before the rule it
+	// depended on and spent its entire timeout waiting.
+	s.NotContains(resources, "myDb_rds_proxy_target_group")
+}
+
+// An RDS proxy rejects a connection for any role it holds no credentials for,
+// reporting "This RDS proxy has no credentials for the role celerity_app". That
+// reads as a missing database role rather than a missing registration, and it is
+// what every handler hit: the role was provisioned and granted, the secret
+// existed, and the proxy had simply never been told about it.
+func (s *SQLDatabaseTransformTestSuite) Test_password_auth_proxy_registers_both_the_master_and_application_secrets() {
+	out := s.transformDBWithVPC(
+		core.MappingNodeFields(
+			"name", core.MappingNodeFromString("orders"),
+			"engine", core.MappingNodeFromString("postgres"),
+		),
+		"standard",
+		nil,
+	)
+	resources := out.TransformedBlueprint.Resources.Values
+
+	proxy := resources["myDb_rds_proxy"]
+	s.Require().NotNil(proxy)
+	authItems := proxy.Spec.Fields["auth"].Items
+	s.Require().Len(authItems, 2, "the master and the application user each need a registered secret")
+	for _, entry := range authItems {
+		s.Equal("SECRETS", core.StringValue(entry.Fields["authScheme"]))
+		s.NotNil(entry.Fields["secretArn"])
+	}
+}
+
+// A secret the proxy is registered with but cannot read fails at connection time
+// just as completely as one that was never registered.
+func (s *SQLDatabaseTransformTestSuite) Test_password_auth_proxy_role_can_read_both_secrets() {
+	out := s.transformDBWithVPC(
+		core.MappingNodeFields(
+			"name", core.MappingNodeFromString("orders"),
+			"engine", core.MappingNodeFromString("postgres"),
+		),
+		"standard",
+		nil,
+	)
+	resources := out.TransformedBlueprint.Resources.Values
+
+	role := resources["myDb_rds_proxy_role"]
+	s.Require().NotNil(role)
+	policies := role.Spec.Fields["policies"].Items
+	s.Require().Len(policies, 1)
+	stmt := policies[0].Fields["policyDocument"].Fields["statement"].Items[0].Fields
+	s.Equal("secretsmanager:GetSecretValue", core.StringValue(stmt["action"]))
+	s.Require().NotNil(stmt["resource"].Items, "the policy must cover every registered secret")
+	s.Len(stmt["resource"].Items, 2)
 }
 
 func (s *SQLDatabaseTransformTestSuite) Test_iam_auth_proxy_uses_iam_auth_and_role_without_secret_policy() {
@@ -388,6 +481,92 @@ func (s *SQLDatabaseTransformTestSuite) Test_missing_vpc_errors_and_emits_nothin
 	s.True(found, "expected an error diagnostic about required VPC placement")
 	s.NotContains(out.TransformedBlueprint.Resources.Values, "myDb_rds_instance")
 	s.NotContains(out.TransformedBlueprint.Resources.Values, "myDb_rds_proxy")
+}
+
+// Spelled out rather than imported from the sqldatabase package: this is the label key
+// the emitted blueprint carries, so the test should fail if it is renamed.
+const proxyTargetLabel = "celerity.internal.sqldatabase.proxyTarget"
+
+// Registering the instance in the proxy's target group is not enough on its own: the
+// target stays unavailable until a security group rule permits the connection, which
+// the aws/rds/dbProxy::aws/rds/dbInstance link writes. That link only exists if the
+// proxy selects the instance.
+func (s *SQLDatabaseTransformTestSuite) Test_proxy_selects_the_instance_it_fronts() {
+	out := s.transformDBWithVPC(
+		core.MappingNodeFields(
+			"name", core.MappingNodeFromString("orders"),
+			"engine", core.MappingNodeFromString("postgres"),
+		),
+		"standard",
+		map[string]string{"app": "orders"},
+	)
+	resources := out.TransformedBlueprint.Resources.Values
+
+	proxy := resources["myDb_rds_proxy"]
+	s.Require().NotNil(proxy)
+	s.Require().NotNil(proxy.LinkSelector)
+	s.Require().NotNil(proxy.LinkSelector.ByLabel)
+	s.Equal("orders", proxy.LinkSelector.ByLabel.Values[proxyTargetLabel])
+
+	inst := resources["myDb_rds_instance"]
+	s.Require().NotNil(inst)
+	s.Equal("orders", inst.Metadata.Labels.Values[proxyTargetLabel])
+}
+
+// byLabel matching is a union, so the selector must not also reach the other resources
+// this database emits. They carry the database's own labels, which is why the proxy
+// selects on a key of its own rather than on those.
+func (s *SQLDatabaseTransformTestSuite) Test_proxy_selector_reaches_only_the_instance() {
+	out := s.transformDBWithVPC(
+		core.MappingNodeFields(
+			"name", core.MappingNodeFromString("orders"),
+			"engine", core.MappingNodeFromString("postgres"),
+			"readReplicas", core.MappingNodeFromBool(true),
+		),
+		"standard",
+		map[string]string{"app": "orders"},
+	)
+	resources := out.TransformedBlueprint.Resources.Values
+
+	for _, name := range []string{
+		"myDb_rds_proxy",
+		"myDb_rds_proxy_role",
+		"myDb_rds_proxy_target_group",
+		"myDb_rds_subnet_group",
+		// The target group registers the primary, so a read replica is not on the far
+		// end of the proxy's connection.
+		"myDb_rds_reader",
+	} {
+		resource, ok := resources[name]
+		if !ok || resource.Metadata == nil || resource.Metadata.Labels == nil {
+			continue
+		}
+		s.NotContains(
+			resource.Metadata.Labels.Values,
+			proxyTargetLabel,
+			"%s must not be selectable as the proxy's target", name,
+		)
+	}
+}
+
+// The label map is shared across every resource the database emits, so adding to it in
+// place would put the proxy-target label on all of them.
+func (s *SQLDatabaseTransformTestSuite) Test_proxy_target_label_does_not_displace_db_labels() {
+	out := s.transformDBWithVPC(
+		core.MappingNodeFields(
+			"name", core.MappingNodeFromString("orders"),
+			"engine", core.MappingNodeFromString("postgres"),
+		),
+		"standard",
+		map[string]string{"app": "orders", "tier": "data"},
+	)
+	resources := out.TransformedBlueprint.Resources.Values
+
+	inst := resources["myDb_rds_instance"]
+	s.Require().NotNil(inst)
+	s.Equal("orders", inst.Metadata.Labels.Values["app"])
+	s.Equal("data", inst.Metadata.Labels.Values["tier"])
+	s.Equal("orders", inst.Metadata.Labels.Values[proxyTargetLabel])
 }
 
 func (s *SQLDatabaseTransformTestSuite) transformDBWithVPC(

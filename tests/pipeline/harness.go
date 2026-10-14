@@ -29,6 +29,7 @@ import (
 	iamservice "github.com/newstack-cloud/bluelink-provider-aws/services/iam/service"
 	kmsservice "github.com/newstack-cloud/bluelink-provider-aws/services/kms/service"
 	lambdaservice "github.com/newstack-cloud/bluelink-provider-aws/services/lambda/service"
+	rdsservice "github.com/newstack-cloud/bluelink-provider-aws/services/rds/service"
 	resgrouptagservice "github.com/newstack-cloud/bluelink-provider-aws/services/resgrouptag/service"
 	s3service "github.com/newstack-cloud/bluelink-provider-aws/services/s3/service"
 	secretsmanagerservice "github.com/newstack-cloud/bluelink-provider-aws/services/secretsmanager/service"
@@ -114,6 +115,7 @@ func Setup(t *testing.T) *Harness {
 		kmsservice.NewService,
 		elasticacheservice.NewService,
 		secretsmanagerservice.NewService,
+		rdsservice.NewService,
 		configStore,
 	)
 	// Mirrors the production plugin host: derive each resource's CanLinkTo from
@@ -156,6 +158,11 @@ func Setup(t *testing.T) *Harness {
 	}
 }
 
+// The namespace the transformer's configuration is keyed by, which is the
+// namespace its abstract resource types carry ("celerity/vpc"), not the
+// versioned name a blueprint selects it with.
+const transformerNamespace = "celerity"
+
 // Params builds blueprint params the way the deploy engine would: AWS provider
 // config, plus celerity context variables selecting the aws-serverless target
 // and pointing the transformer at a build manifest. An empty manifestPath means
@@ -177,7 +184,11 @@ func (h *Harness) Params(manifestPath string, vars map[string]*core.ScalarValue)
 			"aws": {"region": core.ScalarFromString(testRegion)},
 		},
 		map[string]map[string]*core.ScalarValue{
-			h.TransformName: {},
+			// Keyed by plugin namespace, not transform name: that is what a host
+			// keys transformer configuration by, and what the blueprint loader
+			// reads it back under. Keying it by transform name here would let a
+			// test pass while the same blueprint failed against the engine.
+			transformerNamespace: {},
 		},
 		contextVars,
 		blueprintVars,

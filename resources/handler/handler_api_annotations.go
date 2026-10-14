@@ -21,12 +21,30 @@ const (
 	// "JWT" or "CUSTOM" for the protected route.
 	annotationAPIAuthorizationType = "aws.apigatewayv2.lambda.authorizationType"
 
-	// LabelKeyAPIProtocol scopes an emitted handler function to the API of its own
-	// protocol. Its value is the handler's event source ("http" or "websocket"). The
-	// celerity/api emit narrows each per-protocol concrete API's linkSelector by this
-	// label so a hybrid (HTTP + WebSocket) API's two APIs each attach only their own
-	// handlers, never the other protocol's (which would create an invalid route).
-	LabelKeyAPIProtocol = "celerity.internal.api.protocol"
+	// LabelKeyAPITarget names the concrete API an emitted handler function is a
+	// route for. Its value is APITargetLabelValue(<abstract api name>, <protocol>),
+	// and each per-protocol concrete API selects on this label alone.
+	//
+	// A single label carrying both parts, rather than one label per part, because
+	// a link selector matches a resource that carries ANY one of the selector's
+	// labels. Selecting on {application: myApi, protocol: http} therefore matches
+	// every handler labelled application=myApi, WebSocket ones included, and a
+	// hybrid API's HTTP API tries to build a route with a "$disconnect" route key
+	// that API Gateway rejects. One label whose value cannot collide across
+	// protocols is what makes the match exact.
+	LabelKeyAPITarget = "celerity.internal.api.target"
+
+	// LabelKeyGuardTarget names the API whose custom-guard authorizer invokes an
+	// emitted handler function. Its value is GuardTargetLabelValue(<abstract api
+	// name>, <guard name>).
+	//
+	// The provider's authorizer::function link is what grants API Gateway
+	// permission to invoke the authorizer's backing function, and that link is
+	// activated by a label selector on the authorizer. Without the pair, the
+	// authorizer deploys pointing at a function API Gateway may not call, and every
+	// route the guard protects fails at the authorizer with the handler never
+	// reached.
+	LabelKeyGuardTarget = "celerity.internal.api.guard.target"
 )
 
 const (
@@ -39,6 +57,22 @@ const (
 	guardTypeCustomVal  = "custom"
 	guardSeparatorComma = ","
 )
+
+// APITargetLabelValue is the LabelKeyAPITarget value pairing an abstract API
+// with one of its protocols. Both the handler emit (stamping the label) and the
+// celerity/api emit (selecting on it) build the value here so the two cannot
+// drift apart.
+func APITargetLabelValue(apiName, protocol string) string {
+	return fmt.Sprintf("%s::%s", apiName, protocol)
+}
+
+// GuardTargetLabelValue is the LabelKeyGuardTarget value pairing an abstract API
+// with one of its custom guards. Both the handler emit (stamping the label) and
+// the celerity/api emit (selecting on it) build the value here so the two cannot
+// drift apart.
+func GuardTargetLabelValue(apiName, guardName string) string {
+	return fmt.Sprintf("%s::%s", apiName, guardName)
+}
 
 // LambdaFuncResourceName is the concrete function resource name emitted for a
 // handler. It is exported so the celerity/api emit can reference a custom-guard
@@ -60,9 +94,13 @@ func stampAPIRouteAnnotations(r *ResolvedHandler, lambda *schema.Resource) error
 		return nil
 	}
 
-	// Scope the function to its protocol's API so a hybrid API attaches it to only
-	// the matching concrete API (see LabelKeyAPIProtocol).
-	setLabel(lambda.Metadata, LabelKeyAPIProtocol, string(r.EventSource))
+	// Attach the function to its own protocol's concrete API, and only that one
+	// (see LabelKeyAPITarget).
+	setLabel(
+		lambda.Metadata,
+		LabelKeyAPITarget,
+		APITargetLabelValue(r.APILink.Name, string(r.EventSource)),
+	)
 
 	setStringAnnotation(lambda.Metadata, annotationAPIRouteKey, routeKeyForHandler(r))
 	return stampRouteAuth(r, lambda)
@@ -124,8 +162,8 @@ func stampRouteAuth(r *ResolvedHandler, lambda *schema.Resource) error {
 }
 
 func isPublicHandler(r *ResolvedHandler) bool {
-	value, ok := transformutils.GetAnnotation(r.Resource, AnnotationKeyPublic, "")
-	return ok && core.BoolValue(value)
+	public, _ := transformutils.GetBoolAnnotation(r.Resource, AnnotationKeyPublic, "", false)
+	return public
 }
 
 // Resolves the single guard that protects this route: the first guard the handler

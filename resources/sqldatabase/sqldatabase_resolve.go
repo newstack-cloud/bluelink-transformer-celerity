@@ -1,6 +1,8 @@
 package sqldatabase
 
 import (
+	"maps"
+
 	"context"
 
 	"github.com/newstack-cloud/bluelink-transformer-celerity/shared"
@@ -22,6 +24,14 @@ type ResolvedSQLDatabase struct {
 	VPCName       string
 	VPCPreset     string
 	VPCReferenced bool
+
+	// VPCSelectorLabels are the labels the VPC selects members by.
+	//
+	// Anything the transformer emits that must sit inside this VPC needs these
+	// and, importantly, only these. Copying a resource's full label set instead
+	// picks up the generated celerity.handler.uses.<db> label that every handler
+	// selects on, which silently forms links to whatever carries it.
+	VPCSelectorLabels map[string]string
 }
 
 func (d *ResolvedSQLDatabase) ResourceName() string {
@@ -61,10 +71,21 @@ func resolveSQLDatabase(
 			preset = "standard"
 		}
 		resolved.VPCPreset = preset
+		resolved.VPCSelectorLabels = linkSelectorLabels(vpcRes)
 		break
 	}
 
 	return resolved, nil
+}
+
+// linkSelectorLabels returns the labels a resource selects link targets by.
+func linkSelectorLabels(res *schema.Resource) map[string]string {
+	if res == nil || res.LinkSelector == nil || res.LinkSelector.ByLabel == nil {
+		return nil
+	}
+	labels := map[string]string{}
+	maps.Copy(labels, res.LinkSelector.ByLabel.Values)
+	return labels
 }
 
 func vpcSpec(res *schema.Resource, path string) *core.MappingNode {

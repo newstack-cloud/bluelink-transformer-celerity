@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/newstack-cloud/bluelink-transformer-celerity/shared"
 	sharedaws "github.com/newstack-cloud/bluelink-transformer-celerity/shared/aws"
 	"github.com/newstack-cloud/bluelink/libs/blueprint/core"
 	"github.com/newstack-cloud/bluelink/libs/blueprint/schema"
@@ -32,10 +33,35 @@ func emitVPC(
 	rw transformutils.ResourcePropertyRewriter,
 ) (*transformutils.EmitResult, error) {
 	ctx := run.TransformContext
-	name := core.StringValue(specGet(r, "$.name"))
+
+	if diagnostics := shared.DeferredValueErrors(
+		shared.AWSServerless,
+		"vpc", r.Name, r.Resource,
+		shared.StructuralField{Name: "mode", Value: specGet(r, "$.mode")},
+		shared.StructuralField{Name: "preset", Value: specGet(r, "$.preset")},
+	); len(diagnostics) > 0 {
+		return &transformutils.EmitResult{Diagnostics: diagnostics}, nil
+	}
+
+	// The emitted name is carried through as written, so it may be a reference:
+	// the engine resolves it before the provider creates the VPC, and reference
+	// mode matches on the resolved value at deploy time. Deploy-config lookups
+	// below are keyed by name while the blueprint is transformed, which is too
+	// early for that, so they fall back to the resource's own name. Other
+	// resources locate their VPC by resource name (VPCName is the link edge's
+	// source), so nothing else depends on this being a literal.
+	nameNode := specGet(r, "$.name")
+	if nameNode == nil {
+		nameNode = core.MappingNodeFromString("")
+	}
+
+	configName := core.StringValue(nameNode)
+	if shared.IsSubstitution(nameNode) {
+		configName = r.Name
+	}
 
 	spec := &core.MappingNode{Fields: map[string]*core.MappingNode{
-		"name": core.MappingNodeFromString(name),
+		"name": nameNode,
 	}}
 
 	if core.StringValue(specGet(r, "$.mode")) == modeReferenced {
@@ -56,15 +82,29 @@ func emitVPC(
 	spec.Fields["preset"] = core.MappingNodeFromString(preset)
 
 	cidrBlock := defaultCIDRBlock
-	if v, ok := sharedaws.ResolveDeployConfig(ctx, "aws.vpc", name, "cidrBlock"); ok && v.StringValue != nil {
+	if v, ok := sharedaws.ResolveDeployConfig(ctx, "aws.vpc", configName, "cidrBlock"); ok && v.StringValue != nil {
 		cidrBlock = *v.StringValue
 	}
 	spec.Fields["cidrBlock"] = core.MappingNodeFromString(cidrBlock)
 
-	if v, ok := sharedaws.ResolveDeployConfigNode(ctx, "aws.vpc", name, "enableDNSSupport"); ok {
+	// One empty group per in-VPC resource that workloads reach over the network.
+	// The VPC only prepares them; the rules come from the links between a
+	// workload and the resource, which pair the workload's group with this one.
+	// Without a group of its own a resource cannot be paired against at all: the
+	// provider refuses to open a path to a group it did not mint, since that
+	// group is shared and the path would reach everything else in it.
+	if len(r.SecurityGroupNames) > 0 {
+		groupNames := make([]*core.MappingNode, 0, len(r.SecurityGroupNames))
+		for _, name := range r.SecurityGroupNames {
+			groupNames = append(groupNames, core.MappingNodeFromString(name))
+		}
+		spec.Fields["securityGroups"] = core.MappingNodeItems(groupNames...)
+	}
+
+	if v, ok := sharedaws.ResolveDeployConfigNode(ctx, "aws.vpc", configName, "enableDNSSupport"); ok {
 		spec.Fields["enableDNSSupport"] = v
 	}
-	if v, ok := sharedaws.ResolveDeployConfigNode(ctx, "aws.vpc", name, "enableDNSHostnames"); ok {
+	if v, ok := sharedaws.ResolveDeployConfigNode(ctx, "aws.vpc", configName, "enableDNSHostnames"); ok {
 		spec.Fields["enableDNSHostnames"] = v
 	}
 
@@ -80,6 +120,17 @@ func emitVPC(
 				"in the deploy configuration",
 			r.Name,
 		)
+	}
+
+	// The flex VPC applies spec.tags to the VPC and every resource it provisions
+	// alongside it, so stamping them here is what gets subnets, route tables and
+	// gateways attributable without the flex VPC knowing anything about Celerity.
+	if tags := sharedaws.MapTagsFor(r.Resource.Metadata, sharedaws.Identity{
+		AppName:      shared.ResolveAppName(run),
+		ResourceName: r.Name,
+		ResourceType: "celerity/vpc",
+	}); tags != nil {
+		spec.Fields["tags"] = tags
 	}
 
 	return vpcResult(r, spec, rw), nil
@@ -113,6 +164,10 @@ func vpcMetadata(r *ResolvedVPC) *schema.Metadata {
 				AbstractResourceName: r.Name,
 				AbstractResourceType: "celerity/vpc",
 				ResourceCategory:     transformutils.ResourceCategoryInfrastructure,
+				// Everything in the application sits inside the VPC and links
+				// out of it, so those links describe the environment rather
+				// than the application's own wiring.
+				ResourceRole: transformutils.ResourceRoleAmbient,
 			},
 		),
 	}

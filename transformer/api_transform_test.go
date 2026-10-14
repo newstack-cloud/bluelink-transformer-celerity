@@ -51,9 +51,15 @@ func (s *APITransformTestSuite) Test_http_only_emits_api_and_stage() {
 	// placeholder app segment.
 	s.Equal("placeholder-app-ordersApi-http", core.StringValue(api.Spec.Fields["name"]))
 
-	// The concrete API preserves the abstract API's linkSelector.
+	// The concrete API selects on the internal target label alone, not the
+	// author's labels: a selector matches a resource carrying any one of its
+	// labels, so keeping "application" would re-match handlers the target label
+	// is there to exclude.
 	s.Require().NotNil(api.LinkSelector)
-	s.Equal("orders", api.LinkSelector.ByLabel.Values["application"])
+	s.Equal(
+		map[string]string{"celerity.internal.api.target": "ordersApi::http"},
+		api.LinkSelector.ByLabel.Values,
+	)
 
 	stage := resources["ordersApi_http_stage"]
 	s.Require().NotNil(stage)
@@ -121,17 +127,25 @@ func (s *APITransformTestSuite) Test_hybrid_apis_are_protocol_scoped() {
 
 	resources := s.transform(map[string]*schema.Resource{"chatApi": apiRes}, edges())
 
+	// Each concrete API selects on one label whose value names the API and its
+	// protocol. Two labels would not do: a selector matches a resource carrying
+	// any one of them, so the shared "application" label would attach the other
+	// protocol's handlers regardless of the protocol label.
 	httpAPI := resources["chatApi_http_api"]
 	s.Require().NotNil(httpAPI)
 	s.Require().NotNil(httpAPI.LinkSelector)
-	s.Equal("chat", httpAPI.LinkSelector.ByLabel.Values["application"])
-	s.Equal("http", httpAPI.LinkSelector.ByLabel.Values["celerity.internal.api.protocol"])
+	s.Equal(
+		map[string]string{"celerity.internal.api.target": "chatApi::http"},
+		httpAPI.LinkSelector.ByLabel.Values,
+	)
 
 	ws := resources["chatApi_websocket_api"]
 	s.Require().NotNil(ws)
 	s.Require().NotNil(ws.LinkSelector)
-	s.Equal("chat", ws.LinkSelector.ByLabel.Values["application"])
-	s.Equal("websocket", ws.LinkSelector.ByLabel.Values["celerity.internal.api.protocol"])
+	s.Equal(
+		map[string]string{"celerity.internal.api.target": "chatApi::websocket"},
+		ws.LinkSelector.ByLabel.Values,
+	)
 }
 
 // A JWT guard emits an aws/apigatewayv2/authorizer with the issuer, audience and
@@ -179,6 +193,50 @@ func (s *APITransformTestSuite) Test_jwt_guard_emits_authorizer() {
 	identity := authorizer.Spec.Fields["identitySource"]
 	s.Require().NotNil(identity)
 	s.Equal("$request.header.Authorization", core.StringValue(specItem(identity, 0)))
+}
+
+// The issuer is environment-specific, so authors set it from a blueprint
+// variable rather than hard-coding it. Its value is then a substitution that is
+// not resolved until deploy time, and a required-field check reading
+// core.StringValue sees an empty string and rejects the blueprint outright with
+// "guard \"jwt\" ... is missing required field(s) issuer".
+func (s *APITransformTestSuite) Test_jwt_guard_accepts_an_issuer_set_from_a_variable() {
+	issuerRef, err := shared.SubstitutionMappingNode("${variables.oidcIssuer}")
+	s.Require().NoError(err)
+
+	apiRes := &schema.Resource{
+		Type: &schema.ResourceTypeWrapper{Value: "celerity/api"},
+		Spec: core.MappingNodeFields(
+			"protocols", core.MappingNodeItems(core.MappingNodeFromString("http")),
+			"auth", core.MappingNodeFields(
+				"defaultGuard", core.MappingNodeFromString("jwt"),
+				"guards", core.MappingNodeFields(
+					"jwt", core.MappingNodeFields(
+						"type", core.MappingNodeFromString("jwt"),
+						"issuer", issuerRef,
+						"tokenSource", core.MappingNodeFromString("$.headers.Authorization"),
+						"audience", core.MappingNodeItems(
+							core.MappingNodeFromString("celerity-test-app"),
+						),
+					),
+				),
+			),
+		),
+	}
+
+	resources := s.transform(
+		map[string]*schema.Resource{"ordersApi": apiRes},
+		edges(),
+	)
+
+	authorizer := resources["ordersApi_jwt_authorizer"]
+	s.Require().NotNil(authorizer, "the guard is valid, so an authorizer is emitted")
+
+	// The reference is carried through unresolved for the deploy engine to
+	// resolve, rather than being flattened to an empty string.
+	jwtConfig := authorizer.Spec.Fields["jwtConfiguration"]
+	s.Require().NotNil(jwtConfig)
+	s.Require().NotNil(jwtConfig.Fields["issuer"].StringWithSubstitutions)
 }
 
 // A custom domain emits a domainName carrying the certificate ARN plus an
@@ -387,9 +445,10 @@ func (s *APITransformTestSuite) Test_linked_http_handler_carries_route_annotatio
 	s.Require().NotNil(lambda)
 	s.Equal("POST /orders", annotationLiteral(lambda.Metadata.Annotations, "aws.apigatewayv2.lambda.routeKey"))
 	s.Equal("JWT", annotationLiteral(lambda.Metadata.Annotations, "aws.apigatewayv2.lambda.authorizationType"))
-	// The handler carries the http protocol label so only the HTTP API attaches it.
+	// The handler carries the target label naming its API and protocol, so only
+	// that API's HTTP counterpart attaches it.
 	s.Require().NotNil(lambda.Metadata.Labels)
-	s.Equal("http", lambda.Metadata.Labels.Values["celerity.internal.api.protocol"])
+	s.Equal("ordersApi::http", lambda.Metadata.Labels.Values["celerity.internal.api.target"])
 	// The authorizerId references the concrete authorizer emitted by the API.
 	s.Equal(
 		"ordersApi_jwt_authorizer",
@@ -449,9 +508,10 @@ func (s *APITransformTestSuite) Test_websocket_handler_does_not_stamp_authorizer
 	s.Require().NotNil(lambda)
 	// The route key is still stamped, but no authorizer/authorizationType is.
 	s.Equal("sendMessage", annotationLiteral(lambda.Metadata.Annotations, "aws.apigatewayv2.lambda.routeKey"))
-	// The handler carries the websocket protocol label so only the WebSocket API attaches it.
+	// The handler carries the target label naming its API and protocol, so only
+	// that API's WebSocket counterpart attaches it.
 	s.Require().NotNil(lambda.Metadata.Labels)
-	s.Equal("websocket", lambda.Metadata.Labels.Values["celerity.internal.api.protocol"])
+	s.Equal("chatApi::websocket", lambda.Metadata.Labels.Values["celerity.internal.api.target"])
 	s.Equal("", annotationLiteral(lambda.Metadata.Annotations, "aws.apigatewayv2.lambda.authorizerId"),
 		"a WebSocket handler must not reference an API Gateway authorizer")
 	s.Equal("", annotationLiteral(lambda.Metadata.Annotations, "aws.apigatewayv2.lambda.authorizationType"))
@@ -688,6 +748,76 @@ func (s *APITransformTestSuite) Test_no_protocol_warns_and_emits_nothing() {
 		s.NotContains(res.Type.Value, "apigatewayv2",
 			"no apigatewayv2 resource should be emitted without a protocol, found %s (%s)", name, res.Type.Value)
 	}
+}
+
+// Every concrete resource emitted for one abstract API correlates back to that
+// API by name. Tools group the concrete resources by this annotation, so a
+// per-resource label here would split one API across several groups.
+func (s *APITransformTestSuite) Test_all_emitted_resources_share_the_api_abstract_name() {
+	apiRes := &schema.Resource{
+		Type: &schema.ResourceTypeWrapper{Value: "celerity/api"},
+		Spec: core.MappingNodeFields(
+			"protocols", core.MappingNodeItems(core.MappingNodeFromString("http")),
+			"domain", core.MappingNodeFields(
+				"domainName", core.MappingNodeFromString("api.example.com"),
+				"certificateId", core.MappingNodeFromString(
+					"arn:aws:acm:us-east-1:123456789012:certificate/abc",
+				),
+			),
+			"auth", core.MappingNodeFields(
+				"defaultGuard", core.MappingNodeFromString("jwt"),
+				"guards", core.MappingNodeFields(
+					"jwt", core.MappingNodeFields(
+						"type", core.MappingNodeFromString("jwt"),
+						"issuer", core.MappingNodeFromString("https://identity.example.com/oauth2/v1/"),
+						"tokenSource", core.MappingNodeFromString("$.headers.Authorization"),
+						"audience", core.MappingNodeItems(
+							core.MappingNodeFromString("https://identity.example.com/api/v1/"),
+						),
+					),
+				),
+			),
+		),
+	}
+
+	resources := s.transform(
+		map[string]*schema.Resource{"ordersApi": apiRes},
+		edges(),
+	)
+
+	// The domain, its mapping and the authorizer are the resources that used to
+	// carry a descriptive name in the correlation annotation.
+	for _, name := range []string{
+		"ordersApi_http_api",
+		"ordersApi_domain",
+		"ordersApi_http_api_mapping_0",
+		"ordersApi_jwt_authorizer",
+	} {
+		resource := resources[name]
+		s.Require().NotNilf(resource, "%s was not emitted", name)
+		s.Equalf(
+			"ordersApi",
+			annotationLiteral(
+				resource.Metadata.Annotations,
+				"bluelink.transform.source.abstractName",
+			),
+			"%s does not correlate back to the abstract API", name,
+		)
+	}
+
+	// The descriptive labels moved to the display name.
+	s.Equal(
+		"ordersApi domain",
+		displayNameLiteral(resources["ordersApi_domain"].Metadata),
+	)
+}
+
+func displayNameLiteral(meta *schema.Metadata) string {
+	if meta == nil || meta.DisplayName == nil || len(meta.DisplayName.Values) == 0 ||
+		meta.DisplayName.Values[0].StringValue == nil {
+		return ""
+	}
+	return *meta.DisplayName.Values[0].StringValue
 }
 
 func (s *APITransformTestSuite) transform(

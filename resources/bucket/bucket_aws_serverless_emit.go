@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/newstack-cloud/bluelink-transformer-celerity/shared"
 	sharedaws "github.com/newstack-cloud/bluelink-transformer-celerity/shared/aws"
 	"github.com/newstack-cloud/bluelink/libs/blueprint/core"
 	"github.com/newstack-cloud/bluelink/libs/blueprint/schema"
@@ -24,7 +25,7 @@ var deferredConfigs = []string{"lifecycle", "replication"}
 
 func emitBucket(
 	_ context.Context,
-	_ *transformutils.Run,
+	run *transformutils.Run,
 	r *ResolvedBucket,
 	rw transformutils.ResourcePropertyRewriter,
 ) (*transformutils.EmitResult, error) {
@@ -52,7 +53,11 @@ func emitBucket(
 	}
 
 	// aws/s3/bucket.tags is a list of {key, value} objects.
-	if tags := sharedaws.SpecTagsFromResourceMetadata(r.Resource.Metadata); tags != nil {
+	if tags := sharedaws.SpecTagsFor(r.Resource.Metadata, sharedaws.Identity{
+		AppName:      shared.ResolveAppName(run),
+		ResourceName: r.Name,
+		ResourceType: "celerity/bucket",
+	}); tags != nil {
 		spec.Fields["tags"] = tags
 	}
 

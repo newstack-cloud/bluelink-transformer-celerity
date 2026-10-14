@@ -3,7 +3,6 @@ package api
 import (
 	"context"
 	"fmt"
-	"maps"
 	"strings"
 
 	"github.com/newstack-cloud/bluelink-transformer-celerity/resources/handler"
@@ -135,21 +134,35 @@ func emitAPI(
 	}, nil
 }
 
-// protocolScopedLinkSelector narrows the abstract API's linkSelector so the
-// concrete API for a protocol attaches only handlers of that protocol. Handlers
-// linked to an API carry a handler.LabelKeyAPIProtocol label (value
-// "http"/"websocket"); requiring it prevents a hybrid API's WebSocket API from
-// attaching an HTTP handler (which would create an invalid route), and vice versa.
+// Builds the concrete API's linkSelector, the single
+// handler.LabelKeyAPITarget label naming this API and protocol.
+//
+// The author's own labels are deliberately not carried over. A link selector
+// matches a resource carrying ANY one of the selector's labels, so keeping
+// "application: myApi" alongside the target label would match every handler of
+// that application again, including the other protocol's, which is the whole
+// thing this is here to prevent. Nothing is lost by dropping them, the handler
+// emit stamps the target label only on handlers it resolved as linked to this
+// API in the first place, through the author's selector.
+//
 // A nil or label-less selector is returned unchanged, preserving the existing
 // behaviour that an API without a label selector attaches no handlers.
-func protocolScopedLinkSelector(selector *schema.LinkSelector, protocol string) *schema.LinkSelector {
+func protocolScopedLinkSelector(
+	selector *schema.LinkSelector,
+	apiName string,
+	protocol string,
+) *schema.LinkSelector {
 	if selector == nil || selector.ByLabel == nil {
 		return selector
 	}
-	scoped := make(map[string]string, len(selector.ByLabel.Values)+1)
-	maps.Copy(scoped, selector.ByLabel.Values)
-	scoped[handler.LabelKeyAPIProtocol] = protocol
-	return &schema.LinkSelector{ByLabel: &schema.StringMap{Values: scoped}}
+
+	return &schema.LinkSelector{
+		ByLabel: &schema.StringMap{
+			Values: map[string]string{
+				handler.LabelKeyAPITarget: handler.APITargetLabelValue(apiName, protocol),
+			},
+		},
+	}
 }
 
 // The provider's api::function link is activated by a label selector on the
@@ -185,7 +198,13 @@ func emitProtocolAPI(
 		}
 	}
 
-	if tags := sharedaws.SpecTagsFromResourceMetadata(r.Resource.Metadata); tags != nil {
+	// apigatewayv2 tags are a string map, not the list of {key, value} objects
+	// most AWS resource types take.
+	if tags := sharedaws.MapTagsFor(r.Resource.Metadata, sharedaws.Identity{
+		AppName:      appName,
+		ResourceName: r.Name,
+		ResourceType: "celerity/api",
+	}); tags != nil {
 		spec.Fields["tags"] = tags
 	}
 
@@ -194,10 +213,10 @@ func emitProtocolAPI(
 		Type:         &schema.ResourceTypeWrapper{Value: "aws/apigatewayv2/api"},
 		Spec:         spec,
 		Metadata:     apiMetadata(r),
-		LinkSelector: protocolScopedLinkSelector(r.Resource.LinkSelector, protocol),
+		LinkSelector: protocolScopedLinkSelector(r.Resource.LinkSelector, r.Name, protocol),
 	}
 
-	stageRes, err := stageResource(r, apiResName)
+	stageRes, err := stageResource(r, apiResName, appName)
 	if err != nil {
 		return err
 	}
@@ -205,7 +224,7 @@ func emitProtocolAPI(
 	return nil
 }
 
-func stageResource(r *ResolvedAPI, apiResName string) (*schema.Resource, error) {
+func stageResource(r *ResolvedAPI, apiResName string, appName string) (*schema.Resource, error) {
 	apiIDRef, err := shared.SubstitutionMappingNode(
 		fmt.Sprintf("${resources.%s.spec.apiId}", apiResName),
 	)
@@ -218,6 +237,15 @@ func stageResource(r *ResolvedAPI, apiResName string) (*schema.Resource, error) 
 		"stageName", core.MappingNodeFromString(defaultStageName),
 		"autoDeploy", core.MappingNodeFromBool(true),
 	)
+
+	// apigatewayv2 stages take tags as a {key: value} map rather than a list.
+	if tags := sharedaws.MapTagsFor(r.Resource.Metadata, sharedaws.Identity{
+		AppName:      appName,
+		ResourceName: r.Name,
+		ResourceType: "celerity/api",
+	}); tags != nil {
+		spec.Fields["tags"] = tags
+	}
 
 	return &schema.Resource{
 		Type:     &schema.ResourceTypeWrapper{Value: "aws/apigatewayv2/stage"},
@@ -270,15 +298,25 @@ func emitAuthorizers(
 			})
 			continue
 		}
+		// The guard type selects which authorizer resource is emitted, so it
+		// cannot be deferred to deploy time.
+		if diag := shared.DeferredValueError(
+			shared.AWSServerless, "api", r.Name,
+			fmt.Sprintf("guard %q type", guardName), specNode(cfg, "$.type"), r.Resource,
+		); diag != nil {
+			diagnostics = append(diagnostics, diag)
+			continue
+		}
+
 		guardType := core.StringValue(specNode(cfg, "$.type"))
 		diagnostics = append(diagnostics, guardConfigWarnings(r.Name, guardName, cfg)...)
 		switch guardType {
 		case "jwt":
-			if diag := jwtGuardError(r.Name, guardName, cfg); diag != nil {
+			if diag := jwtGuardError(r.Name, guardName, cfg, r.Resource); diag != nil {
 				diagnostics = append(diagnostics, diag)
 				continue
 			}
-			resources[authorizerResourceName(r.Name, guardName)] = jwtAuthorizer(guardName, cfg, apiIDRef)
+			resources[authorizerResourceName(r.Name, guardName)] = jwtAuthorizer(r.Name, guardName, cfg, apiIDRef)
 		case "custom":
 			authRes, diag := customAuthorizer(ctx, r, guardName, apiIDRef)
 			if diag != nil {
@@ -346,9 +384,25 @@ func guardConfigWarnings(apiName, guardName string, cfg *core.MappingNode) []*co
 // conditionally required on the "jwt" type in prose. A jwt guard missing any of
 // them is reported as an error and skipped rather than emitting a broken
 // authorizer.
-func jwtGuardError(apiName, guardName string, cfg *core.MappingNode) *core.Diagnostic {
+func jwtGuardError(
+	apiName, guardName string,
+	cfg *core.MappingNode,
+	resource *schema.Resource,
+) *core.Diagnostic {
+	// tokenSource is rewritten into an API Gateway identity source
+	// ($.headers.Authorization -> $request.header.Authorization), which needs
+	// the literal prefix. Reported on its own, because "missing tokenSource"
+	// would be wrong, it is set, just not to something usable here.
+	if diag := shared.DeferredValueError(
+		shared.AWSServerless, "api", apiName,
+		fmt.Sprintf("guard %q tokenSource", guardName),
+		specNode(cfg, "$.tokenSource"), resource,
+	); diag != nil {
+		return diag
+	}
+
 	var missing []string
-	if strings.TrimSpace(core.StringValue(specNode(cfg, "$.issuer"))) == "" {
+	if !shared.HasStringValue(specNode(cfg, "$.issuer")) {
 		missing = append(missing, "issuer")
 	}
 	if audience := specNode(cfg, "$.audience"); audience == nil || len(audience.Items) == 0 {
@@ -374,6 +428,7 @@ func jwtGuardError(apiName, guardName string, cfg *core.MappingNode) *core.Diagn
 }
 
 func jwtAuthorizer(
+	apiName string,
 	guardName string,
 	cfg *core.MappingNode,
 	apiIDRef *core.MappingNode,
@@ -400,7 +455,7 @@ func jwtAuthorizer(
 	return &schema.Resource{
 		Type:     &schema.ResourceTypeWrapper{Value: "aws/apigatewayv2/authorizer"},
 		Spec:     spec,
-		Metadata: infraMetadata(guardName + " authorizer"),
+		Metadata: infraMetadata(apiName, guardName+" authorizer"),
 	}
 }
 
@@ -464,9 +519,20 @@ func customAuthorizer(
 	)
 
 	return &schema.Resource{
-		Type:     &schema.ResourceTypeWrapper{Value: "aws/apigatewayv2/authorizer"},
-		Spec:     spec,
-		Metadata: infraMetadata(guardName + " authorizer"),
+		Type: &schema.ResourceTypeWrapper{Value: "aws/apigatewayv2/authorizer"},
+		Spec: spec,
+		// Selects the guard's own function so the provider's authorizer::function
+		// link runs and grants API Gateway permission to invoke it. Without the
+		// link the authorizer still deploys and still names the function, and every
+		// route it guards fails with the function never invoked.
+		LinkSelector: &schema.LinkSelector{
+			ByLabel: &schema.StringMap{
+				Values: map[string]string{
+					handler.LabelKeyGuardTarget: handler.GuardTargetLabelValue(r.Name, guardName),
+				},
+			},
+		},
+		Metadata: infraMetadata(r.Name, guardName+" authorizer"),
 	}, nil
 }
 
@@ -514,7 +580,7 @@ func emitDomain(
 			"domainName", domainName,
 			"domainNameConfigurations", core.MappingNodeItems(domainConfig),
 		),
-		Metadata: infraMetadata(r.Name + " domain"),
+		Metadata: infraMetadata(r.Name, r.Name+" domain"),
 	}
 
 	return emitAPIMappings(r, info, domain, resources)
@@ -623,7 +689,7 @@ func apiMapping(
 	return &schema.Resource{
 		Type:     &schema.ResourceTypeWrapper{Value: "aws/apigatewayv2/apiMapping"},
 		Spec:     spec,
-		Metadata: infraMetadata(r.Name + " api mapping"),
+		Metadata: infraMetadata(r.Name, r.Name+" api mapping"),
 	}, nil
 }
 
@@ -894,11 +960,17 @@ func apiMetadata(r *ResolvedAPI) *schema.Metadata {
 	return meta
 }
 
-func infraMetadata(abstractName string) *schema.Metadata {
+// Builds the metadata for a supporting resource emitted for an
+// API. The abstract resource name has to be the API's own name and nothing
+// else, it is the correlation key back to the abstract resource, so tools
+// group the concrete resources by it. Anything describing the individual
+// resource belongs in the display name, which is free-form.
+func infraMetadata(apiName, displayName string) *schema.Metadata {
 	return &schema.Metadata{
+		DisplayName: pluginutils.StringToSubstitutions(displayName),
 		Annotations: transformutils.TransformerBaseAnnotations(
 			&transformutils.TransformerBaseAnnotationsInput{
-				AbstractResourceName: abstractName,
+				AbstractResourceName: apiName,
 				AbstractResourceType: "celerity/api",
 				ResourceCategory:     transformutils.ResourceCategoryInfrastructure,
 			},

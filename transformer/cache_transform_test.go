@@ -43,8 +43,26 @@ func (s *CacheTransformTestSuite) Test_cache_in_a_managed_vpc_emits_rg_and_subne
 	s.Equal(1, core.IntValue(rg.Spec.Fields["numNodeGroups"]), "single-instance cache is one node group")
 	s.Equal(0, core.IntValue(rg.Spec.Fields["replicasPerNodeGroup"]), "no replicas by default")
 	s.Equal(6379, core.IntValue(rg.Spec.Fields["port"]))
+	// ElastiCache rejects a replication group with no node type ("Invalid Cache
+	// Node Type: null"), so one is always emitted. The default is the one the
+	// celerity/cache specification documents for
+	// aws.elasticache.<name>.nodeType.
+	s.Equal("cache.t3.micro", core.StringValue(rg.Spec.Fields["cacheNodeType"]))
+	// A single instance is one primary with nothing to fail over to.
+	s.Equal(0, core.IntValue(rg.Spec.Fields["replicasPerNodeGroup"]))
+	s.False(core.BoolValue(rg.Spec.Fields["automaticFailoverEnabled"]))
+	// At-rest encryption is not on by default in ElastiCache, so leaving the
+	// field out deploys an unencrypted cache. On unless the deploy configuration
+	// says otherwise, unlike transit encryption below.
+	s.True(core.BoolValue(rg.Spec.Fields["atRestEncryptionEnabled"]))
+	s.Equal(0, core.IntValue(rg.Spec.Fields["snapshotRetentionLimit"]))
 	s.True(core.BoolValue(rg.Spec.Fields["transitEncryptionEnabled"]))
-	s.Equal("sessions-cache-subnets", core.StringValue(rg.Spec.Fields["cacheSubnetGroupName"]))
+	// cacheSubnetGroupName references the emitted subnet group so a dependency
+	// edge is created. A plain string leaves no edge, and the replication group
+	// is then free to be created before the subnet group exists, which
+	// ElastiCache rejects.
+	s.Equal("myCache_elasticache_subnet_group",
+		resourceRefName(rg.Spec.Fields["cacheSubnetGroupName"]))
 	s.Require().NotNil(rg.Spec.Fields["securityGroupIds"], "security groups referenced from the VPC")
 	// Labels preserved for handler links.
 	s.Equal("orders", rg.Metadata.Labels.Values["app"])
@@ -63,7 +81,15 @@ func (s *CacheTransformTestSuite) Test_cache_in_a_managed_vpc_emits_rg_and_subne
 	gen := secret.Spec.Fields["generateSecretString"]
 	s.Require().NotNil(gen, "the token is randomly generated")
 	s.Equal(32, core.IntValue(gen.Fields["passwordLength"]))
-	s.NotEmpty(core.StringValue(gen.Fields["excludeCharacters"]), "Redis-forbidden characters excluded")
+	// Named individually rather than just "not empty": ElastiCache rejects a token
+	// containing any of these outright, and one missing from the set only shows up
+	// when Secrets Manager happens to generate it, which is a failure that hides
+	// until a deployment gets far enough to apply the token.
+	excluded := core.StringValue(gen.Fields["excludeCharacters"])
+	for _, forbidden := range []string{"\"", "@", "/", "%", "\\", " "} {
+		s.Contains(excluded, forbidden,
+			"Redis AUTH tokens must not contain %q", forbidden)
+	}
 	// The secret carries the RG-selection label plus the cache's own labels (so a
 	// handler that links to the cache also links to the secret).
 	s.Equal("sessions", secret.Metadata.Labels.Values["celerity.cache.auth"])
@@ -172,9 +198,12 @@ func (s *CacheTransformTestSuite) Test_cluster_mode_uses_multiple_node_groups() 
 	)
 	rg := out.TransformedBlueprint.Resources.Values["myCache_elasticache_rg"]
 	s.Require().NotNil(rg)
-	// Cluster mode defaults to 3 shards, 0 replicas per shard.
+	// The specification defines the replica and failover defaults per topology: a
+	// cluster is expected to be highly available, which a shard with no replica
+	// and no failover cannot be.
 	s.Equal(3, core.IntValue(rg.Spec.Fields["numNodeGroups"]))
-	s.Equal(0, core.IntValue(rg.Spec.Fields["replicasPerNodeGroup"]))
+	s.Equal(1, core.IntValue(rg.Spec.Fields["replicasPerNodeGroup"]))
+	s.True(core.BoolValue(rg.Spec.Fields["automaticFailoverEnabled"]))
 }
 
 func (s *CacheTransformTestSuite) Test_replica_and_shard_deploy_config_overrides_are_honoured() {
@@ -223,6 +252,51 @@ func (s *CacheTransformTestSuite) Test_replica_and_shard_deploy_config_overrides
 	s.Equal(2, core.IntValue(rg.Spec.Fields["replicasPerNodeGroup"]), "numReplicas override applied")
 }
 
+// Transit encryption is fixed, not deploy configuration.
+//
+// authMode allows only "password" and "iam", and both require TLS, so there is
+// no cache for which false is valid. A knob would be a switch whose only
+// non-default position fails the deploy on every cache, so the key is not read
+// at all. Asserting the default value alone would not catch its reintroduction.
+func (s *CacheTransformTestSuite) Test_transit_encryption_ignores_deploy_configuration() {
+	bp := &schema.Blueprint{
+		Resources: &schema.ResourceMap{
+			Values: map[string]*schema.Resource{
+				"myCache": {
+					Type: &schema.ResourceTypeWrapper{Value: "celerity/cache"},
+					Spec: core.MappingNodeFields(
+						"name", core.MappingNodeFromString("sessions"),
+					),
+				},
+			},
+		},
+	}
+	ctx := &fakeTransformContext{
+		configVars: map[string]*core.ScalarValue{
+			"aws.elasticache.sessions.transitEncryption": core.ScalarFromBool(false),
+		},
+		contextVars: map[string]*core.ScalarValue{
+			core.ValidationContextVariableName: core.ScalarFromBool(true),
+			"deployTarget":                     core.ScalarFromString(shared.AWSServerless),
+		},
+	}
+
+	out, err := NewTransformer(&shared.Dependencies{}).Transform(
+		context.Background(),
+		&transform.SpecTransformerTransformInput{
+			InputBlueprint:     bp,
+			LinkGraph:          emptyLinkGraph{},
+			TransformerContext: ctx,
+		},
+	)
+	s.Require().NoError(err)
+
+	rg := out.TransformedBlueprint.Resources.Values["myCache_elasticache_rg"]
+	s.Require().NotNil(rg)
+	s.True(core.BoolValue(rg.Spec.Fields["transitEncryptionEnabled"]),
+		"transit encryption must stay on even when deploy config asks for false")
+}
+
 func (s *CacheTransformTestSuite) Test_engine_defaults_to_valkey_and_honours_explicit_version() {
 	out := s.transformCacheWithVPC(
 		core.MappingNodeFields(
@@ -262,6 +336,73 @@ func (s *CacheTransformTestSuite) Test_outputs_resolve_for_clustered_cache() {
 		vals["myCache_elasticache_rg_host"],
 		"myCache_elasticache_rg", "spec", "configurationEndPoint", "address",
 	)
+}
+
+// A name is often environment-specific, so authors set it from a variable. The
+// name reaches AWS unresolved, and the identifiers derived from it keep the
+// reference with their suffix appended rather than becoming a bare suffix.
+// Reading it with core.StringValue instead produced an empty name, which took
+// the "no name given" path and silently replaced the author's name with a
+// generated one.
+func (s *CacheTransformTestSuite) Test_name_set_from_a_variable_reaches_the_deployed_identifiers() {
+	nameRef, err := shared.SubstitutionMappingNode("${variables.cacheName}")
+	s.Require().NoError(err)
+
+	out := s.transformCacheWithVPC(
+		core.MappingNodeFields("name", nameRef),
+		"standard",
+		nil,
+	)
+	resources := out.TransformedBlueprint.Resources.Values
+
+	rg := resources["myCache_elasticache_rg"]
+	s.Require().NotNil(rg)
+	s.Require().NotNil(
+		rg.Spec.Fields["replicationGroupId"].StringWithSubstitutions,
+		"the replication group id carries the reference, not a resolved string",
+	)
+
+	// "<name>-cache-subnets": the reference, then the literal suffix.
+	sng := resources["myCache_elasticache_subnet_group"]
+	s.Require().NotNil(sng)
+	derived := sng.Spec.Fields["cacheSubnetGroupName"]
+	s.Require().NotNil(derived.StringWithSubstitutions)
+	values := derived.StringWithSubstitutions.Values
+	s.Require().Len(values, 2)
+	s.NotNil(values[0].SubstitutionValue, "the base is still the reference")
+	s.Require().NotNil(values[1].StringValue)
+	s.Equal("-cache-subnets", *values[1].StringValue)
+}
+
+// clusterMode decides how many node groups the replication group is given, so
+// the transformer reads it while building the resource graph, before references
+// are resolved. Read as a reference it yielded false, and a cache the author
+// asked to run in cluster mode was deployed as a single instance with nothing
+// reported.
+func (s *CacheTransformTestSuite) Test_cluster_mode_set_from_a_reference_is_rejected() {
+	clusterModeRef, err := shared.SubstitutionMappingNode("${variables.clusterMode}")
+	s.Require().NoError(err)
+
+	out := s.transformCacheWithVPC(
+		core.MappingNodeFields(
+			"name", core.MappingNodeFromString("sessions"),
+			"clusterMode", clusterModeRef,
+		),
+		"standard",
+		nil,
+	)
+
+	found := false
+	for _, d := range out.Diagnostics {
+		if d.Level == core.DiagnosticLevelError && strings.Contains(d.Message, "clusterMode") {
+			found = true
+		}
+	}
+	s.True(found, "expected an error naming the field that cannot be a reference")
+
+	// Nothing is emitted: a half-built cache is worse than none, and the author
+	// has to choose a literal either way.
+	s.NotContains(out.TransformedBlueprint.Resources.Values, "myCache_elasticache_rg")
 }
 
 func (s *CacheTransformTestSuite) Test_vpc_preset_without_private_subnets_is_rejected() {

@@ -21,6 +21,15 @@ const (
 	// AnnotationKeyConsumerRoute specifies the route for a consumer handler.
 	AnnotationKeyConsumerRoute = "celerity.handler.consumer.route"
 
+	// AnnotationKeyHandlerTag is the key the SDK registers a handler under in its
+	// own registry, emitted by the metadata extractor and stamped on the deployed
+	// function as CELERITY_HANDLER_TAG.
+	AnnotationKeyHandlerTag = "celerity.handler.tag"
+
+	// defaultConsumerRoutingKey is the message-body field a consumer routes on
+	// when it declares handler routes but no routingKey of its own.
+	defaultConsumerRoutingKey = "event"
+
 	// AnnotationKeyConsumerSourceQueue names the in-blueprint celerity/queue a
 	// consumer binds to when it matches several queues by link selector.
 	AnnotationKeyConsumerSourceQueue = "celerity.consumer.queue"

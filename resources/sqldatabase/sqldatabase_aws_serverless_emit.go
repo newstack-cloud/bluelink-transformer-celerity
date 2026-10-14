@@ -22,6 +22,15 @@ const (
 	// standalone databases, Aurora writers and read replicas.
 	resourceTypeDBInstance = "aws/rds/dbInstance"
 
+	// proxyTargetLabelKey marks the instance a proxy fronts, so the emitted proxy can
+	// select it and the aws/rds/dbProxy::aws/rds/dbInstance link can open the network
+	// path between them.
+	//
+	// A distinct key rather than the database's own labels: those are carried by every
+	// resource this database emits, so selecting on them would have the proxy link to
+	// its own subnet group and role as well.
+	proxyTargetLabelKey = "celerity.internal.sqldatabase.proxyTarget"
+
 	defaultInstanceClass    = "db.t3.micro"
 	defaultAllocatedStorage = 20
 	defaultMasterUsername   = "celerity"
@@ -76,107 +85,269 @@ func presetSuitabilityError(r *ResolvedSQLDatabase, name string) *core.Diagnosti
 	}
 }
 
+type sqlDatabasePlan struct {
+	name          string
+	physicalName  *core.MappingNode
+	engine        string
+	labels        *schema.StringMap
+	vpcRefs       *vpcReferences
+	auroraEnabled bool
+	readReplicas  bool
+	proxyEmitted  bool
+}
+
 func emitSQLDatabase(
 	_ context.Context,
 	run *transformutils.Run,
 	r *ResolvedSQLDatabase,
 	rw transformutils.ResourcePropertyRewriter,
 ) (*transformutils.EmitResult, error) {
-	// name is the logical database name: deploy-config lookup key, the
-	// engine-internal dbName/databaseName and description text. physicalName is
-	// the base every deployed identifier derives from. An author-provided
-	// spec.name is kept as-is (author owns uniqueness, matching queue/bucket),
-	// it is otherwise app-scoped so two apps in one account never collide on
-	// generated names.
-	name := core.StringValue(specGet(r, "$.name"))
-	physicalName := name
-	if name == "" {
-		name = r.Name
-		physicalName = shared.AppScopedPhysicalName(
-			shared.ResolveAppName(run), r.Name, maxSQLPhysicalNameLen,
-		)
+	if diagnostics := deferredStructuralErrors(r); len(diagnostics) > 0 {
+		return &transformutils.EmitResult{Diagnostics: diagnostics}, nil
 	}
 
-	// Preset-suitability validation (managed VPC only).
-	if diag := presetSuitabilityError(r, name); diag != nil {
-		return &transformutils.EmitResult{Diagnostics: []*core.Diagnostic{diag}}, nil
-	}
-
-	var diagnostics []*core.Diagnostic
-	resources := map[string]*schema.Resource{}
-
-	engine := core.StringValue(specGet(r, "$.engine"))
-
-	// Resolve the VPC subnet / security-group references once; every emitted
-	// resource (subnet group, instance, cluster, proxy) shares them.
-	vpcRefs, err := resolveVPCRefs(r, name, physicalName)
+	plan, blocked, err := planSQLDatabase(r, run)
 	if err != nil {
 		return nil, err
 	}
-	if vpcRefs == nil {
-		// SQL databases require VPC placement; without it the instance, subnet group
-		// and proxy cannot be wired, so emit nothing rather than incomplete resources.
-		return &transformutils.EmitResult{
-			Diagnostics: []*core.Diagnostic{
-				{
-					Level: core.DiagnosticLevelError,
-					Message: fmt.Sprintf(
-						"celerity/sqlDatabase %q is not linked to a celerity/vpc; databases require VPC "+
-							"placement on aws-serverless, so no database resources have been emitted",
-						name,
-					),
-					Range: core.DiagnosticRangeFromSourceMeta(r.Resource.SourceMeta, nil),
-				},
-			},
-		}, nil
-	}
-	resources[subnetGroupResourceName(r.Name)] = vpcRefs.subnetGroup
-
-	auroraEnabled := core.BoolValue(auroraConfig(run, name, "enabled"))
-	labels := dbLabels(r)
-
-	proxyEmitted := false
-	if auroraEnabled {
-		// Aurora Serverless v2: a cluster plus a db.serverless writer instance.
-		// The cluster is the resource handlers link to (aws/lambda/function::
-		// aws/rds/dbCluster uses Aurora's built-in connection pooling, so no RDS
-		// Proxy is emitted for this path).
-		resources[clusterResourceName(r.Name)] = buildAuroraCluster(r, run, name, physicalName, engine, vpcRefs, labels)
-		resources[instanceResourceName(r.Name)] = buildAuroraInstance(r, physicalName, engine, labels)
-	} else {
-		resources[instanceResourceName(r.Name)] = buildStandaloneInstance(r, name, physicalName, engine, vpcRefs, labels)
-		// Standalone RDS: handlers pool connections through an RDS Proxy
-		// (aws/lambda/function::aws/rds/dbProxy).
-		proxyResources, err := buildProxyResources(r, name, physicalName, engine, vpcRefs, labels)
-		if err != nil {
-			return nil, err
-		}
-		maps.Copy(resources, proxyResources)
-		proxyEmitted = true
+	if len(blocked) > 0 {
+		return &transformutils.EmitResult{Diagnostics: blocked}, nil
 	}
 
-	// Read replicas: expose a reader instance (and the readHost output). For
-	// Aurora this is an additional db.serverless reader in the cluster; for
-	// standalone RDS it is a read replica of the primary instance.
-	readReplicas := core.BoolValue(specGet(r, "$.readReplicas"))
-	if readReplicas {
-		resources[readerResourceName(r.Name)] = buildReaderInstance(r, physicalName, engine, auroraEnabled, labels)
-	}
-
-	for _, res := range resources {
-		res.Spec = subwalk.WalkMappingNode(res.Spec, transformutils.RewriteResourcePropertyRefs(rw))
-	}
-
-	derivedValues, err := dbDerivedValues(r, name, auroraEnabled, proxyEmitted, readReplicas)
+	resources, err := buildDatabaseResources(r, run, plan)
 	if err != nil {
 		return nil, err
 	}
+
+	diagnostics, err := addMaintenanceRunner(r, run, plan, resources)
+	if err != nil {
+		return nil, err
+	}
+
+	rewriteResourceRefs(resources, rw)
+
+	derivedValues, err := dbDerivedValues(
+		r, plan.name, plan.auroraEnabled, plan.proxyEmitted, plan.readReplicas,
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	sharedaws.ApplyTags(resources, r.Resource.Metadata, sharedaws.Identity{
+		AppName:      shared.ResolveAppName(run),
+		ResourceName: r.Name,
+		ResourceType: "celerity/sqlDatabase",
+	})
 
 	return &transformutils.EmitResult{
 		Resources:     resources,
 		DerivedValues: derivedValues,
 		Diagnostics:   diagnostics,
 	}, nil
+}
+
+// engine, authMode and readReplicas each decide which concrete resources are
+// emitted, so none can be deferred to a reference the deploy engine resolves
+// after the graph is built.
+func deferredStructuralErrors(r *ResolvedSQLDatabase) []*core.Diagnostic {
+	return shared.DeferredValueErrors(
+		shared.AWSServerless,
+		"sqlDatabase", r.Name, r.Resource,
+		shared.StructuralField{Name: "engine", Value: specGet(r, "$.engine")},
+		shared.StructuralField{Name: "authMode", Value: specGet(r, "$.authMode")},
+		shared.StructuralField{Name: "readReplicas", Value: specGet(r, "$.readReplicas")},
+	)
+}
+
+func rewriteResourceRefs(
+	resources map[string]*schema.Resource,
+	rw transformutils.ResourcePropertyRewriter,
+) {
+	for _, res := range resources {
+		res.Spec = subwalk.WalkMappingNode(res.Spec, transformutils.RewriteResourcePropertyRefs(rw))
+	}
+}
+
+// Resolves the names, topology and VPC references every emitted resource
+// shares. A non-empty diagnostic slice means nothing is emitted at all, so the
+// plan is nil.
+func planSQLDatabase(
+	r *ResolvedSQLDatabase,
+	run *transformutils.Run,
+) (*sqlDatabasePlan, []*core.Diagnostic, error) {
+	name, physicalName := sqlDatabaseNames(r, run)
+
+	if diag := presetSuitabilityError(r, name); diag != nil {
+		return nil, []*core.Diagnostic{diag}, nil
+	}
+
+	// Resolved once: every emitted resource (subnet group, instance, cluster,
+	// proxy) shares these references.
+	vpcRefs, err := resolveVPCRefs(r, name, physicalName)
+	if err != nil {
+		return nil, nil, err
+	}
+	if vpcRefs == nil {
+		return nil, []*core.Diagnostic{missingVPCError(r, name)}, nil
+	}
+
+	return &sqlDatabasePlan{
+		name:          name,
+		physicalName:  physicalName,
+		engine:        core.StringValue(specGet(r, "$.engine")),
+		labels:        dbLabels(r),
+		vpcRefs:       vpcRefs,
+		auroraEnabled: core.BoolValue(auroraConfig(run, name, "enabled")),
+		readReplicas:  core.BoolValue(specGet(r, "$.readReplicas")),
+	}, nil, nil
+}
+
+// The logical name keys deploy-config lookups (aws.aurora.<name>.*), the
+// engine-internal dbName/databaseName and the diagnostics; the physical name is
+// the base every deployed identifier derives from. An author-provided spec.name
+// is kept as-is for the latter (the author owns uniqueness, matching
+// queue/bucket), otherwise it is app-scoped so two apps in one account never
+// collide on generated names.
+//
+// A referenced spec.name reaches the deployed identifiers but cannot serve as
+// the logical name, since that is read before references are resolved. The
+// resource's own name stands in, as it does when spec.name is unset.
+func sqlDatabaseNames(
+	r *ResolvedSQLDatabase,
+	run *transformutils.Run,
+) (string, *core.MappingNode) {
+	nameNode := specGet(r, "$.name")
+	if !shared.HasStringValue(nameNode) {
+		return r.Name, core.MappingNodeFromString(shared.AppScopedPhysicalName(
+			shared.ResolveAppName(run), r.Name, maxSQLPhysicalNameLen,
+		))
+	}
+
+	name := core.StringValue(nameNode)
+	if name == "" {
+		name = r.Name
+	}
+
+	return name, nameNode
+}
+
+// Databases require VPC placement on aws-serverless: without it the instance,
+// subnet group and proxy cannot be wired, so nothing is emitted rather than a
+// set of incomplete resources.
+func missingVPCError(r *ResolvedSQLDatabase, name string) *core.Diagnostic {
+	return &core.Diagnostic{
+		Level: core.DiagnosticLevelError,
+		Message: fmt.Sprintf(
+			"celerity/sqlDatabase %q is not linked to a celerity/vpc; databases require VPC "+
+				"placement on aws-serverless, so no database resources have been emitted",
+			name,
+		),
+		Range: core.DiagnosticRangeFromSourceMeta(r.Resource.SourceMeta, nil),
+	}
+}
+
+func buildDatabaseResources(
+	r *ResolvedSQLDatabase,
+	run *transformutils.Run,
+	plan *sqlDatabasePlan,
+) (map[string]*schema.Resource, error) {
+	resources := map[string]*schema.Resource{
+		subnetGroupResourceName(r.Name): plan.vpcRefs.subnetGroup,
+	}
+
+	if err := addTopologyResources(r, run, plan, resources); err != nil {
+		return nil, err
+	}
+
+	// On Aurora an additional db.serverless reader in the cluster; on standalone
+	// RDS a read replica of the primary instance.
+	if plan.readReplicas {
+		resources[readerResourceName(r.Name)] = buildReaderInstance(
+			r, plan.engine, plan.physicalName, plan.auroraEnabled, plan.labels,
+		)
+	}
+
+	// The application authenticates as its own database user rather than the
+	// master, so password-mode databases carry a secret holding that user's
+	// generated credentials. IAM mode distributes no credential at all.
+	if AppUserAuthEnabled(r) {
+		appUserSecret, err := buildAppUserSecret(r, plan.name, plan.physicalName, plan.labels)
+		if err != nil {
+			return nil, err
+		}
+		resources[AppUserSecretResourceName(r.Name)] = appUserSecret
+	}
+
+	return resources, nil
+}
+
+// Aurora Serverless v2 is a cluster plus a db.serverless writer instance, and
+// the cluster is what handlers link to: aws/lambda/function::aws/rds/dbCluster
+// uses Aurora's built-in connection pooling, so no RDS Proxy is emitted on that
+// path. Standalone RDS pools through a proxy instead
+// (aws/lambda/function::aws/rds/dbProxy).
+func addTopologyResources(
+	r *ResolvedSQLDatabase,
+	run *transformutils.Run,
+	plan *sqlDatabasePlan,
+	resources map[string]*schema.Resource,
+) error {
+	if plan.auroraEnabled {
+		resources[clusterResourceName(r.Name)] = buildAuroraCluster(
+			r, run, plan.name, plan.engine, plan.physicalName, plan.vpcRefs, plan.labels,
+		)
+		resources[instanceResourceName(r.Name)] = buildAuroraInstance(
+			r, plan.engine, plan.physicalName, plan.labels,
+		)
+		return nil
+	}
+
+	resources[instanceResourceName(r.Name)] = buildStandaloneInstance(
+		r, plan.name, plan.engine, plan.physicalName, plan.vpcRefs, plan.labels,
+	)
+	proxyResources, err := buildProxyResources(
+		r, plan.name, plan.engine, plan.physicalName, plan.vpcRefs, plan.labels,
+	)
+	if err != nil {
+		return err
+	}
+	maps.Copy(resources, proxyResources)
+	plan.proxyEmitted = true
+
+	return nil
+}
+
+// The application user's credential authenticates as a role that does not exist
+// until something inside the VPC creates it, and nothing outside can reach the
+// database to do so. The runner is what closes that gap, for provisioning now
+// and migrations next.
+func addMaintenanceRunner(
+	r *ResolvedSQLDatabase,
+	run *transformutils.Run,
+	plan *sqlDatabasePlan,
+	resources map[string]*schema.Resource,
+) ([]*core.Diagnostic, error) {
+	maintenanceResources, diagnostics, err := buildMaintenanceRunner(r, maintenanceRunnerInput{
+		name:          plan.name,
+		physicalName:  plan.physicalName,
+		auroraEnabled: plan.auroraEnabled,
+		manifest:      buildManifest(run),
+	})
+	if err != nil {
+		return nil, err
+	}
+	maps.Copy(resources, maintenanceResources)
+
+	// The runner needs a network path to whatever the application connects
+	// through: the proxy on the standalone path, the cluster on Aurora, which
+	// pools for itself.
+	target := proxyResourceName(r.Name)
+	if plan.auroraEnabled {
+		target = clusterResourceName(r.Name)
+	}
+	markMaintenanceTarget(resources[target], r.Name)
+
+	return diagnostics, nil
 }
 
 // host and readHost cannot be static renames because the correct endpoint
@@ -248,24 +419,44 @@ func dbDatabaseNameKey(name string) string {
 type vpcReferences struct {
 	subnetGroupNameRef *core.MappingNode
 	subnetIdsRef       *core.MappingNode
-	securityGroups     *core.MappingNode
-	subnetGroup        *schema.Resource
+	// instanceSecurityGroups and proxySecurityGroups are separate groups minted by
+	// the VPC. The proxy reaches the instance through the link between them, which
+	// pairs one group with the other; a single shared group would need a
+	// self-referencing rule and would also open that path to anything else placed
+	// in it.
+	instanceSecurityGroups *core.MappingNode
+	proxySecurityGroups    *core.MappingNode
+	subnetGroup            *schema.Resource
 }
 
-func resolveVPCRefs(r *ResolvedSQLDatabase, name, physicalName string) (*vpcReferences, error) {
+func resolveVPCRefs(
+	r *ResolvedSQLDatabase,
+	name string,
+	physicalName *core.MappingNode,
+) (*vpcReferences, error) {
 	if r.VPCName == "" {
 		return nil, nil
 	}
 	vpcConcrete := vpc.ConcreteResourceName(r.VPCName)
-	subnetGroupName := fmt.Sprintf("%s-db-subnets", physicalName)
+	subnetGroupName := shared.DerivedName(physicalName, "-db-subnets")
 
 	subnetIdsRef, err := shared.SubstitutionMappingNode(
 		fmt.Sprintf("${resources.%s.spec.privateSubnetIds}", vpcConcrete))
 	if err != nil {
 		return nil, err
 	}
-	sgRef, err := shared.SubstitutionMappingNode(
-		fmt.Sprintf("${resources.%s.spec.securityGroups}", vpcConcrete))
+	// Each side references the group the VPC minted for it, not the VPC's whole
+	// list. A link opening a path to the database pairs the caller's group with a
+	// group minted for that resource alone; given the whole list it cannot tell
+	// which group belongs to what, and pairing against a shared one would open a
+	// path to everything else in it.
+	instanceSGRef, err := shared.SubstitutionMappingNode(
+		shared.VPCSecurityGroupIDRef(vpcConcrete, r.Name, shared.SecurityGroupRoleDatabase))
+	if err != nil {
+		return nil, err
+	}
+	proxySGRef, err := shared.SubstitutionMappingNode(
+		shared.VPCSecurityGroupIDRef(vpcConcrete, r.Name, shared.SecurityGroupRoleProxy))
 	if err != nil {
 		return nil, err
 	}
@@ -273,7 +464,7 @@ func resolveVPCRefs(r *ResolvedSQLDatabase, name, physicalName string) (*vpcRefe
 	subnetGroup := &schema.Resource{
 		Type: &schema.ResourceTypeWrapper{Value: "aws/rds/dbSubnetGroup"},
 		Spec: core.MappingNodeFields(
-			"dbSubnetGroupName", core.MappingNodeFromString(subnetGroupName),
+			"dbSubnetGroupName", subnetGroupName,
 			"dbSubnetGroupDescription", core.MappingNodeFromString(
 				fmt.Sprintf("Subnets for Celerity database %s", name)),
 			"subnetIds", subnetIdsRef,
@@ -290,10 +481,11 @@ func resolveVPCRefs(r *ResolvedSQLDatabase, name, physicalName string) (*vpcRefe
 	}
 
 	return &vpcReferences{
-		subnetGroupNameRef: subnetGroupNameRef,
-		subnetIdsRef:       subnetIdsRef,
-		securityGroups:     sgRef,
-		subnetGroup:        subnetGroup,
+		subnetGroupNameRef:     subnetGroupNameRef,
+		subnetIdsRef:           subnetIdsRef,
+		instanceSecurityGroups: core.MappingNodeItems(instanceSGRef),
+		proxySecurityGroups:    core.MappingNodeItems(proxySGRef),
+		subnetGroup:            subnetGroup,
 	}, nil
 }
 
@@ -301,12 +493,13 @@ func resolveVPCRefs(r *ResolvedSQLDatabase, name, physicalName string) (*vpcRefe
 // computed masterUserSecret); iam mode -> IAM database authentication.
 func buildStandaloneInstance(
 	r *ResolvedSQLDatabase,
-	name, physicalName, engine string,
+	name, engine string,
+	physicalName *core.MappingNode,
 	vpcRefs *vpcReferences,
 	labels *schema.StringMap,
 ) *schema.Resource {
 	spec := core.MappingNodeFields(
-		"dbInstanceIdentifier", core.MappingNodeFromString(physicalName),
+		"dbInstanceIdentifier", physicalName,
 		"dbName", core.MappingNodeFromString(name),
 		"engine", core.MappingNodeFromString(engine),
 		"dbInstanceClass", core.MappingNodeFromString(defaultInstanceClass),
@@ -316,11 +509,14 @@ func buildStandaloneInstance(
 	applyInstanceAuth(spec, r)
 	if vpcRefs != nil {
 		spec.Fields["dbSubnetGroupName"] = vpcRefs.subnetGroupNameRef
-		spec.Fields["vpcSecurityGroups"] = vpcRefs.securityGroups
+		spec.Fields["vpcSecurityGroups"] = vpcRefs.instanceSecurityGroups
 	}
 
 	meta := infraMeta(r.Name)
-	meta.Labels = labels
+	// The proxy selects on this label to open the network path to the instance it
+	// fronts. Carried by the primary only: the proxy's target group registers the
+	// primary, so a read replica is not on the far end of that connection.
+	meta.Labels = labelsWith(labels, proxyTargetLabelKey, name)
 	return &schema.Resource{
 		Type:         &schema.ResourceTypeWrapper{Value: resourceTypeDBInstance},
 		Spec:         spec,
@@ -334,12 +530,13 @@ func buildStandaloneInstance(
 func buildAuroraCluster(
 	r *ResolvedSQLDatabase,
 	run *transformutils.Run,
-	name, physicalName, engine string,
+	name, engine string,
+	physicalName *core.MappingNode,
 	vpcRefs *vpcReferences,
 	labels *schema.StringMap,
 ) *schema.Resource {
 	spec := core.MappingNodeFields(
-		"dbClusterIdentifier", core.MappingNodeFromString(physicalName),
+		"dbClusterIdentifier", physicalName,
 		"databaseName", core.MappingNodeFromString(name),
 		"engine", core.MappingNodeFromString(auroraEngine(engine)),
 		"masterUsername", core.MappingNodeFromString(defaultMasterUsername),
@@ -357,7 +554,7 @@ func buildAuroraCluster(
 	}
 	if vpcRefs != nil {
 		spec.Fields["dbSubnetGroupName"] = vpcRefs.subnetGroupNameRef
-		spec.Fields["vpcSecurityGroupIds"] = vpcRefs.securityGroups
+		spec.Fields["vpcSecurityGroupIds"] = vpcRefs.instanceSecurityGroups
 	}
 
 	meta := infraMeta(r.Name)
@@ -372,11 +569,12 @@ func buildAuroraCluster(
 
 func buildAuroraInstance(
 	r *ResolvedSQLDatabase,
-	physicalName, engine string,
+	engine string,
+	physicalName *core.MappingNode,
 	labels *schema.StringMap,
 ) *schema.Resource {
 	spec := core.MappingNodeFields(
-		"dbInstanceIdentifier", core.MappingNodeFromString(physicalName),
+		"dbInstanceIdentifier", physicalName,
 		"dbClusterIdentifier", clusterRef(r.Name, "dbClusterIdentifier"),
 		"engine", core.MappingNodeFromString(auroraEngine(engine)),
 		"dbInstanceClass", core.MappingNodeFromString(serverlessInstanceClass),
@@ -394,22 +592,23 @@ func buildAuroraInstance(
 // RDS it is a read replica of the primary instance.
 func buildReaderInstance(
 	r *ResolvedSQLDatabase,
-	physicalName, engine string,
+	engine string,
+	physicalName *core.MappingNode,
 	auroraEnabled bool,
 	labels *schema.StringMap,
 ) *schema.Resource {
-	readerID := fmt.Sprintf("%s-reader", physicalName)
+	readerID := shared.DerivedName(physicalName, "-reader")
 	var spec *core.MappingNode
 	if auroraEnabled {
 		spec = core.MappingNodeFields(
-			"dbInstanceIdentifier", core.MappingNodeFromString(readerID),
+			"dbInstanceIdentifier", readerID,
 			"dbClusterIdentifier", clusterRef(r.Name, "dbClusterIdentifier"),
 			"engine", core.MappingNodeFromString(auroraEngine(engine)),
 			"dbInstanceClass", core.MappingNodeFromString(serverlessInstanceClass),
 		)
 	} else {
 		spec = core.MappingNodeFields(
-			"dbInstanceIdentifier", core.MappingNodeFromString(readerID),
+			"dbInstanceIdentifier", readerID,
 			"sourceDBInstanceIdentifier", instanceRef(r.Name, "dbInstanceIdentifier"),
 			"dbInstanceClass", core.MappingNodeFromString(defaultInstanceClass),
 		)
@@ -428,7 +627,8 @@ func buildReaderInstance(
 // sqlDatabase by label pool through it.
 func buildProxyResources(
 	r *ResolvedSQLDatabase,
-	name, physicalName, engine string,
+	name, engine string,
+	physicalName *core.MappingNode,
 	vpcRefs *vpcReferences,
 	labels *schema.StringMap,
 ) (map[string]*schema.Resource, error) {
@@ -438,19 +638,12 @@ func buildProxyResources(
 		return nil, err
 	}
 
-	// Reference the emitted proxy's name so the target group depends on the proxy.
-	proxyNameRef, err := shared.SubstitutionMappingNode(
-		fmt.Sprintf("${resources.%s.spec.dbProxyName}", proxyResourceName(r.Name)))
-	if err != nil {
-		return nil, err
-	}
-
 	proxySpec := core.MappingNodeFields(
-		"dbProxyName", core.MappingNodeFromString(physicalName),
+		"dbProxyName", physicalName,
 		"engineFamily", core.MappingNodeFromString(engineFamily(engine)),
 		"roleArn", roleArnRef,
 		"vpcSubnetIds", vpcRefs.subnetIdsRef,
-		"vpcSecurityGroupIds", vpcRefs.securityGroups,
+		"vpcSecurityGroupIds", vpcRefs.proxySecurityGroups,
 	)
 
 	iamMode := sqlAuthMode(r) == "iam"
@@ -467,12 +660,33 @@ func buildProxyResources(
 		if err != nil {
 			return nil, err
 		}
-		proxySpec.Fields["auth"] = core.MappingNodeItems(
+		// The proxy authenticates to the database as the master, and authenticates
+		// the application to itself as the application user. Both need a
+		// registered secret: a proxy rejects a connection for any role it holds no
+		// credentials for, with "This RDS proxy has no credentials for the role",
+		// which reads as a missing database role rather than a missing
+		// registration.
+		//
+		// The role itself does not exist until provisioning has run, which is the
+		// contract buildAppUserSecret already documents, so registering a secret
+		// ahead of the role it names is expected rather than premature.
+		authEntries := []*core.MappingNode{
 			core.MappingNodeFields(
 				"authScheme", core.MappingNodeFromString("SECRETS"),
 				"secretArn", secretArnRef,
 			),
-		)
+		}
+		if AppUserAuthEnabled(r) {
+			appUserSecretRef, err := appUserSecretARNRef(r)
+			if err != nil {
+				return nil, err
+			}
+			authEntries = append(authEntries, core.MappingNodeFields(
+				"authScheme", core.MappingNodeFromString("SECRETS"),
+				"secretArn", appUserSecretRef,
+			))
+		}
+		proxySpec.Fields["auth"] = &core.MappingNode{Items: authEntries}
 	}
 
 	proxyMeta := infraMeta(r.Name)
@@ -488,19 +702,17 @@ func buildProxyResources(
 			Type:     &schema.ResourceTypeWrapper{Value: "aws/rds/dbProxy"},
 			Spec:     proxySpec,
 			Metadata: proxyMeta,
+			// Selects only the instance this proxy fronts. Registering the instance as a
+			// target is not enough on its own: the target stays unavailable until a
+			// security group rule permits the connection, and the target group's create
+			// then waits on a health it never sees.
+			LinkSelector: &schema.LinkSelector{
+				ByLabel: &schema.StringMap{
+					Values: map[string]string{proxyTargetLabelKey: name},
+				},
+			},
 		},
 		proxyRoleResourceName(r.Name): roleResource,
-		proxyTargetGroupResourceName(r.Name): {
-			Type: &schema.ResourceTypeWrapper{Value: "aws/rds/dbProxyTargetGroup"},
-			Spec: core.MappingNodeFields(
-				"dbProxyName", proxyNameRef,
-				"targetGroupName", core.MappingNodeFromString("default"),
-				"dbInstanceIdentifiers", core.MappingNodeItems(
-					instanceRef(r.Name, "dbInstanceIdentifier"),
-				),
-			),
-			Metadata: infraMeta(r.Name),
-		},
 	}, nil
 }
 
@@ -508,13 +720,18 @@ func buildProxyResources(
 // secretsmanager:GetSecretValue on the instance's RDS-managed master secret so
 // the proxy can read credentials; in iam mode it instead grants rds-db:connect
 // so the proxy can authenticate to the database with IAM (defaultAuthScheme=IAM_AUTH).
-func buildProxyRole(r *ResolvedSQLDatabase, name, physicalName string, iamMode bool) (*schema.Resource, error) {
+func buildProxyRole(
+	r *ResolvedSQLDatabase,
+	name string,
+	physicalName *core.MappingNode,
+	iamMode bool,
+) (*schema.Resource, error) {
 	// The deployed role name derives from the physical base (not the blueprint
 	// resource name) so it is app-scoped whenever the base is; "-proxy-role"
 	// keeps a capped generated base within IAM's 64-char role name limit.
-	roleName := fmt.Sprintf("%s-proxy-role", physicalName)
+	roleName := shared.DerivedName(physicalName, "-proxy-role")
 	spec := core.MappingNodeFields(
-		"roleName", core.MappingNodeFromString(roleName),
+		"roleName", roleName,
 		"assumeRolePolicyDocument", core.MappingNodeFields(
 			"version", core.MappingNodeFromString(policyDocVersion),
 			"statement", core.MappingNodeItems(core.MappingNodeFields(
@@ -556,6 +773,17 @@ func buildProxyRole(r *ResolvedSQLDatabase, name, physicalName string, iamMode b
 		if err != nil {
 			return nil, err
 		}
+		// Every secret the proxy is registered with has to be readable by it.
+		// A registered secret the role cannot read fails at connection time just
+		// as completely as one that was never registered.
+		secretResources := []*core.MappingNode{secretArnRef}
+		if AppUserAuthEnabled(r) {
+			appUserSecretRef, err := appUserSecretARNRef(r)
+			if err != nil {
+				return nil, err
+			}
+			secretResources = append(secretResources, appUserSecretRef)
+		}
 		spec.Fields["policies"] = core.MappingNodeItems(
 			core.MappingNodeFields(
 				"policyName", core.MappingNodeFromString(fmt.Sprintf("%s-secret-access", name)),
@@ -564,7 +792,7 @@ func buildProxyRole(r *ResolvedSQLDatabase, name, physicalName string, iamMode b
 					"statement", core.MappingNodeItems(core.MappingNodeFields(
 						"effect", core.MappingNodeFromString("Allow"),
 						"action", core.MappingNodeFromString("secretsmanager:GetSecretValue"),
-						"resource", secretArnRef,
+						"resource", &core.MappingNode{Items: secretResources},
 					)),
 				),
 			),
@@ -679,6 +907,19 @@ func mappingNodeAtPath(spec *core.MappingNode, path string) *core.MappingNode {
 	return node
 }
 
+// Returns the given labels plus one more, without mutating the input.
+// The label map is shared across every resource this database emits, so writing
+// into it would put the new label on all of them.
+func labelsWith(labels *schema.StringMap, key, value string) *schema.StringMap {
+	values := map[string]string{}
+	if labels != nil {
+		maps.Copy(values, labels.Values)
+	}
+	// Assigned last so a user label reusing this key cannot displace it.
+	values[key] = value
+	return &schema.StringMap{Values: values}
+}
+
 func infraMeta(abstractName string) *schema.Metadata {
 	return &schema.Metadata{
 		Annotations: transformutils.TransformerBaseAnnotations(
@@ -720,6 +961,14 @@ func proxyRoleResourceName(name string) string {
 	return fmt.Sprintf("%s_rds_proxy_role", name)
 }
 
-func proxyTargetGroupResourceName(name string) string {
-	return fmt.Sprintf("%s_rds_proxy_target_group", name)
+// References the application user's secret by the field that
+// carries its ARN.
+//
+// spec.id, not spec.arn: a Secrets Manager secret has no arn field, and a
+// reference to one stages cleanly and then fails at deploy time. The maintenance
+// runner references the same secret the same way.
+func appUserSecretARNRef(r *ResolvedSQLDatabase) (*core.MappingNode, error) {
+	return shared.SubstitutionMappingNode(
+		fmt.Sprintf("${resources.%s.spec.id}", AppUserSecretResourceName(r.Name)),
+	)
 }

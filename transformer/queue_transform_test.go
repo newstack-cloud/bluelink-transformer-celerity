@@ -51,9 +51,8 @@ func (s *QueueTransformTestSuite) Test_emits_an_sqs_queue_from_the_queue_spec() 
 	// tags is a LIST of {key, value} for aws/sqs/queue.
 	tags := sqs.Spec.Fields["tags"]
 	s.Require().NotNil(tags)
-	s.Require().Len(tags.Items, 1)
-	s.Equal("team", core.StringValue(tags.Items[0].Fields["key"]))
-	s.Equal("payments", core.StringValue(tags.Items[0].Fields["value"]))
+	s.Equal("payments", specTagValue(tags, "team"), "author label")
+	s.Equal("celerity/queue", specTagValue(tags, "celerity:resource-type"), "identity: abstract type")
 
 	// Labels are preserved so a handler's linkSelector can match the queue.
 	s.Require().NotNil(sqs.Metadata.Labels)

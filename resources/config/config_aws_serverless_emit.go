@@ -68,11 +68,15 @@ func emitConfig(
 	if len(plaintext) == 0 {
 		// All values are secret -> a single aws/secretsmanager/secret holding a
 		// JSON-encoded blob.
-		idRef, err = emitSecretsManagerResource(resources, r, values, storePath, kms)
+		idRef, err = emitSecretsManagerResource(
+			resources, shared.ResolveAppName(run), r, values, storePath, kms,
+		)
 	} else {
 		// Mixed -> a single aws/ssm/parameterTree owning one parameter per key
 		// beneath the path prefix, with blob-like drift semantics.
-		idRef, err = emitParameterTreeResource(resources, r, values, plaintext, storePath, kms)
+		idRef, err = emitParameterTreeResource(
+			resources, shared.ResolveAppName(run), r, values, plaintext, storePath, kms,
+		)
 	}
 	if err != nil {
 		return nil, err
@@ -97,6 +101,7 @@ func emitConfig(
 
 func emitSecretsManagerResource(
 	resources map[string]*schema.Resource,
+	appName string,
 	r *ResolvedConfig,
 	values *core.MappingNode,
 	storePath string,
@@ -115,7 +120,11 @@ func emitSecretsManagerResource(
 		spec.Fields["kmsKeyId"] = kms
 	}
 	// aws/secretsmanager/secret.tags is a list of {key, value} objects.
-	if tags := sharedaws.SpecTagsFromResourceMetadata(r.Resource.Metadata); tags != nil {
+	if tags := sharedaws.SpecTagsFor(r.Resource.Metadata, sharedaws.Identity{
+		AppName:      appName,
+		ResourceName: r.Name,
+		ResourceType: "celerity/config",
+	}); tags != nil {
 		spec.Fields["tags"] = tags
 	}
 
@@ -142,6 +151,7 @@ func emitSecretsManagerResource(
 // never reported or reverted on redeploy.
 func emitParameterTreeResource(
 	resources map[string]*schema.Resource,
+	appName string,
 	r *ResolvedConfig,
 	values *core.MappingNode,
 	plaintextKeys map[string]struct{},
@@ -177,7 +187,11 @@ func emitParameterTreeResource(
 	}
 	// aws/ssm/parameterTree.tags is a map of string -> string, applied to every
 	// parameter in the tree.
-	if tags := sharedaws.MapTagsFromResourceMetadata(r.Resource.Metadata); tags != nil {
+	if tags := sharedaws.MapTagsFor(r.Resource.Metadata, sharedaws.Identity{
+		AppName:      appName,
+		ResourceName: r.Name,
+		ResourceType: "celerity/config",
+	}); tags != nil {
 		spec.Fields["tags"] = tags
 	}
 

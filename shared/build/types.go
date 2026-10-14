@@ -44,6 +44,12 @@ type LambdaManifest struct {
 	// SharedLayer is the production dependency layer used by handlers
 	// that do not opt into a custom per-handler dep layer.
 	SharedLayer *LambdaArtifact `json:"sharedLayer,omitempty"`
+	// MaintenanceRunner is the database maintenance runner's archive,
+	// present only when the blueprint has a celerity/sqlDatabase.
+	//
+	// A compiled Go binary versioned with the CLI rather than with the
+	// user's source, so it is neither the app bundle nor a layer.
+	MaintenanceRunner *LambdaArtifact `json:"maintenanceRunner,omitempty"`
 }
 
 // LambdaHandlerArtifacts holds per-handler Lambda overrides.

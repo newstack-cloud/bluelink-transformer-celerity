@@ -15,6 +15,7 @@ import (
 	"github.com/newstack-cloud/bluelink/libs/blueprint/schema"
 	"github.com/newstack-cloud/bluelink/libs/blueprint/source"
 	"github.com/newstack-cloud/bluelink/libs/blueprint/substitutions"
+	"github.com/newstack-cloud/bluelink/libs/blueprint/subwalk"
 	"github.com/newstack-cloud/bluelink/libs/plugin-framework/sdk/pluginutils"
 	"github.com/newstack-cloud/bluelink/libs/plugin-framework/sdk/transformutils"
 )
@@ -96,11 +97,32 @@ func applyLambdaLabels(r *ResolvedHandler, lambda *schema.Resource) []*core.Diag
 	// VPC-to-function link select the function without widening it to every
 	// label on the component.
 	maps.Copy(labels, r.inheritedVPCSelectorLabels)
+	if key, value, ok := guardTargetLabel(r); ok {
+		labels[key] = value
+	}
 	if len(labels) == 0 {
 		return diagnostics
 	}
 	lambda.Metadata.Labels = &schema.StringMap{Values: labels}
 	return diagnostics
+}
+
+// The label pairing a custom guard's handler function with the API whose authorizer
+// invokes it, for handlers that implement one.
+//
+// Only the guard's own handler carries it. A handler merely protected BY the guard is
+// a route, and its permission comes from the api::function link instead.
+func guardTargetLabel(r *ResolvedHandler) (string, string, bool) {
+	if r.APILink == nil {
+		return "", "", false
+	}
+
+	guardName := annotationValue(r.Resource, AnnotationKeyGuardCustom, "")
+	if guardName == "" {
+		return "", "", false
+	}
+
+	return LabelKeyGuardTarget, GuardTargetLabelValue(r.APILink.Name, guardName), true
 }
 
 // Layers the VPC-placement and consumer event-source link annotations onto the
@@ -259,13 +281,15 @@ func consumerNameList(bindings []*ConsumerBinding) string {
 	return strings.Join(names, ", ")
 }
 
-// Warns when a consumer sets a non-default routingKey while its handler activates
-// routing (the celerity.handler.consumer.route annotation). The route tag reaches
-// the runtime via the CELERITY_HANDLER_TAG environment variable, but the routing
-// key (the payload field to route on) is not propagated to the function, so a
-// non-default value would be silently ignored at runtime.
+// Warns when a consumer declares a routingKey but this function serves only one
+// of its handlers, so nothing will route.
 func routingKeyDeferred(r *ResolvedHandler, binding *ConsumerBinding) *core.Diagnostic {
 	if !r.HasRoutingTag {
+		return nil
+	}
+	// The function serves the whole consumer, so it routes in-process and the key
+	// reaches it.
+	if r.RoutingKey != "" {
 		return nil
 	}
 	node, ok := pluginutils.GetValueByPath("$.routingKey", consumerSpec(binding))
@@ -273,15 +297,17 @@ func routingKeyDeferred(r *ResolvedHandler, binding *ConsumerBinding) *core.Diag
 		return nil
 	}
 	key := core.StringValue(node)
-	if key == "" || key == "event" {
+	if key == "" {
 		return nil
 	}
 	return &core.Diagnostic{
 		Level: core.DiagnosticLevelWarning,
 		Message: fmt.Sprintf(
-			"celerity/consumer %q sets routingKey %q while handler %q activates routing, but the "+
-				"routing key is not propagated to the aws-serverless function; the runtime routes on the "+
-				"default \"event\" field. Rename the payload field to \"event\" or route using the default.",
+			"celerity/consumer %q sets routingKey %q, but handler %q is deployed as its own function "+
+				"serving a single route rather than as one function for the whole consumer. Messages are "+
+				"delivered to whichever of the consumer's functions polls first, so the routing key is not "+
+				"applied. Every handler of a routed consumer has to be deployed as one function for "+
+				"routing to happen.",
 			binding.ConsumerName,
 			key,
 			r.Name,
@@ -376,12 +402,13 @@ func stampTopicBinding(lambda *schema.Resource, binding *ConsumerBinding) {
 }
 
 func startingPosition(binding *ConsumerBinding) string {
-	value, ok := transformutils.GetAnnotation(
+	fromBeginning, _ := transformutils.GetBoolAnnotation(
 		binding.ConsumerResource,
 		annotationConsumerDatastoreStartFromBeginning,
 		"",
+		false,
 	)
-	if ok && core.BoolValue(value) {
+	if fromBeginning {
 		return streamStartTrimHorizon
 	}
 	return streamStartLatest
@@ -541,10 +568,14 @@ func scheduleInput(scheduleResource *schema.Resource) (string, bool) {
 	return string(encoded), true
 }
 
-// Builds the concrete event-source resources that an absorbed consumer needs
-// beyond the function-side annotations: an SQS fan-out queue + SNS subscription
-// (+ optional dead-letter queue) for a Celerity-topic source, and a standalone
-// aws/lambda/eventSourceMapping for each external stream or external SQS source.
+// Builds the event-source resources an absorbed consumer needs that genuinely
+// belong to this one function: a standalone aws/lambda/eventSourceMapping for
+// each external stream or external SQS source.
+//
+// A Celerity-topic source contributes none. Its fan-out belongs to the consumer
+// rather than to any one handler absorbing it, so collectTopicFanouts
+// contributes it as a shared parent instead, and the topic branch here only
+// validates.
 func emitConsumerSubscriptions(
 	r *ResolvedHandler,
 	funcResourceName string,
@@ -553,10 +584,18 @@ func emitConsumerSubscriptions(
 	for _, binding := range r.ConsumerBindings {
 		switch binding.SourceKind {
 		case ConsumerSourceTopic:
-			if err := emitTopicFanout(resources, binding); err != nil {
+			// The fan-out belongs to the consumer, not to any one handler that
+			// absorbs it, so it is contributed as a shared parent instead (see
+			// collectTopicFanouts). Its references are built here as well, purely
+			// so a malformed one is reported against the handler that owns the
+			// binding; shared parent collection has no way to report an error.
+			if _, err := topicSnsSubscriptionSpec(
+				topicQueueResourceName(binding.ConsumerName),
+			); err != nil {
 				return nil, err
 			}
 		case ConsumerSourceExternal:
+			// An event source mapping really is per-function, so it stays here.
 			if err := emitExternalSources(resources, binding, funcResourceName); err != nil {
 				return nil, err
 			}
@@ -565,51 +604,95 @@ func emitConsumerSubscriptions(
 	return resources, nil
 }
 
-// Wires the SNS -> SQS -> Lambda fan-out for a Celerity-topic consumer: an
+// Collects the fan-out for every Celerity-topic consumer the handlers absorb,
+// one per consumer rather than one per handler.
+//
+// A consumer with a routingKey is absorbed by every handler it routes to, and
+// each of them would otherwise contribute the same three resources under the
+// same keys and collide; the seen set is what reduces them to one.
+func collectTopicFanouts(
+	handlers []*ResolvedHandler,
+	appName string,
+) ([]transformutils.SharedParent, error) {
+	parents := []transformutils.SharedParent{}
+	seen := map[string]bool{}
+
+	for _, handler := range handlers {
+		for _, binding := range handler.ConsumerBindings {
+			if binding.SourceKind != ConsumerSourceTopic || seen[binding.ConsumerName] {
+				continue
+			}
+			seen[binding.ConsumerName] = true
+
+			fanout, err := topicFanoutParents(binding, appName)
+			if err != nil {
+				return nil, err
+			}
+			parents = append(parents, fanout...)
+		}
+	}
+
+	return parents, nil
+}
+
+// The SNS -> SQS -> Lambda fan-out one Celerity-topic consumer needs: an
 // intermediary SQS queue subscribed to the topic (giving a reliable, scalable
 // fan-out and the subscriberId output), an SNS subscription (sqs protocol) and,
 // unless disabled, a dead-letter queue with a redrive policy.
-func emitTopicFanout(
-	resources map[string]*schema.Resource,
+func topicFanoutParents(
 	binding *ConsumerBinding,
-) error {
+	appName string,
+) ([]transformutils.SharedParent, error) {
 	queueName := topicQueueResourceName(binding.ConsumerName)
 
-	resources[queueName] = topicFanoutQueue(binding)
-
-	subscription, err := topicSnsSubscription(binding, queueName)
+	subscriptionSpec, err := topicSnsSubscriptionSpec(queueName)
 	if err != nil {
-		return err
+		return nil, err
 	}
-	resources[snsSubscriptionResourceName(binding.ConsumerName)] = subscription
+
+	parents := []transformutils.SharedParent{
+		topicFanoutQueueParent(binding, queueName, appName),
+		{
+			Key:             "topicSubscription:" + binding.ConsumerName,
+			ResourceName:    snsSubscriptionResourceName(binding.ConsumerName),
+			ResourceType:    "aws/sns/subscription",
+			LinkAnnotations: consumerBaseAnnotations(binding.ConsumerName),
+			SeedSpec:        subscriptionSpec,
+		},
+	}
 
 	if deadLetterQueueEnabled(binding) {
-		resources[topicDLQResourceName(binding.ConsumerName)] = topicDeadLetterQueue(binding)
+		parents = append(parents, topicDeadLetterQueueParent(binding, appName))
 	}
 
-	return nil
+	return parents, nil
 }
 
 // The intermediary SQS queue subscribed to the topic. Its linkSelector carries the
 // synthetic poll label so the aws/sqs/queue::aws/lambda/function link creates the
 // event source mapping to the function; the same label (plus a redrive annotation)
 // links it to its dead-letter queue.
-func topicFanoutQueue(binding *ConsumerBinding) *schema.Resource {
-	meta := &schema.Metadata{
-		Annotations: consumerBaseAnnotations(binding.ConsumerName),
-	}
+func topicFanoutQueueParent(
+	binding *ConsumerBinding,
+	queueName string,
+	appName string,
+) transformutils.SharedParent {
+	annotations := consumerBaseAnnotations(binding.ConsumerName)
 	if attempts, ok := transformutils.GetAnnotation(
 		binding.ConsumerResource,
 		annotationConsumerDeadLetterQueueMaxAttempts,
 		"",
 	); ok && deadLetterQueueEnabled(binding) {
-		setStringAnnotation(meta, redriveMaxReceiveCountAnnotation, core.StringValue(attempts))
+		annotations.Values[redriveMaxReceiveCountAnnotation] = pluginutils.StringToSubstitutions(
+			core.StringValue(attempts),
+		)
 	}
 
-	return &schema.Resource{
-		Type:     &schema.ResourceTypeWrapper{Value: "aws/sqs/queue"},
-		Spec:     &core.MappingNode{Fields: map[string]*core.MappingNode{}},
-		Metadata: meta,
+	return transformutils.SharedParent{
+		Key:             "topicQueue:" + binding.ConsumerName,
+		ResourceName:    queueName,
+		ResourceType:    "aws/sqs/queue",
+		LinkAnnotations: annotations,
 		LinkSelector: &schema.LinkSelector{
 			ByLabel: &schema.StringMap{
 				Values: map[string]string{
@@ -617,30 +700,79 @@ func topicFanoutQueue(binding *ConsumerBinding) *schema.Resource {
 				},
 			},
 		},
+		SeedSpec: fanoutQueueSpec(appName, binding, "topic-queue"),
 	}
 }
 
-func topicDeadLetterQueue(binding *ConsumerBinding) *schema.Resource {
-	return &schema.Resource{
-		Type: &schema.ResourceTypeWrapper{Value: "aws/sqs/queue"},
-		Spec: &core.MappingNode{Fields: map[string]*core.MappingNode{}},
-		Metadata: &schema.Metadata{
-			Annotations: consumerBaseAnnotations(binding.ConsumerName),
-			// The fan-out queue's linkSelector selects this queue by the poll label,
-			// activating the aws/sqs/queue::aws/sqs/queue redrive link.
-			Labels: &schema.StringMap{
-				Values: map[string]string{
-					topicPollLabelKey(binding.ConsumerName): "true",
-				},
+func topicDeadLetterQueueParent(
+	binding *ConsumerBinding,
+	appName string,
+) transformutils.SharedParent {
+	return transformutils.SharedParent{
+		Key:             "topicDLQ:" + binding.ConsumerName,
+		ResourceName:    topicDLQResourceName(binding.ConsumerName),
+		ResourceType:    "aws/sqs/queue",
+		LinkAnnotations: consumerBaseAnnotations(binding.ConsumerName),
+		// The fan-out queue's linkSelector selects this queue by the poll label,
+		// activating the aws/sqs/queue::aws/sqs/queue redrive link.
+		Labels: &schema.StringMap{
+			Values: map[string]string{
+				topicPollLabelKey(binding.ConsumerName): "true",
 			},
 		},
+		SeedSpec: fanoutQueueSpec(appName, binding, "topic-dlq"),
 	}
 }
 
-func topicSnsSubscription(
-	binding *ConsumerBinding,
+// An SQS queue name is account-visible, so it is app-scoped like every other
+// physical name the transformer invents. 80 is the SQS limit.
+//
+// Naming these also keeps them serialisable: a resource whose spec is an empty
+// mapping node does not survive the plugin boundary, because protobuf cannot
+// tell an empty map from an absent one, and it arrives back at the engine with
+// nothing set at all.
+func fanoutQueueSpec(appName string, binding *ConsumerBinding, role string) *core.MappingNode {
+	spec := core.MappingNodeFields(
+		"queueName", core.MappingNodeFromString(
+			shared.AppScopedPhysicalName(
+				appName,
+				fmt.Sprintf("%s-%s", binding.ConsumerName, role),
+				sqsQueueNameMaxLength,
+			),
+		),
+	)
+
+	// The fan-out queue and its dead-letter queue exist to serve one consumer, so
+	// they carry that consumer's identity and its author's labels rather than the
+	// absorbing handler's. Passing no labels would leave them the only resources
+	// an author labelled that cannot be found by those labels in a bill.
+	if tags := sharedaws.SpecTagsFor(consumerMetadata(binding), sharedaws.Identity{
+		AppName:      appName,
+		ResourceName: binding.ConsumerName,
+		ResourceType: "celerity/consumer",
+	}); tags != nil {
+		spec.Fields["tags"] = tags
+	}
+
+	return spec
+}
+
+// The abstract consumer's metadata, which is where its author's labels live. The
+// generated poll label is set on the emitted queue instead, so it stays out of
+// the tags.
+func consumerMetadata(binding *ConsumerBinding) *schema.Metadata {
+	if binding == nil || binding.ConsumerResource == nil {
+		return nil
+	}
+
+	return binding.ConsumerResource.Metadata
+}
+
+const sqsQueueNameMaxLength = 80
+
+func topicSnsSubscriptionSpec(
 	queueResourceName string,
-) (*schema.Resource, error) {
+) (*core.MappingNode, error) {
 	endpointRef, err := shared.SubstitutionMappingNode(
 		fmt.Sprintf("${resources.%s.spec.arn}", queueResourceName),
 	)
@@ -648,17 +780,47 @@ func topicSnsSubscription(
 		return nil, err
 	}
 
-	spec := core.MappingNodeFields(
+	// topicArn is contributed by the absorbing handler rather than seeded here:
+	// an in-blueprint celerity/topic is carried as an abstract reference that only
+	// the emit phase's resource-property rewriter can resolve to the concrete
+	// <topic>_sns_topic. See topicFanoutContributions.
+	return core.MappingNodeFields(
 		"protocol", core.MappingNodeFromString("sqs"),
-		"topicArn", binding.TopicARN,
 		"endpoint", endpointRef,
-	)
+		// Without raw delivery SQS receives the SNS envelope, so a handler reading
+		// the message body gets {Type, MessageId, TopicArn, Message} and has to know
+		// its payload is a JSON string nested in Message. The consumer contract says
+		// the body is what was published, and routing reads a field off that body,
+		// so the envelope breaks both. Raw delivery makes the wire match the
+		// contract rather than asking every handler to unwrap.
+		"rawMessageDelivery", core.MappingNodeFromBool(true),
+	), nil
+}
 
-	return &schema.Resource{
-		Type:     &schema.ResourceTypeWrapper{Value: "aws/sns/subscription"},
-		Spec:     spec,
-		Metadata: &schema.Metadata{Annotations: consumerBaseAnnotations(binding.ConsumerName)},
-	}, nil
+// The parts of a topic fan-out that only the emit phase can resolve, keyed by
+// the shared parent they belong to.
+//
+// Every handler that absorbs the consumer contributes the same value, which
+// merges cleanly; the alternative, seeding it during shared parent collection,
+// would leave an abstract reference no resource in the transformed blueprint
+// owns.
+func topicFanoutContributions(
+	r *ResolvedHandler,
+	resPropRewriter transformutils.ResourcePropertyRewriter,
+) map[string]*core.MappingNode {
+	contributions := map[string]*core.MappingNode{}
+	visitor := transformutils.RewriteResourcePropertyRefs(resPropRewriter)
+
+	for _, binding := range r.ConsumerBindings {
+		if binding.SourceKind != ConsumerSourceTopic {
+			continue
+		}
+		contributions["topicSubscription:"+binding.ConsumerName] = core.MappingNodeFields(
+			"topicArn", subwalk.WalkMappingNode(binding.TopicARN, visitor),
+		)
+	}
+
+	return contributions
 }
 
 // Emits a standalone aws/lambda/eventSourceMapping for each external stream
@@ -784,15 +946,15 @@ func consumerBaseAnnotations(consumerName string) *schema.StringOrSubstitutionsM
 }
 
 func deadLetterQueueEnabled(binding *ConsumerBinding) bool {
-	value, ok := transformutils.GetAnnotation(
+	// Default enabled to true. When absent, or present as something that is not a flag,
+	// keep the queue.
+	enabled, _ := transformutils.GetBoolAnnotation(
 		binding.ConsumerResource,
 		annotationConsumerDeadLetterQueue,
 		"",
+		true,
 	)
-	if !ok {
-		return true // default true when the annotation is absent.
-	}
-	return core.BoolValue(value)
+	return enabled
 }
 
 func topicPollLabelKey(consumerName string) string {

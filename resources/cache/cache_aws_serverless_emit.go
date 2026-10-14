@@ -25,12 +25,46 @@ const (
 	defaultEngineVersion = "8.2"
 	defaultCachePort     = 6379
 
+	// defaultCacheNodeType is the node size applied when
+	// aws.elasticache.<name>.nodeType is not set.
+	//
+	// ElastiCache requires a node type and rejects a replication group without one
+	// ("Invalid Cache Node Type: null"). The abstract celerity/cache carries no
+	// size, deliberately, since sizing is a property of the deploy target rather
+	// than of the application, so the default lives here.
+	//
+	// The value is the one the celerity/cache specification documents for this
+	// option, not an independently chosen size.
+	defaultCacheNodeType = "cache.t3.micro"
+
 	// defaultClusterShards is the number of node groups (shards) for a cluster-mode
 	// cache when aws.elasticache.<name>.numShards is not set.
 	defaultClusterShards = 3
-	// defaultReplicasPerNodeGroup is the number of read replicas per shard when
-	// aws.elasticache.<name>.numReplicas is not set: 0 (single primary node).
-	defaultReplicasPerNodeGroup = 0
+	// Read replicas per shard when aws.elasticache.<name>.numReplicas is not set.
+	//
+	// The specification defines this per topology, a single instance is one
+	// primary and nothing else, while a cluster is expected to be highly
+	// available, which a shard without a replica cannot be.
+	defaultReplicasSingleInstance = 0
+	defaultReplicasClusterMode    = 1
+
+	// Whether ElastiCache promotes a replica when the primary fails, when
+	// aws.elasticache.<name>.automaticFailover is not set. Follows the same
+	// reasoning as the replica count: only meaningful, and only expected, where
+	// there is a replica to promote.
+	defaultAutomaticFailoverSingleInstance = false
+	defaultAutomaticFailoverClusterMode    = true
+
+	// At-rest encryption from the specification: on unless the deploy
+	// configuration turns it off, since a cache holding application data should
+	// not be readable at rest by default. Unlike transit encryption this is a
+	// real choice — nothing else in the spec depends on it.
+	defaultAtRestEncryption = true
+
+	// Days of automatic snapshots retained when
+	// aws.elasticache.<name>.snapshotRetentionDays is not set. Zero disables
+	// snapshots, matching the specification.
+	defaultSnapshotRetentionDays = 0
 
 	// defaultAuthTokenLength is the generated Redis AUTH token length. Redis AUTH
 	// requires 16-128 printable characters; 32 keeps ample entropy.
@@ -43,11 +77,13 @@ const (
 	// authToken at deploy time (requires transitEncryptionEnabled, set below).
 	cacheAuthLabelKey = "celerity.cache.auth"
 
-	// redisAuthExcludeCharacters are characters Redis AUTH tokens must not contain
-	// (whitespace and the reserved delimiters the URL/connection-string forms and
-	// the Redis protocol choke on): double-quote, at-sign, forward slash,
-	// backslash and space.
-	redisAuthExcludeCharacters = "\"@/\\ "
+	// The printable characters a generated Redis AUTH
+	// token must not contain.
+	//
+	// ElastiCache allows only alphanumerics plus '!', '&', '#', '$', '^', '<', '>'
+	// and '-', so this is the complement of that set rather than a list of known-bad
+	// delimiters.
+	redisAuthExcludeCharacters = "\"%'()*+,./:;=?@[\\]_`{|}~ "
 
 	// maxCachePhysicalNameLen caps the generated physical base name at the
 	// ElastiCache replication group ID limit (40), the tightest of the
@@ -74,12 +110,31 @@ func emitCache(
 	// derives from, an author-provided spec.name as-is (author owns
 	// uniqueness, matching queue/bucket), otherwise app-scoped so two apps in
 	// one account never collide on generated names.
-	name := core.StringValue(specGet(r, "$.name"))
-	physicalName := name
-	if name == "" {
+	if diagnostics := shared.DeferredValueErrors(
+		shared.AWSServerless,
+		"cache", r.Name, r.Resource,
+		shared.StructuralField{Name: "clusterMode", Value: specGet(r, "$.clusterMode")},
+		shared.StructuralField{Name: "authMode", Value: specGet(r, "$.authMode")},
+	); len(diagnostics) > 0 {
+		return &transformutils.EmitResult{Diagnostics: diagnostics}, nil
+	}
+
+	// A referenced spec.name is carried through to the deployed identifiers, but
+	// cannot serve as the logical name as it keys deploy-config lookups and the
+	// auth label, both read here, before references are resolved. The resource's
+	// own name stands in for those, exactly as it does when spec.name is not set.
+	nameNode := specGet(r, "$.name")
+	name := core.StringValue(nameNode)
+	physicalName := nameNode
+	if !shared.HasStringValue(nameNode) {
 		name = r.Name
-		physicalName = shared.AppScopedPhysicalName(
-			shared.ResolveAppName(run), r.Name, maxCachePhysicalNameLen)
+		physicalName = core.MappingNodeFromString(
+			shared.AppScopedPhysicalName(
+				shared.ResolveAppName(run), r.Name, maxCachePhysicalNameLen,
+			),
+		)
+	} else if name == "" {
+		name = r.Name
 	}
 
 	if diag := cachePresetSuitabilityError(r, name); diag != nil {
@@ -90,7 +145,7 @@ func emitCache(
 	engine := cacheEngine(r)
 	clusterMode := core.BoolValue(specGet(r, "$.clusterMode"))
 
-	rgSpec := replicationGroupBaseSpec(r, run, name, physicalName, engine, clusterMode)
+	rgSpec := replicationGroupBaseSpec(r, run, name, engine, physicalName, clusterMode)
 
 	var diagnostics []*core.Diagnostic
 	if diag, err := applyVPCPlacement(r, name, physicalName, rgSpec, resources); err != nil {
@@ -99,7 +154,7 @@ func emitCache(
 		diagnostics = append(diagnostics, diag)
 	}
 
-	rgLinkSelector, err := applyCacheAuth(r, name, physicalName, engine, rgSpec, resources)
+	rgLinkSelector, err := applyCacheAuth(r, name, engine, physicalName, rgSpec, resources)
 	if err != nil {
 		return nil, err
 	}
@@ -129,6 +184,12 @@ func emitCache(
 	if err != nil {
 		return nil, err
 	}
+
+	sharedaws.ApplyTags(resources, r.Resource.Metadata, sharedaws.Identity{
+		AppName:      shared.ResolveAppName(run),
+		ResourceName: r.Name,
+		ResourceType: "celerity/cache",
+	})
 
 	return &transformutils.EmitResult{
 		Resources: resources,
@@ -186,25 +247,49 @@ func cacheEngineVersion(r *ResolvedCache) string {
 func replicationGroupBaseSpec(
 	r *ResolvedCache,
 	run *transformutils.Run,
-	name, physicalName, engine string,
+	name, engine string,
+	physicalName *core.MappingNode,
 	clusterMode bool,
 ) *core.MappingNode {
 	spec := core.MappingNodeFields(
-		"replicationGroupId", core.MappingNodeFromString(physicalName),
+		"replicationGroupId", physicalName,
 		"replicationGroupDescription", core.MappingNodeFromString(fmt.Sprintf("Celerity cache %s", name)),
 		"engine", core.MappingNodeFromString(engine),
 		"engineVersion", core.MappingNodeFromString(cacheEngineVersion(r)),
-		"transitEncryptionEnabled", core.MappingNodeFromBool(true),
 		"port", core.MappingNodeFromInt(defaultCachePort),
+		"cacheNodeType", core.MappingNodeFromString(
+			elasticacheConfigString(run, name, "nodeType", defaultCacheNodeType),
+		),
+		// Always on, and deliberately not configurable. Both auth modes require
+		// TLS, an AUTH token and IAM authentication each depend on it and
+		// authMode allows only those two, so there is no celerity/cache for which
+		// false is valid.
+		"transitEncryptionEnabled", core.MappingNodeFromBool(true),
+		"atRestEncryptionEnabled", core.MappingNodeFromBool(
+			elasticacheConfigBool(run, name, "atRestEncryption", defaultAtRestEncryption),
+		),
+		"snapshotRetentionLimit", core.MappingNodeFromInt(
+			elasticacheConfigInt(run, name, "snapshotRetentionDays", defaultSnapshotRetentionDays),
+		),
 	)
+
+	defaultReplicas := defaultReplicasSingleInstance
+	defaultFailover := defaultAutomaticFailoverSingleInstance
 	if clusterMode {
+		defaultReplicas = defaultReplicasClusterMode
+		defaultFailover = defaultAutomaticFailoverClusterMode
 		spec.Fields["numNodeGroups"] = core.MappingNodeFromInt(
 			elasticacheConfigInt(run, name, "numShards", defaultClusterShards))
 	} else {
 		spec.Fields["numNodeGroups"] = core.MappingNodeFromInt(1)
 	}
+
 	spec.Fields["replicasPerNodeGroup"] = core.MappingNodeFromInt(
-		elasticacheConfigInt(run, name, "numReplicas", defaultReplicasPerNodeGroup))
+		elasticacheConfigInt(run, name, "numReplicas", defaultReplicas))
+	spec.Fields["automaticFailoverEnabled"] = core.MappingNodeFromBool(
+		elasticacheConfigBool(run, name, "automaticFailover", defaultFailover),
+	)
+
 	return spec
 }
 
@@ -213,7 +298,8 @@ func replicationGroupBaseSpec(
 // diagnostic (the RG is still emitted) and leaves the placement fields unset.
 func applyVPCPlacement(
 	r *ResolvedCache,
-	name, physicalName string,
+	name string,
+	physicalName *core.MappingNode,
 	rgSpec *core.MappingNode,
 	resources map[string]*schema.Resource,
 ) (*core.Diagnostic, error) {
@@ -230,15 +316,23 @@ func applyVPCPlacement(
 	}
 
 	vpcConcrete := vpc.ConcreteResourceName(r.VPCName)
-	subnetGroupName := fmt.Sprintf("%s-cache-subnets", physicalName)
+	subnetGroupName := shared.DerivedName(physicalName, "-cache-subnets")
 
 	subnetIdsRef, err := shared.SubstitutionMappingNode(
 		fmt.Sprintf("${resources.%s.spec.privateSubnetIds}", vpcConcrete))
 	if err != nil {
 		return nil, err
 	}
+	// The group the VPC created for this cache, not the VPC's whole list. A link
+	// opening a path to the cache pairs the workload's group with a group the VPC
+	// minted for this resource alone; given the whole list it cannot tell which
+	// group is the cache's, and pairing against a shared one would open a path to
+	// everything else in it.
 	sgRef, err := shared.SubstitutionMappingNode(
-		fmt.Sprintf("${resources.%s.spec.securityGroups}", vpcConcrete))
+		shared.VPCSecurityGroupIDRef(
+			vpcConcrete, r.Name, shared.SecurityGroupRoleCache,
+		),
+	)
 	if err != nil {
 		return nil, err
 	}
@@ -246,14 +340,27 @@ func applyVPCPlacement(
 	resources[subnetGroupResourceName(r.Name)] = &schema.Resource{
 		Type: &schema.ResourceTypeWrapper{Value: "aws/elasticache/subnetGroup"},
 		Spec: core.MappingNodeFields(
-			"cacheSubnetGroupName", core.MappingNodeFromString(subnetGroupName),
+			"cacheSubnetGroupName", subnetGroupName,
 			"description", core.MappingNodeFromString(fmt.Sprintf("Subnets for Celerity cache %s", name)),
 			"subnetIds", subnetIdsRef,
 		),
 		Metadata: infraMeta(r.Name),
 	}
-	rgSpec.Fields["cacheSubnetGroupName"] = core.MappingNodeFromString(subnetGroupName)
-	rgSpec.Fields["securityGroupIds"] = sgRef
+	// Reference the emitted subnet group's name so a dependency edge is created,
+	// rather than repeating the plain string (which would leave no ordering edge
+	// and let the replication group be created before its subnet group exists).
+	subnetGroupNameRef, err := shared.SubstitutionMappingNode(
+		fmt.Sprintf(
+			"${resources.%s.spec.cacheSubnetGroupName}",
+			subnetGroupResourceName(r.Name),
+		),
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	rgSpec.Fields["cacheSubnetGroupName"] = subnetGroupNameRef
+	rgSpec.Fields["securityGroupIds"] = core.MappingNodeItems(sgRef)
 	return nil, nil
 }
 
@@ -263,7 +370,8 @@ func applyVPCPlacement(
 // mode provisions an auth-token secret and selects it by label.
 func applyCacheAuth(
 	r *ResolvedCache,
-	name, physicalName, engine string,
+	name, engine string,
+	physicalName *core.MappingNode,
 	rgSpec *core.MappingNode,
 	resources map[string]*schema.Resource,
 ) (*schema.LinkSelector, error) {
@@ -301,6 +409,37 @@ func elasticacheConfigInt(run *transformutils.Run, name, suffix string, fallback
 	if run != nil {
 		if node, ok := sharedaws.ResolveDeployConfigNode(run.TransformContext, "aws.elasticache", name, suffix); ok {
 			return core.IntValue(node)
+		}
+	}
+	return fallback
+}
+
+func elasticacheConfigString(
+	run *transformutils.Run,
+	name, suffix, fallback string,
+) string {
+	if run != nil {
+		if node, ok := sharedaws.ResolveDeployConfigNode(
+			run.TransformContext, "aws.elasticache", name, suffix,
+		); ok {
+			if value := core.StringValue(node); value != "" {
+				return value
+			}
+		}
+	}
+	return fallback
+}
+
+func elasticacheConfigBool(
+	run *transformutils.Run,
+	name, suffix string,
+	fallback bool,
+) bool {
+	if run != nil {
+		if node, ok := sharedaws.ResolveDeployConfigNode(
+			run.TransformContext, "aws.elasticache", name, suffix,
+		); ok && !core.IsNilMappingNode(node) {
+			return core.BoolValue(node)
 		}
 	}
 	return fallback
@@ -352,7 +491,7 @@ func specGet(r *ResolvedCache, path string) *core.MappingNode {
 // secret carries the cache's own labels so a handler that links to the cache
 // also links to the secret (injecting it as a SECRET_<name> env var), plus the
 // distinctive auth label the RG selects on.
-func buildAuthSecret(r *ResolvedCache, name, physicalName string) *schema.Resource {
+func buildAuthSecret(r *ResolvedCache, name string, physicalName *core.MappingNode) *schema.Resource {
 	labels := map[string]string{}
 	if r.Resource.Metadata != nil && r.Resource.Metadata.Labels != nil {
 		maps.Copy(labels, r.Resource.Metadata.Labels.Values)
@@ -365,7 +504,7 @@ func buildAuthSecret(r *ResolvedCache, name, physicalName string) *schema.Resour
 	return &schema.Resource{
 		Type: &schema.ResourceTypeWrapper{Value: "aws/secretsmanager/secret"},
 		Spec: core.MappingNodeFields(
-			"name", core.MappingNodeFromString(fmt.Sprintf("%s-cache-auth", physicalName)),
+			"name", shared.DerivedName(physicalName, "-cache-auth"),
 			"description", core.MappingNodeFromString(
 				fmt.Sprintf("Redis AUTH token for Celerity cache %s", name)),
 			"generateSecretString", core.MappingNodeFields(
@@ -402,14 +541,18 @@ func authSecretResourceName(name string) string {
 
 // The RBAC user group must contain the managed "default" user in addition to
 // the IAM user.
-func buildIAMUserAndGroup(r *ResolvedCache, physicalName, engine string) (*schema.Resource, *schema.Resource, error) {
-	userID := fmt.Sprintf("%s-iam", physicalName)
+func buildIAMUserAndGroup(
+	r *ResolvedCache,
+	physicalName *core.MappingNode,
+	engine string,
+) (*schema.Resource, *schema.Resource, error) {
+	userID := shared.DerivedName(physicalName, "-iam")
 	user := &schema.Resource{
 		Type: &schema.ResourceTypeWrapper{Value: "aws/elasticache/user"},
 		Spec: core.MappingNodeFields(
 			"engine", core.MappingNodeFromString(engine),
-			"userId", core.MappingNodeFromString(userID),
-			"userName", core.MappingNodeFromString(userID),
+			"userId", userID,
+			"userName", userID,
 			// Full access; scope down in a follow-up if per-command ACLs are needed.
 			"accessString", core.MappingNodeFromString("on ~* +@all"),
 			"authenticationMode", core.MappingNodeFields(
@@ -428,7 +571,7 @@ func buildIAMUserAndGroup(r *ResolvedCache, physicalName, engine string) (*schem
 		Type: &schema.ResourceTypeWrapper{Value: "aws/elasticache/userGroup"},
 		Spec: core.MappingNodeFields(
 			"engine", core.MappingNodeFromString(engine),
-			"userGroupId", core.MappingNodeFromString(fmt.Sprintf("%s-users", physicalName)),
+			"userGroupId", shared.DerivedName(physicalName, "-users"),
 			"userIds", core.MappingNodeItems(
 				core.MappingNodeFromString("default"),
 				userIDRef,

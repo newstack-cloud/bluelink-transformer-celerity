@@ -2,18 +2,28 @@ package awslambda
 
 import (
 	"maps"
+	"path"
+	"strings"
 
 	"github.com/newstack-cloud/bluelink/libs/blueprint/core"
 )
 
 type EnvInput struct {
-	Platform      string
-	DeployTarget  string
-	HandlerID     *core.MappingNode
+	Platform     string
+	DeployTarget string
+	HandlerID    *core.MappingNode
+	// Runtime is the concrete Lambda runtime identifier (e.g. "nodejs22.x"). It
+	// decides how the app module is located at cold start, which differs per
+	// language.
+	Runtime       string
 	EventSource   string
 	RoutingTag    string
 	HasRoutingTag bool
-	Tracing       bool
+	// RoutingKey is the message-body field a routed consumer selects its handler
+	// on. Set only for a function that serves a whole consumer rather than one of
+	// its handlers, which is the only case where anything has to be routed.
+	RoutingKey string
+	Tracing    bool
 	// ResourceLinksStorePath is the SSM Parameter Store path prefix of the internal
 	// resources namespace config store, set for handlers that link to at least one
 	// backing resource the SDK resolves through the store. Empty otherwise.
@@ -32,6 +42,11 @@ type UserConfigStore struct {
 	// EnvNamespace is the sanitized upper-case <NS> segment of the
 	// CELERITY_CONFIG_<NS>_* env-var names.
 	EnvNamespace string
+	// Namespace is the store's name as authored, which is the name handlers
+	// resolve it by. It is carried explicitly because EnvNamespace is lossy:
+	// upper-casing and replacing anything outside [A-Z0-9_] means the original
+	// cannot be recovered from it.
+	Namespace string
 	// StoreID is the store-identifier value. The handler passes the abstract
 	// ${resources.<config>.spec.id} reference so the resource-property rewriter
 	// resolves it to the emitted store's derived id value (SSM path prefix or
@@ -59,6 +74,21 @@ func ConfigStoreKindEnvVarName(envNamespace string) string {
 	return "CELERITY_CONFIG_" + envNamespace + "_STORE_KIND"
 }
 
+// ConfigStoreNamespaceEnvVarName returns the name of the env var carrying a config
+// store's name as authored.
+//
+// Env-var names cannot hold the name itself as they are upper-cased and stripped of
+// anything outside [A-Z0-9_], so "appConfig" becomes "APPCONFIG" and "my-config"
+// becomes "MY_CONFIG". An SDK reading only the env-var name has to guess the original
+// back, and lower-casing is the only guess available, which resolves "appConfig" to
+// "appconfig" and registers the config namespace under a name no handler asks for.
+// The failure is at cold start, with the namespace simply absent.
+//
+// Passing the authored name explicitly removes the guess.
+func ConfigStoreNamespaceEnvVarName(envNamespace string) string {
+	return "CELERITY_CONFIG_" + envNamespace + "_NAMESPACE"
+}
+
 func BuildEnvironmentVariables(input *EnvInput) *core.MappingNode {
 	vars := map[string]*core.MappingNode{
 		"CELERITY_PLATFORM":      core.MappingNodeFromString(input.Platform),
@@ -67,8 +97,24 @@ func BuildEnvironmentVariables(input *EnvInput) *core.MappingNode {
 		"CELERITY_HANDLER_TYPE":  core.MappingNodeFromString(input.EventSource),
 	}
 
+	// Where the SDK imports the application's root module from at cold start.
+	// Without it the adapter loads and then has nothing to bootstrap, failing
+	// every invocation with "Cannot discover module". The dev container sets this
+	// for the local runtime; a deployed function needs it just as much.
+	if modulePath := appModulePath(input.Runtime, input.HandlerID); modulePath != "" {
+		vars["CELERITY_MODULE_PATH"] = core.MappingNodeFromString(modulePath)
+	}
+
 	if input.HasRoutingTag {
 		vars["CELERITY_HANDLER_TAG"] = core.MappingNodeFromString(input.RoutingTag)
+	}
+
+	// Which handler to invoke is addressed by the tag above, as for every handler
+	// type. This says how to read a route out of a message, which the tag cannot
+	// carry because it comes from the consumer's declaration rather than from the
+	// handler.
+	if input.RoutingKey != "" {
+		vars["CELERITY_ROUTING_KEY"] = core.MappingNodeFromString(input.RoutingKey)
 	}
 
 	// Internal resources namespace config store discovery: the SDK reads the store
@@ -87,6 +133,8 @@ func BuildEnvironmentVariables(input *EnvInput) *core.MappingNode {
 	for _, store := range input.UserConfigStores {
 		vars[ConfigStoreIDEnvVarName(store.EnvNamespace)] = store.StoreID
 		vars[ConfigStoreKindEnvVarName(store.EnvNamespace)] = core.MappingNodeFromString(store.Kind)
+		vars[ConfigStoreNamespaceEnvVarName(store.EnvNamespace)] =
+			core.MappingNodeFromString(store.Namespace)
 	}
 
 	if input.Tracing {
@@ -103,4 +151,38 @@ func BuildEnvironmentVariables(input *EnvInput) *core.MappingNode {
 	return &core.MappingNode{
 		Fields: vars,
 	}
+}
+
+// Where Lambda unpacks the function bundle, and the working
+// directory the runtime starts in.
+const lambdaTaskRoot = "/var/task"
+
+// Locates the application's root module inside the deployed
+// bundle.
+//
+// The handler id is "<module>.<Class>.<method>", so its first segment is the
+// module file's base name, and the build places the compiled sources at the root
+// of the archive. An id carrying an unresolved substitution yields an empty
+// string here rather than a path built from one, a wrong path fails at cold
+// start with the module missing, which is far from the reference that could not
+// be read.
+//
+// Only Node is handled. Other language adapters imports their modules differently, and
+// guessing a path for it would be worse than leaving it to that adapter.
+func appModulePath(runtime string, handlerID *core.MappingNode) string {
+	if !strings.HasPrefix(runtime, "nodejs") {
+		return ""
+	}
+
+	id := core.StringValue(handlerID)
+	if id == "" {
+		return ""
+	}
+
+	module, _, found := strings.Cut(id, ".")
+	if !found || module == "" {
+		return ""
+	}
+
+	return path.Join(lambdaTaskRoot, module+".js")
 }

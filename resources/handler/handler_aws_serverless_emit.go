@@ -38,6 +38,14 @@ func (e *awsServerlessEmitter) emit(
 	// can look up the handler to handle an event or request.
 	handlerID, _ := pluginutils.GetValueByPath("$.handler", r.Resource.Spec)
 	celerityRuntime, _ := pluginutils.GetValueByPath("$.runtime", r.Resource.Spec)
+	// Without this the reference reads as an empty runtime and the check below
+	// reports "unsupported runtime ''", which does not describe the problem.
+	if diag := shared.DeferredValueError(
+		shared.AWSServerless, "handler", r.Name, "runtime", celerityRuntime, r.Resource,
+	); diag != nil {
+		return &transformutils.EmitResult{Diagnostics: []*core.Diagnostic{diag}}, nil
+	}
+
 	runtime, hasRuntime := getTargetRuntime(
 		core.StringValue(celerityRuntime),
 		shared.AWSServerless,
@@ -79,9 +87,11 @@ func (e *awsServerlessEmitter) emit(
 		Platform:               shared.PlatformAWS,
 		DeployTarget:           shared.AWSServerless,
 		HandlerID:              handlerID,
+		Runtime:                runtime,
 		EventSource:            string(r.EventSource),
 		RoutingTag:             r.RoutingTag,
 		HasRoutingTag:          r.HasRoutingTag,
+		RoutingKey:             r.RoutingKey,
 		Tracing:                r.TracingEnabled,
 		ResourceLinksStorePath: r.resourceLinksStorePath,
 		UserConfigStores:       userConfigStores,
@@ -97,9 +107,6 @@ func (e *awsServerlessEmitter) emit(
 		"environment", core.MappingNodeFields(
 			"variables",
 			awslambda.BuildEnvironmentVariables(envInput),
-		),
-		"tags", sharedaws.SpecTagsFromResourceMetadata(
-			r.Resource.Metadata,
 		),
 	)
 	if r.TracingEnabled {
@@ -223,13 +230,22 @@ func (e *awsServerlessEmitter) emit(
 
 	derivedValues := e.createDerivedValues(funcResourceName, handlerID, celerityRuntime, r)
 
+	// Covers the function and everything the handler emits around it including the event
+	// rule for a schedule, a consumer's fan-out queue and its dead-letter queue.
+	sharedaws.ApplyTags(resources, r.Resource.Metadata, sharedaws.Identity{
+		AppName:      shared.ResolveAppName(run),
+		ResourceName: r.Name,
+		ResourceType: "celerity/handler",
+	})
+
 	result := &transformutils.EmitResult{
 		Resources:     resources,
 		DerivedValues: derivedValues,
-		// No shared-parent contributions: the IAM role seed is complete (provider
-		// links inject per-link statements), and the layer seed carries its full
-		// compatibleRuntimes union.
-		SharedParentContributions: map[string]*core.MappingNode{},
+		// The IAM role and layer seeds are complete on their own: provider links
+		// inject the role's per-link statements, and the layer seed carries its
+		// full compatibleRuntimes union. A topic fan-out is the exception, needing
+		// a reference only this phase can resolve.
+		SharedParentContributions: topicFanoutContributions(r, resPropRewriter),
 		Diagnostics:               diagnostics,
 	}
 
@@ -281,6 +297,7 @@ func userConfigStoreEnv(r *ResolvedHandler) ([]awslambda.UserConfigStore, error)
 		}
 		stores = append(stores, awslambda.UserConfigStore{
 			EnvNamespace: wiring.EnvNamespace,
+			Namespace:    wiring.Namespace,
 			StoreID:      storeID,
 			Kind:         wiring.Kind,
 		})

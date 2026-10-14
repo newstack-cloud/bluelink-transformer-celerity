@@ -56,6 +56,34 @@ func (s *TransformTestSuite) Test_transforms_handler_into_lambda_function_with_e
 	s.Equal("aws/iam/role", role.Type.Value)
 }
 
+// The function carries Celerity's identity alongside the author's labels.
+func (s *TransformTestSuite) Test_lambda_function_carries_author_labels_and_celerity_identity() {
+	bp := oneHandlerBlueprint()
+	bp.Resources.Values["myHandler"].Metadata = &schema.Metadata{
+		Labels: &schema.StringMap{Values: map[string]string{"team": "payments"}},
+	}
+
+	out, err := NewTransformer(&shared.Dependencies{}).Transform(
+		context.Background(),
+		&transform.SpecTransformerTransformInput{
+			InputBlueprint:     bp,
+			LinkGraph:          emptyLinkGraph{},
+			TransformerContext: validationContext(),
+		},
+	)
+	s.Require().NoError(err)
+	s.Require().NotNil(out.TransformedBlueprint)
+
+	lambda := out.TransformedBlueprint.Resources.Values["myHandler_lambda_func"]
+	s.Require().NotNil(lambda)
+
+	tags := lambda.Spec.Fields["tags"]
+	s.Require().NotNil(tags, "the function must carry tags")
+	s.Equal("payments", specTagValue(tags, "team"), "author label")
+	s.Equal("myHandler", specTagValue(tags, "celerity:resource"), "identity: abstract resource")
+	s.Equal("celerity/handler", specTagValue(tags, "celerity:resource-type"), "identity: abstract type")
+}
+
 // Extracts the referenced resource name and property path
 // from a MappingNode holding a single ${resources.<name>.<path>} substitution.
 func (s *TransformTestSuite) resourcePropertyRef(node *core.MappingNode) (string, []string) {

@@ -173,6 +173,64 @@ func (s *ConsumerTransformTestSuite) Test_topic_consumer_emits_sns_sqs_fanout() 
 	s.Equal("true", dlq.Metadata.Labels.Values["celerity.consumer.topicPoll.topicConsumer"])
 }
 
+// The fan-out queue and its DLQ are the only resources emitted from a consumer
+// rather than from the handler that absorbed it, so they are the only ones that
+// can silently miss that consumer's labels. An author tag-allocating on "team"
+// would otherwise find holes behind every consumer while their own declared
+// queues tagged correctly.
+//
+// The generated poll label must stay out of the tags: it is wiring, it is set on
+// the emitted queue's own metadata, and tags are built from the abstract
+// consumer. That separation is what keeps internal labels out of a bill.
+func (s *ConsumerTransformTestSuite) Test_topic_fanout_queues_carry_consumer_labels_as_tags() {
+	const topicARN = "arn:aws:sns:us-east-1:123456789012:orders-topic"
+
+	handlerRes := &schema.Resource{
+		Type: &schema.ResourceTypeWrapper{Value: "celerity/handler"},
+		Spec: core.MappingNodeFields(
+			"handlerName", core.MappingNodeFromString("notifyHandler"),
+			"handler", core.MappingNodeFromString("handlers.notify"),
+			"runtime", core.MappingNodeFromString("nodejs24.x"),
+		),
+		Metadata: &schema.Metadata{
+			Annotations: annotationMap("celerity.handler.consumer", "true"),
+		},
+	}
+	consumerRes := &schema.Resource{
+		Type: &schema.ResourceTypeWrapper{Value: "celerity/consumer"},
+		Spec: core.MappingNodeFields(
+			"sourceId", core.MappingNodeFromString("celerity::topic::"+topicARN),
+		),
+		Metadata: &schema.Metadata{
+			Labels: &schema.StringMap{Values: map[string]string{"team": "payments"}},
+		},
+	}
+
+	resources := s.transform(
+		map[string]*schema.Resource{
+			"notifyHandler": handlerRes,
+			"topicConsumer": consumerRes,
+		},
+		edges(edge("topicConsumer", "notifyHandler", "celerity/consumer", "celerity/handler")),
+	)
+
+	for _, name := range []string{"topicConsumer_topic_queue", "topicConsumer_topic_dlq"} {
+		queue := resources[name]
+		s.Require().NotNil(queue, "expected %s to be emitted", name)
+
+		tags := queue.Spec.Fields["tags"]
+		s.Require().NotNil(tags, "%s must carry tags", name)
+		s.Equal("payments", specTagValue(tags, "team"),
+			"%s: the consumer's author label", name)
+		s.Equal("topicConsumer", specTagValue(tags, "celerity:resource"),
+			"%s: identity names the consumer, not the absorbing handler", name)
+		s.Equal("celerity/consumer", specTagValue(tags, "celerity:resource-type"),
+			"%s: identity: abstract type", name)
+		s.Empty(specTagValue(tags, "celerity.consumer.topicPoll.topicConsumer"),
+			"%s: the generated poll label is wiring and must not become a tag", name)
+	}
+}
+
 // celerity.consumer.deadLetterQueue = false suppresses the DLQ; a
 // deadLetterQueueMaxAttempts value drives the fan-out queue's redrive annotation.
 func (s *ConsumerTransformTestSuite) Test_topic_consumer_dead_letter_queue_toggle() {

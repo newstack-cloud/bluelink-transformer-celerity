@@ -64,7 +64,11 @@ type ResolvedHandler struct {
 	EventSource      EventSource
 	RoutingTag       string
 	HasRoutingTag    bool
-	VPCSubnetType    string
+	// RoutingKey is the message-body field the handler's consumer routes on, set
+	// only when this handler serves the whole consumer and so has to route the
+	// batch itself. Empty for a handler that serves one route.
+	RoutingKey    string
+	VPCSubnetType string
 	// What the handler may reach outside the VPC, empty when the author set no
 	// egress annotation anywhere in the cascade. Empty is passed through as absent
 	// rather than as a value, leaving the deploy target to resolve the reach from
@@ -89,10 +93,22 @@ type ResolvedHandler struct {
 	resourceLinksStorePath string
 }
 
-// hasResourceLinks reports whether the handler links to any backing resource whose
-// physical id is resolved at runtime through the internal resources config store.
+// hasResourceLinks reports whether the handler links to any backing resource
+// whose physical id is resolved at runtime through the internal resources config
+// store, which decides both the store env vars and the store-read grant.
+//
+// This must stay in step with the entries the store actually writes (see the
+// transformer package's addHandlerStoreEntries): a handler left out here but
+// written into the store gets no namespace and fails at cold start on
+// `Config namespace "resources" not registered`, which is how every cache-backed
+// handler was broken.
 func hasResourceLinks(r *ResolvedHandler) bool {
-	return len(r.Queues)+len(r.Topics)+len(r.Datastores)+len(r.Buckets) > 0
+	return len(r.Queues)+
+		len(r.Topics)+
+		len(r.Datastores)+
+		len(r.Buckets)+
+		len(r.Caches)+
+		len(r.SQLDatabases) > 0
 }
 
 func (h *ResolvedHandler) ResourceName() string {
@@ -355,6 +371,7 @@ func resolveInheritedSpec(
 	routingTag, hasRoutingTag := deriveRoutingTag(target, eventSource)
 	target.RoutingTag = routingTag
 	target.HasRoutingTag = hasRoutingTag
+	target.RoutingKey = deriveRoutingKey(target, routingTag, hasRoutingTag)
 
 	target.VPCSubnetType = deriveVPCSubnetType(target)
 	target.VPCEgress = deriveVPCEgress(target)
@@ -566,7 +583,76 @@ func eventSourceErr(handlerName, annotationKey, requires string) error {
 	)
 }
 
+// Returns the name of the message-body field the function reads
+// to pick a handler per message, taken from the owning consumer's
+// spec.routingKey. The emitter stamps it as CELERITY_ROUTING_KEY, and omits the
+// variable entirely when this is empty.
+//
+// Non-empty only for a function serving a whole consumer, identified by its
+// routing tag naming the consumer rather than one of its handlers, this is the shape
+// the merge step produces when it collapses a routed consumer's handlers into a
+// single resource. That is the only case with anything left to decide at
+// runtime: a function serving one route was already addressed by its tag, and
+// routing it again could only send the message somewhere its tag did not say.
+//
+// Empty in the three cases that are not that: a handler with no routing tag, a
+// schedule (tagged, but it has no consumer bindings to match), and a function
+// whose tag names one handler of a consumer.
+//
+// Defaults to "event" when the owning consumer set no routingKey, matching the
+// specification, so a consumer that declared handler routes still routes rather
+// than passing every message to the fallback handler.
+func deriveRoutingKey(
+	resolvedHandler *ResolvedHandler,
+	routingTag string,
+	hasRoutingTag bool,
+) string {
+	if !hasRoutingTag {
+		return ""
+	}
+
+	for _, binding := range resolvedHandler.ConsumerBindings {
+		if binding.ConsumerName != routingTag {
+			continue
+		}
+
+		node, ok := pluginutils.GetValueByPath("$.routingKey", consumerSpec(binding))
+		if ok && node != nil && core.StringValue(node) != "" {
+			return core.StringValue(node)
+		}
+		return defaultConsumerRoutingKey
+	}
+
+	return ""
+}
+
+// Returns the tag a deployed function needs to find its own
+// handler at runtime, and whether it has one.
+//
+// The SDK emits the registry key it registered under as celerity.handler.tag,
+// and that is what a consumer or schedule function is stamped with. Deriving the
+// key here instead would mean this side guessing at the composition rule the SDK
+// applies, in every language it supports.
+//
+// The consumer route is kept as a fallback for handlers extracted before the tag
+// annotation existed and for blueprint-first handlers that declare a route by
+// hand. It only ever applied to consumers: a schedule handler was given no tag at
+// all, so the runtime fell back to matching on the rule that fired, which is not
+// a key anything is registered under, and the handler never ran.
 func deriveRoutingTag(resolvedHandler *ResolvedHandler, eventSource EventSource) (string, bool) {
+	if eventSource != EventSourceConsumer && eventSource != EventSourceSchedule {
+		return "", false
+	}
+
+	tag, ok := transformutils.GetAnnotation(
+		resolvedHandler.Resource,
+		AnnotationKeyHandlerTag,
+		"",
+	)
+	if ok && core.StringValue(tag) != "" {
+		return core.StringValue(tag), true
+	}
+
 	if eventSource != EventSourceConsumer {
 		return "", false
 	}

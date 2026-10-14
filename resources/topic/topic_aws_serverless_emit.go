@@ -36,7 +36,7 @@ const (
 
 func emitTopic(
 	_ context.Context,
-	_ *transformutils.Run,
+	run *transformutils.Run,
 	r *ResolvedTopic,
 	rw transformutils.ResourcePropertyRewriter,
 ) (*transformutils.EmitResult, error) {
@@ -44,6 +44,15 @@ func emitTopic(
 
 	nameNode, _ := pluginutils.GetValueByPath("$.name", r.Resource.Spec)
 	fifoNode, _ := pluginutils.GetValueByPath("$.fifo", r.Resource.Spec)
+
+	if diagnostics := shared.DeferredValueErrors(
+		shared.AWSServerless,
+		"topic", r.Name, r.Resource,
+		shared.StructuralField{Name: "fifo", Value: fifoNode},
+	); len(diagnostics) > 0 {
+		return &transformutils.EmitResult{Diagnostics: diagnostics}, nil
+	}
+
 	fifo := core.BoolValue(fifoNode)
 
 	if topicNameNode := physicalTopicName(nameNode, fifo); topicNameNode != nil {
@@ -56,7 +65,11 @@ func emitTopic(
 		spec.Fields["kmsMasterKeyId"] = kms
 	}
 	// aws/sns/topic.tags is a list of {key, value} objects.
-	if tags := sharedaws.SpecTagsFromResourceMetadata(r.Resource.Metadata); tags != nil {
+	if tags := sharedaws.SpecTagsFor(r.Resource.Metadata, sharedaws.Identity{
+		AppName:      shared.ResolveAppName(run),
+		ResourceName: r.Name,
+		ResourceType: "celerity/topic",
+	}); tags != nil {
 		spec.Fields["tags"] = tags
 	}
 

@@ -56,6 +56,35 @@ func (s *VPCTransformTestSuite) Test_managed_vpc_emits_a_create_mode_flex_vpc() 
 	s.Equal("infrastructure", annotationLiteral(flex.Metadata.Annotations, transformutils.AnnotationResourceCategory))
 }
 
+// The name is carried through as written so it can come from a variable. Read
+// with core.StringValue it resolved to an empty string, and the flex VPC was
+// emitted with name: "", which in reference mode identifies nothing.
+//
+// The per-VPC deploy-config key falls back to the resource name, since that
+// lookup happens before the reference can be resolved.
+func (s *VPCTransformTestSuite) Test_name_set_from_a_variable_is_carried_through() {
+	nameRef, err := shared.SubstitutionMappingNode("${variables.networkName}")
+	s.Require().NoError(err)
+
+	v := &schema.Resource{
+		Type: &schema.ResourceTypeWrapper{Value: "celerity/vpc"},
+		Spec: core.MappingNodeFields("name", nameRef),
+	}
+	ctx := deployConfigContext(map[string]*core.ScalarValue{
+		"aws.region":              core.ScalarFromString("eu-west-1"),
+		"aws.vpc.myVpc.cidrBlock": core.ScalarFromString("10.9.0.0/16"),
+	})
+
+	flex := s.transformVPC(map[string]*schema.Resource{"myVpc": v}, ctx)["myVpc_flex_vpc"]
+	s.Require().NotNil(flex)
+	s.Require().NotNil(
+		flex.Spec.Fields["name"].StringWithSubstitutions,
+		"the name reaches the provider as a reference",
+	)
+	s.Equal("10.9.0.0/16", core.StringValue(flex.Spec.Fields["cidrBlock"]),
+		"the per-VPC deploy-config key falls back to the resource name")
+}
+
 func (s *VPCTransformTestSuite) Test_managed_vpc_defaults_preset_and_cidr() {
 	v := &schema.Resource{
 		Type: &schema.ResourceTypeWrapper{Value: "celerity/vpc"},
@@ -519,4 +548,30 @@ func (s *VPCTransformTestSuite) transformVPC(
 	s.Require().NoError(err)
 	s.Require().NotNil(out.TransformedBlueprint)
 	return out.TransformedBlueprint.Resources.Values
+}
+
+// Everything in a deployment sits inside the VPC and links out of it, so those
+// links describe the environment rather than the application. The VPC declares
+// that here, as data, rather than every tool presenting a deployment having to
+// know which abstract types behave this way.
+func (s *VPCTransformTestSuite) Test_the_vpc_declares_itself_ambient() {
+	v := &schema.Resource{
+		Type: &schema.ResourceTypeWrapper{Value: "celerity/vpc"},
+		Spec: core.MappingNodeFields(
+			"name", core.MappingNodeFromString("app-network"),
+			"preset", core.MappingNodeFromString("isolated"),
+		),
+	}
+	ctx := deployConfigContext(map[string]*core.ScalarValue{
+		"aws.region":        core.ScalarFromString("eu-west-1"),
+		"aws.vpc.cidrBlock": core.ScalarFromString("10.1.0.0/16"),
+	})
+
+	flex := s.transformVPC(map[string]*schema.Resource{"myVpc": v}, ctx)["myVpc_flex_vpc"]
+
+	s.Require().NotNil(flex)
+	s.Equal(
+		transformutils.ResourceRoleAmbient,
+		annotationLiteral(flex.Metadata.Annotations, transformutils.AnnotationResourceRole),
+	)
 }
