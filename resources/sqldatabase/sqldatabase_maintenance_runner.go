@@ -222,19 +222,22 @@ func maintenanceRunnerCode(
 		), nil
 	}
 
-	return core.MappingNodeFields(
-			"s3Bucket", core.MappingNodeFromString("placeholder-bucket"),
-			"s3Key", core.MappingNodeFromString("placeholder-key"),
-		), []*core.Diagnostic{{
-			Level: core.DiagnosticLevelWarning,
-			Message: fmt.Sprintf(
-				"no maintenance runner artefact in the build manifest for celerity/sqlDatabase %q; "+
-					"the runner is emitted with a placeholder code location that cannot deploy, and "+
-					"the application database user cannot be provisioned without it. "+
-					"Run \"celerity build\" (validation and a dry run/plan are still valid)",
-				in.name),
-			Range: shared.DiagnosticRange(shared.ResourceMeta(r.Resource)),
-		}}
+	placeholder := core.MappingNodeFields(
+		"s3Bucket", core.MappingNodeFromString("placeholder-bucket"),
+		"s3Key", core.MappingNodeFromString("placeholder-key"),
+	)
+	missingArtefact := &core.Diagnostic{
+		Level: core.DiagnosticLevelWarning,
+		Message: fmt.Sprintf(
+			"no maintenance runner artefact in the build manifest for celerity/sqlDatabase %q; "+
+				"the runner is emitted with a placeholder code location that cannot deploy, and "+
+				"the application database user cannot be provisioned without it. "+
+				"Run \"celerity build\" (validation and a dry run/plan are still valid)",
+			in.name),
+		Range: shared.DiagnosticRange(shared.ResourceMeta(r.Resource)),
+	}
+
+	return placeholder, []*core.Diagnostic{missingArtefact}
 }
 
 // maintenanceTargetsEnv builds the runner's target configuration.
