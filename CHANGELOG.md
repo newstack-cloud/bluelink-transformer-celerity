@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.3.0] - 2026-10-14
+
+### Features
+
+- Wire cache and SQL database access for handlers([e42bf72](https://github.com/newstack-cloud/bluelink-transformer-celerity/commit/e42bf729c8bb88c4a48cf691ff2995ace54865ee))
 ## [0.2.0] - 2026-08-07
 
 ### Features
