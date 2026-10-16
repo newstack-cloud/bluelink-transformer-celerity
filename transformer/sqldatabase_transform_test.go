@@ -279,7 +279,7 @@ func (s *SQLDatabaseTransformTestSuite) Test_aurora_serverless_v2_emits_cluster_
 		),
 		map[string]*core.ScalarValue{
 			"aws.aurora.orders.enabled": core.ScalarFromBool(true),
-			"aws.aurora.orders.maxACU":  core.ScalarFromInt(16),
+			"aws.aurora.orders.maxACU":  core.ScalarFromFloat(16),
 		},
 		map[string]string{"app": "orders"},
 	)
@@ -292,8 +292,13 @@ func (s *SQLDatabaseTransformTestSuite) Test_aurora_serverless_v2_emits_cluster_
 	scaling := cluster.Spec.Fields["serverlessV2ScalingConfiguration"]
 	s.Require().NotNil(scaling)
 	s.Require().NotNil(scaling.Fields["minCapacity"])
-	// maxACU deploy-config override lands on the provider's maxCapacity field.
-	s.Equal(16, core.IntValue(scaling.Fields["maxCapacity"]), "maxACU deploy-config override applied")
+	// The provider declares minCapacity/maxCapacity as floats, and the engine
+	// normalises a whole number authored for the key before the transform sees it.
+	s.Equal(
+		float64(16),
+		core.FloatValue(scaling.Fields["maxCapacity"]),
+		"maxACU deploy-config override applied",
+	)
 	// Handlers link to the cluster (Aurora built-in pooling), so it keeps labels.
 	s.Equal("orders", cluster.Metadata.Labels.Values["app"])
 
@@ -321,6 +326,72 @@ func (s *SQLDatabaseTransformTestSuite) Test_read_replicas_emit_a_reader_instanc
 	s.Equal("aws/rds/dbInstance", reader.Type.Value)
 	s.Equal("orders-reader", core.StringValue(reader.Spec.Fields["dbInstanceIdentifier"]))
 	s.Require().NotNil(reader.Spec.Fields["sourceDBInstanceIdentifier"], "reader replicates the primary")
+}
+
+// A provisioned database is otherwise pinned to db.t3.micro with 20 GiB. The
+// resource specifications document overrides for both, and nothing read them.
+func (s *SQLDatabaseTransformTestSuite) Test_rds_deploy_config_overrides_the_instance_defaults() {
+	out := s.transformDBWithConfig(
+		core.MappingNodeFields(
+			"name", core.MappingNodeFromString("orders"),
+			"engine", core.MappingNodeFromString("postgres"),
+		),
+		map[string]*core.ScalarValue{
+			"aws.rds.orders.instanceClass":    core.ScalarFromString("db.r6g.large"),
+			"aws.rds.orders.allocatedStorage": core.ScalarFromInt(200),
+		},
+		map[string]string{"app": "orders"},
+	)
+
+	instance := out.TransformedBlueprint.Resources.Values["myDb_rds_instance"]
+	s.Require().NotNil(instance)
+	s.Equal("db.r6g.large", core.StringValue(instance.Spec.Fields["dbInstanceClass"]))
+	// The provider's allocatedStorage is a string, so a number authored in deploy
+	// config is rendered as one.
+	s.Equal("200", core.StringValue(instance.Spec.Fields["allocatedStorage"]))
+}
+
+func (s *SQLDatabaseTransformTestSuite) Test_rds_instance_defaults_apply_without_deploy_config() {
+	out := s.transformDBWithVPC(
+		core.MappingNodeFields(
+			"name", core.MappingNodeFromString("orders"),
+			"engine", core.MappingNodeFromString("postgres"),
+		),
+		"standard",
+		nil,
+	)
+
+	instance := out.TransformedBlueprint.Resources.Values["myDb_rds_instance"]
+	s.Require().NotNil(instance)
+	s.Equal("db.t3.micro", core.StringValue(instance.Spec.Fields["dbInstanceClass"]))
+	s.Equal("20", core.StringValue(instance.Spec.Fields["allocatedStorage"]))
+}
+
+// The reader takes its own override, so a replica can be sized independently of
+// the primary.
+func (s *SQLDatabaseTransformTestSuite) Test_read_replica_instance_class_override() {
+	out := s.transformDBWithConfig(
+		core.MappingNodeFields(
+			"name", core.MappingNodeFromString("orders"),
+			"engine", core.MappingNodeFromString("postgres"),
+			"readReplicas", core.MappingNodeFromBool(true),
+		),
+		map[string]*core.ScalarValue{
+			"aws.rds.orders.instanceClass":              core.ScalarFromString("db.r6g.large"),
+			"aws.rds.orders.readReplicas.instanceClass": core.ScalarFromString("db.t4g.medium"),
+		},
+		map[string]string{"app": "orders"},
+	)
+	resources := out.TransformedBlueprint.Resources.Values
+
+	s.Equal(
+		"db.r6g.large",
+		core.StringValue(resources["myDb_rds_instance"].Spec.Fields["dbInstanceClass"]),
+	)
+	s.Equal(
+		"db.t4g.medium",
+		core.StringValue(resources["myDb_rds_reader"].Spec.Fields["dbInstanceClass"]),
+	)
 }
 
 func (s *SQLDatabaseTransformTestSuite) Test_outputs_resolve_to_concrete_computed_attributes() {

@@ -1,8 +1,6 @@
 package transformer
 
 import (
-	"maps"
-
 	"github.com/newstack-cloud/bluelink-transformer-celerity/links"
 	"github.com/newstack-cloud/bluelink-transformer-celerity/resources/api"
 	"github.com/newstack-cloud/bluelink-transformer-celerity/resources/bucket"
@@ -98,10 +96,7 @@ func abstractLinks() map[string]*transformerv1.AbstractLinkDefinition {
 }
 
 func configDefinition() *core.ConfigDefinition {
-	fields := map[string]*core.ConfigFieldDefinition{}
-	maps.Copy(fields, aws.TransformerConfigFields())
-
 	return &core.ConfigDefinition{
-		Fields: fields,
+		Fields: aws.AllTransformerConfigFields(),
 	}
 }

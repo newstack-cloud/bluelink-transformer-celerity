@@ -8,7 +8,7 @@ This document places all thirteen Celerity abstract resources on one map: for ea
 
 Where a mapping is specified in depth elsewhere (handler, config store, VPC), this document states it compactly and links out rather than duplicating.
 
-> **Implementation status (2026-07):** emits exist for **all thirteen** abstract resources. `celerity/handler`, `celerity/config`, `celerity/queue`, `celerity/topic`, `celerity/datastore`, `celerity/bucket` (partial — `lifecycle`/`replication` deferred), `celerity/vpc`, and now `celerity/api`, `celerity/consumer`, `celerity/schedule`, `celerity/cache` and `celerity/sqlDatabase` all emit; `celerity/handlerConfig` is complete (contributory-only: inheritance + strip, §C). The handler→backing-target links are established generically by preserving the handler's `linkSelector` onto the emitted Lambda, and the handler now carries the **union of its own labels and each absorbed consumer's labels** so an inbound source/api/subscription link that selected the abstract consumer/handler by label resolves to the concrete function (label-on-source; [`handler_aws_triggers.go`](../../resources/handler/handler_aws_triggers.go), [`handler_api_annotations.go`](../../resources/handler/handler_api_annotations.go)). **Deploy-target config (`aws.<svc>.*`) is wired for `queue`, `datastore`, and `sqlDatabase`/Aurora (`aws.aurora.<db>.*`)** via the shared resolver `shared/aws.ResolveDeployConfig` (per-resource-over-global precedence, §2.1); **`topic` and `bucket` deploy-config are deferred** (topic pending the `archivePolicy`/indexed-`statusLogging` shape; bucket's `replication.role` lands with the deferred `replication` block). **Still deferred within otherwise-implemented slices:** API stage **X-Ray tracing** (`tracingEnabled`, an API Gateway v2 platform limitation — handler-level Lambda tracing is wired instead), consumer **externalEvents on out-of-blueprint object storage**, and per-target **access-level annotations** on backing-target handler links. This document is therefore both a *contract* (what the mapping must be) and a *gap register* (what is not yet built). Per-resource "Status" notes and the [Gaps & build sequencing](#gaps--build-sequencing) appendix track the delta.
+> **Implementation status (2026-07):** emits exist for **all thirteen** abstract resources. `celerity/handler`, `celerity/config`, `celerity/queue`, `celerity/topic`, `celerity/datastore`, `celerity/bucket` (partial — `lifecycle`/`replication` deferred), `celerity/vpc`, and now `celerity/api`, `celerity/consumer`, `celerity/schedule`, `celerity/cache` and `celerity/sqlDatabase` all emit; `celerity/handlerConfig` is complete (contributory-only: inheritance + strip, §C). The handler→backing-target links are established generically by preserving the handler's `linkSelector` onto the emitted Lambda, and the handler now carries the **union of its own labels and each absorbed consumer's labels** so an inbound source/api/subscription link that selected the abstract consumer/handler by label resolves to the concrete function (label-on-source; [`handler_aws_triggers.go`](../../resources/handler/handler_aws_triggers.go), [`handler_api_annotations.go`](../../resources/handler/handler_api_annotations.go)). **Deploy-target config (`aws.<svc>.*`) is wired for `queue`, `datastore`, `vpc`, `cache` (`aws.elasticache.<cacheName>.*`) and `sqlDatabase` (`aws.rds.<dbName>.*` and `aws.aurora.<dbName>.*`)** via the shared resolver `shared/aws.ResolveDeployConfig` (per-resource-over-global precedence, §2.1); **`topic` and `bucket` deploy-config are deferred** (topic pending the `archivePolicy`/indexed-`statusLogging` shape; bucket's `replication.role` lands with the deferred `replication` block). **Still deferred within otherwise-implemented slices:** API stage **X-Ray tracing** (`tracingEnabled`, an API Gateway v2 platform limitation — handler-level Lambda tracing is wired instead), consumer **externalEvents on out-of-blueprint object storage**, and per-target **access-level annotations** on backing-target handler links. This document is therefore both a *contract* (what the mapping must be) and a *gap register* (what is not yet built). Per-resource "Status" notes and the [Gaps & build sequencing](#gaps--build-sequencing) appendix track the delta.
 
 ---
 
@@ -301,7 +301,7 @@ The absorbing handler emits the rule; its `targets[].arn` reference to the handl
 Two provisioning shapes:
 
 - **Standalone RDS** (default): `aws/rds/dbInstance` fronted by `aws/rds/dbProxy` (Lambda pooling) + `aws/iam/role` + `aws/rds/dbProxyTargetGroup`, on `aws/rds/dbSubnetGroup`.
-- **Aurora Serverless v2** (`aws.aurora.<db>.enabled`): `aws/rds/dbCluster` (`engine=aurora-postgresql`/`aurora-mysql`, `serverlessV2ScalingConfiguration.{minCapacity,maxCapacity}` from `aws.aurora.<db>.{minCapacity,maxCapacity}` defaulting 0.5/4.0, `manageMasterUserPassword`→`masterUserSecret`) + `db.serverless` writer instance. **No proxy.**
+- **Aurora Serverless v2** (`aws.aurora.<db>.enabled`): `aws/rds/dbCluster` (`engine=aurora-postgresql`/`aurora-mysql`, `serverlessV2ScalingConfiguration.{minCapacity,maxCapacity}` from `aws.aurora.<db>.{minACU,maxACU}` (spec vocabulary) defaulting 0.5/8.0, `manageMasterUserPassword`→`masterUserSecret`) + `db.serverless` writer instance. **No proxy.**
 
 | celerity | concrete |
 |---|---|
@@ -353,6 +353,94 @@ Backend is **derived from `plaintext`**: empty ⇒ one `aws/secretsmanager/secre
 ---
 
 ## Gaps & build sequencing
+
+### A0. Deploy-config keys: specified versus read (2026-10-16)
+
+The resource specifications in `celerity-docs-v2` are the contract for
+`deployTarget.config`, and they are a clean source of truth: their **AWS
+Configuration Options** sections contain deploy-target config and nothing else.
+No link annotation key appears in them anywhere. Reconciled by set difference,
+every key the emits read is a specified key, so nothing has drifted or been
+invented.
+
+| | |
+|---|---|
+| Specified across the resource specs | **44** distinct keys (52 headings; the pairs are the per-resource and app-wide shapes) |
+| Read, declared and routed | **22** |
+| Specified but unread | **22** |
+
+An unread key is **rejected, not ignored**: the transformer's config definition
+does not set `AllowAdditionalFields`, so `core.ValidateConfigDefinition` reports
+an undeclared key as an error and the engine returns 422. This register exists so
+the unread half is not rediscovered as a bug by someone following the specs.
+
+Declaration lives in `shared/aws/config_definition_resources.go`, beside the
+`ResolveDeployConfig` call sites that read each key. The CLI's
+`transformerConfigPrefixes` decides only which plugin receives a key, never
+whether it is valid.
+
+**The one unautomated edge, and why this section drifted.** Four statements of
+this surface exist, and only one of the links between them is unchecked:
+
+| Statement | Kept in step by |
+|---|---|
+| Implementation, the `ResolveDeployConfig` call sites | The truth |
+| Declaration, `shared/aws/config_definition_resources.go` | Sits beside the call sites; a test reconciles the two |
+| Bluelink Registry plugin docs | **Generated** from the declaration by `plugin-docgen` on every release (`.github/workflows/release.yaml`, via `ConfigDefinition()`) |
+| `celerity-docs-v2` resource specifications | **Nothing. Hand-written prose** |
+
+So the drift is not between the implementation and the declaration, nor between
+the declaration and the Registry. It is the declaration against the public
+specifications, which is also the document authors actually read, which is why
+the gap presented as though everything were out of sync.
+
+The docgen JSON already carries every declared key with its type, label and
+description, and `celerity-docs-v2` has a build pipeline that consumes none of
+it. Closing the edge (a CI check diffing the spec headings against that JSON, or
+generating those sections from it) is **recorded here and not yet decided**. Until
+it is, the **read and declared** list below is a hand-maintained snapshot of a
+machine-derivable fact and will go stale the way the CLI prefix list did. The
+**specified but unread** table is the half that genuinely cannot be generated,
+because each row carries an editorial reason.
+
+**Read and declared** (22 keys, each in both shapes):
+`aws.sqs.<queue>.{messageRetentionPeriod,maxMessageSize}`;
+`aws.dynamodb.<datastoreName>.{billingMode,readCapacityUnits,writeCapacityUnits,maxReadRequestUnits,maxWriteRequestUnits}`;
+`aws.vpc.<vpc>.{cidrBlock,enableDNSSupport,enableDNSHostnames}`;
+`aws.rds.<dbName>.{instanceClass,allocatedStorage,readReplicas.instanceClass}`;
+`aws.aurora.<dbName>.{enabled,minACU,maxACU}`;
+`aws.elasticache.<cacheName>.{nodeType,numShards,numReplicas,automaticFailover,atRestEncryption,snapshotRetentionDays}`.
+
+**Specified but unread** (22 keys). The emit produces nothing these could set, so
+wiring one would have nothing to write to. Each needs its feature first.
+
+| Keys | Blocked on |
+|---|---|
+| `aws.rds.<dbName>.{engineVersion,multiAz,storageType,backupRetentionPeriod}` | Not emitted on the provisioned instance at all |
+| `aws.rds.<dbName>.readReplicas.{count,regions,storageType}` | One reader is emitted rather than a count; cross-region replicas and replica storage unimplemented |
+| `aws.aurora.<dbName>.reader.{minACU,maxACU}` | **May not be expressible.** `serverlessV2ScalingConfiguration` is a cluster-level setting and the emit sets one for the whole cluster, so a separate reader range has nowhere to go. Settle the shape before promising it |
+| `aws.dynamodb.<datastoreName>.replicaRegions` | Global tables |
+| `aws.config.{replicateRegions,regionKMSKeys.<region>}` | Multi-region config replication. The `aws.config.` prefix is also unrouted in the CLI |
+| `aws.elasticache.<cacheName>.evictionPolicy` | No parameter-group emit to carry it |
+| `aws.s3[.<bucketName>].replication.role` | Lands with the deferred `replication` block |
+| `aws.sns.fifo[.<topic>].messageRetentionPeriod`, `aws.sns[.<topic>].statusLogging.<index>.{protocol,successFeedbackRoleArn,failureFeedbackRoleArn,successFeedbackSampleRate}` | Topic deploy-config. Also needs `ResolveDeployConfig` to grow an indexed-collection variant, where the per-resource form overrides the app-wide one **by index** rather than wholesale |
+| `aws.workflow.dynamodb.{capacityMode,readCapacityUnits,writeCapacityUnits}` | `celerity/workflow` is not a registered abstract resource. The `aws.workflow.` prefix is also unrouted |
+
+**Annotations are a separate mechanism, documented separately.** The
+`aws.lambda.<svc>.<target>.*`, `aws.apigatewayv2.*`, `aws.sqs.lambda.*` and
+`aws.flexvpc.lambda.*` keys elsewhere in this document are **link annotations**
+stamped on resource metadata for the provider's links to consume. They are not
+deploy config, they take no declaration in a config definition, and they
+correctly appear nowhere in the resource specifications. Do not reconcile the two
+lists against each other.
+
+**Four routed prefixes match nothing specified.** `aws.lambda.`,
+`aws.apigateway.`, `aws.ecs.` and `aws.eks.` are in the CLI's
+`transformerConfigPrefixes` but no specification documents a deploy-config key
+under any of them, and no emit reads one. They are speculative entries rather
+than deferred surfaces, and are removal candidates. `aws.lambda.<handlerName>.runtime`
+is the one future key in this space, flagged in `celerity-handler.mdx` as planned
+for v1 and deliberately not in an AWS Configuration Options section.
 
 ### A. Missing provider links (abstract edge with no concrete counterpart)
 

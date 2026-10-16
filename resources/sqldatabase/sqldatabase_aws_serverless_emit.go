@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"maps"
+	"strconv"
 
 	"github.com/newstack-cloud/bluelink-transformer-celerity/resources/vpc"
 	"github.com/newstack-cloud/bluelink-transformer-celerity/shared"
@@ -262,9 +263,7 @@ func buildDatabaseResources(
 	// On Aurora an additional db.serverless reader in the cluster; on standalone
 	// RDS a read replica of the primary instance.
 	if plan.readReplicas {
-		resources[readerResourceName(r.Name)] = buildReaderInstance(
-			r, plan.engine, plan.physicalName, plan.auroraEnabled, plan.labels,
-		)
+		resources[readerResourceName(r.Name)] = buildReaderInstance(r, run, plan)
 	}
 
 	// The application authenticates as its own database user rather than the
@@ -302,9 +301,7 @@ func addTopologyResources(
 		return nil
 	}
 
-	resources[instanceResourceName(r.Name)] = buildStandaloneInstance(
-		r, plan.name, plan.engine, plan.physicalName, plan.vpcRefs, plan.labels,
-	)
+	resources[instanceResourceName(r.Name)] = buildStandaloneInstance(r, run, plan)
 	proxyResources, err := buildProxyResources(
 		r, plan.name, plan.engine, plan.physicalName, plan.vpcRefs, plan.labels,
 	)
@@ -493,17 +490,17 @@ func resolveVPCRefs(
 // computed masterUserSecret); iam mode -> IAM database authentication.
 func buildStandaloneInstance(
 	r *ResolvedSQLDatabase,
-	name, engine string,
-	physicalName *core.MappingNode,
-	vpcRefs *vpcReferences,
-	labels *schema.StringMap,
+	run *transformutils.Run,
+	plan *sqlDatabasePlan,
 ) *schema.Resource {
+	name, engine := plan.name, plan.engine
+	physicalName, vpcRefs, labels := plan.physicalName, plan.vpcRefs, plan.labels
 	spec := core.MappingNodeFields(
 		"dbInstanceIdentifier", physicalName,
 		"dbName", core.MappingNodeFromString(name),
 		"engine", core.MappingNodeFromString(engine),
-		"dbInstanceClass", core.MappingNodeFromString(defaultInstanceClass),
-		"allocatedStorage", core.MappingNodeFromString(fmt.Sprintf("%d", defaultAllocatedStorage)),
+		"dbInstanceClass", rdsInstanceClass(run, name, "instanceClass"),
+		"allocatedStorage", rdsAllocatedStorage(run, name),
 		"masterUsername", core.MappingNodeFromString(defaultMasterUsername),
 	)
 	applyInstanceAuth(spec, r)
@@ -592,11 +589,11 @@ func buildAuroraInstance(
 // RDS it is a read replica of the primary instance.
 func buildReaderInstance(
 	r *ResolvedSQLDatabase,
-	engine string,
-	physicalName *core.MappingNode,
-	auroraEnabled bool,
-	labels *schema.StringMap,
+	run *transformutils.Run,
+	plan *sqlDatabasePlan,
 ) *schema.Resource {
+	name, engine, physicalName := plan.name, plan.engine, plan.physicalName
+	auroraEnabled, labels := plan.auroraEnabled, plan.labels
 	readerID := shared.DerivedName(physicalName, "-reader")
 	var spec *core.MappingNode
 	if auroraEnabled {
@@ -610,7 +607,7 @@ func buildReaderInstance(
 		spec = core.MappingNodeFields(
 			"dbInstanceIdentifier", readerID,
 			"sourceDBInstanceIdentifier", instanceRef(r.Name, "dbInstanceIdentifier"),
-			"dbInstanceClass", core.MappingNodeFromString(defaultInstanceClass),
+			"dbInstanceClass", rdsInstanceClass(run, name, "readReplicas.instanceClass"),
 		)
 	}
 	meta := infraMeta(r.Name)
@@ -814,11 +811,42 @@ func applyInstanceAuth(spec *core.MappingNode, r *ResolvedSQLDatabase) {
 	}
 }
 
+func rdsInstanceClass(run *transformutils.Run, name, suffix string) *core.MappingNode {
+	if node := deployConfigNode(run, "aws.rds", name, suffix); node != nil {
+		if class := core.StringValue(node); class != "" {
+			return core.MappingNodeFromString(class)
+		}
+	}
+
+	return core.MappingNodeFromString(defaultInstanceClass)
+}
+
+// The provider's allocatedStorage field is a string, while the key is authored as
+// a number.
+func rdsAllocatedStorage(run *transformutils.Run, name string) *core.MappingNode {
+	storage := defaultAllocatedStorage
+	if node := deployConfigNode(run, "aws.rds", name, "allocatedStorage"); node != nil {
+		if node.Scalar != nil && node.Scalar.IntValue != nil {
+			storage = *node.Scalar.IntValue
+		}
+	}
+
+	return core.MappingNodeFromString(strconv.Itoa(storage))
+}
+
 func auroraConfig(run *transformutils.Run, name, suffix string) *core.MappingNode {
+	return deployConfigNode(run, "aws.aurora", name, suffix)
+}
+
+func deployConfigNode(
+	run *transformutils.Run,
+	prefix, name, suffix string,
+) *core.MappingNode {
 	if run == nil {
 		return nil
 	}
-	node, _ := sharedaws.ResolveDeployConfigNode(run.TransformContext, "aws.aurora", name, suffix)
+
+	node, _ := sharedaws.ResolveDeployConfigNode(run.TransformContext, prefix, name, suffix)
 	return node
 }
 
@@ -826,6 +854,7 @@ func auroraCapacity(run *transformutils.Run, name, suffix string, fallback float
 	if node := auroraConfig(run, name, suffix); node != nil {
 		return node
 	}
+
 	return core.MappingNodeFromFloat(fallback)
 }
 
