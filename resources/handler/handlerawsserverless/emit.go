@@ -1,0 +1,567 @@
+package handlerawsserverless
+
+import (
+	"context"
+	"fmt"
+	"maps"
+
+	"github.com/newstack-cloud/bluelink-transformer-celerity/resources/config/configaws"
+	"github.com/newstack-cloud/bluelink-transformer-celerity/resources/handler"
+	"github.com/newstack-cloud/bluelink-transformer-celerity/shared"
+	sharedaws "github.com/newstack-cloud/bluelink-transformer-celerity/shared/aws"
+	"github.com/newstack-cloud/bluelink-transformer-celerity/shared/awslambda"
+	"github.com/newstack-cloud/bluelink-transformer-celerity/shared/build"
+	"github.com/newstack-cloud/bluelink/libs/blueprint/core"
+	"github.com/newstack-cloud/bluelink/libs/blueprint/schema"
+	"github.com/newstack-cloud/bluelink/libs/blueprint/subwalk"
+	"github.com/newstack-cloud/bluelink/libs/plugin-framework/sdk/pluginutils"
+	"github.com/newstack-cloud/bluelink/libs/plugin-framework/sdk/transformutils"
+)
+
+type emitter struct {
+	buildManifestLoader build.ManifestLoader
+}
+
+func newEmitter(deps *shared.Dependencies) *emitter {
+	return &emitter{
+		buildManifestLoader: deps.BuildManifestLoader,
+	}
+}
+
+func (e *emitter) emit(
+	ctx context.Context,
+	run *transformutils.Run,
+	r *handler.ResolvedHandler,
+	resPropRewriter transformutils.ResourcePropertyRewriter,
+) (*transformutils.EmitResult, error) {
+	basis, blocked, err := e.resolveFunctionBasis(run, r)
+	if err != nil {
+		return nil, err
+	}
+	if blocked != nil {
+		return &transformutils.EmitResult{Diagnostics: []*core.Diagnostic{blocked}}, nil
+	}
+
+	spec, err := e.buildFunctionSpec(run, r, basis)
+	if err != nil {
+		return nil, err
+	}
+
+	lambdaResource := functionResource(r, subwalk.WalkMappingNode(
+		spec, transformutils.RewriteResourcePropertyRefs(resPropRewriter),
+	))
+	funcResourceName := lambdaFuncResourceName(r.Name)
+
+	diagnostics, err := stampLinkAnnotations(r, run, lambdaResource)
+	if err != nil {
+		return nil, err
+	}
+	diagnostics = append(diagnostics, basis.deferredDiagnostics()...)
+
+	resources, triggerDiagnostics, err := emitTriggerResources(
+		r, run, funcResourceName, lambdaResource, resPropRewriter,
+	)
+	if err != nil {
+		return nil, err
+	}
+	diagnostics = append(diagnostics, triggerDiagnostics...)
+
+	// Covers the function and everything the handler emits around it including the event
+	// rule for a schedule, a consumer's fan-out queue and its dead-letter queue.
+	sharedaws.ApplyTags(resources, r.Resource.Metadata, sharedaws.Identity{
+		AppName:      shared.ResolveAppName(run),
+		ResourceName: r.Name,
+		ResourceType: "celerity/handler",
+	})
+
+	return &transformutils.EmitResult{
+		Resources: resources,
+		DerivedValues: e.createDerivedValues(
+			funcResourceName, basis.handlerID, basis.celerityRuntime, r,
+		),
+		// The IAM role and layer seeds are complete on their own: provider links
+		// inject the role's per-link statements, and the layer seed carries its
+		// full compatibleRuntimes union. A topic fan-out is the exception, needing
+		// a reference only this phase can resolve.
+		SharedParentContributions: topicFanoutContributions(r, resPropRewriter),
+		Diagnostics:               diagnostics,
+	}, nil
+}
+
+// functionBasis is what the function's spec is built from, resolved before any
+// of it is assembled because each part can block the emit on its own.
+type functionBasis struct {
+	name            *core.MappingNode
+	handlerID       *core.MappingNode
+	celerityRuntime *core.MappingNode
+	runtime         string
+	memory          *core.MappingNode
+	timeout         *core.MappingNode
+	code            *codeLocationInfo
+	envInput        *awslambda.EnvInput
+	isValidationCtx bool
+	// codeDiagnostic and layerDiagnostic warn without blocking, so they are
+	// carried to the end rather than returned early.
+	codeDiagnostic  *core.Diagnostic
+	layerDiagnostic *core.Diagnostic
+}
+
+func (b *functionBasis) deferredDiagnostics() []*core.Diagnostic {
+	diagnostics := []*core.Diagnostic{}
+	if b.codeDiagnostic != nil {
+		diagnostics = append(diagnostics, b.codeDiagnostic)
+	}
+	if b.layerDiagnostic != nil {
+		diagnostics = append(diagnostics, b.layerDiagnostic)
+	}
+
+	return diagnostics
+}
+
+// A non-nil diagnostic means the function cannot be emitted at all.
+func (e *emitter) resolveFunctionBasis(
+	run *transformutils.Run,
+	r *handler.ResolvedHandler,
+) (*functionBasis, *core.Diagnostic, error) {
+	celerityRuntime, _ := pluginutils.GetValueByPath("$.runtime", r.Resource.Spec)
+	// Without this the reference reads as an empty runtime and the check below
+	// reports "unsupported runtime ''", which does not describe the problem.
+	if diag := shared.DeferredValueError(
+		shared.AWSServerless, "handler", r.Name, "runtime", celerityRuntime, r.Resource,
+	); diag != nil {
+		return nil, diag, nil
+	}
+
+	runtime, hasRuntime := getTargetRuntime(
+		core.StringValue(celerityRuntime),
+		shared.AWSServerless,
+	)
+	if !hasRuntime {
+		return nil, unsupportedRuntimeError(celerityRuntime), nil
+	}
+
+	isValidationCtx := transformutils.IsValidationContext(run.TransformContext)
+	code, codeDiagnostic, err := e.loadCodeLocationInfo(run, isValidationCtx, r)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to load code location info: %w", err)
+	}
+
+	// `spec.handler` is used as the ID at runtime so Celerity SDK implementations
+	// can look up the handler to handle an event or request.
+	handlerID, _ := pluginutils.GetValueByPath("$.handler", r.Resource.Spec)
+
+	userConfigStores, err := userConfigStoreEnv(r)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	name, _ := pluginutils.GetValueByPath("$.handlerName", r.Resource.Spec)
+	memory, _ := pluginutils.GetValueByPath("$.memory", r.Resource.Spec)
+	timeout, _ := pluginutils.GetValueByPath("$.timeout", r.Resource.Spec)
+
+	return &functionBasis{
+		name:            name,
+		handlerID:       handlerID,
+		celerityRuntime: celerityRuntime,
+		runtime:         runtime,
+		memory:          memory,
+		timeout:         timeout,
+		code:            code,
+		isValidationCtx: isValidationCtx,
+		codeDiagnostic:  codeDiagnostic,
+		envInput: &awslambda.EnvInput{
+			Platform:               shared.PlatformAWS,
+			DeployTarget:           shared.AWSServerless,
+			HandlerID:              handlerID,
+			Runtime:                runtime,
+			EventSource:            string(r.EventSource),
+			RoutingTag:             r.RoutingTag,
+			HasRoutingTag:          r.HasRoutingTag,
+			RoutingKey:             r.RoutingKey,
+			Tracing:                r.TracingEnabled,
+			ResourceLinksStorePath: r.ResourceLinksStorePath,
+			UserConfigStores:       userConfigStores,
+			UserEnv:                userEnvMap(r),
+		},
+	}, nil, nil
+}
+
+func unsupportedRuntimeError(celerityRuntime *core.MappingNode) *core.Diagnostic {
+	return &core.Diagnostic{
+		Level: core.DiagnosticLevelError,
+		Message: fmt.Sprintf(
+			"unsupported runtime '%s' for deploy target '%s'",
+			core.StringValue(celerityRuntime),
+			shared.AWSServerless,
+		),
+		Range: core.DiagnosticRangeFromSourceMeta(celerityRuntime.SourceMeta, nil),
+	}
+}
+
+// vpcConfig is intentionally NOT emitted: the aws/flex/vpc::aws/lambda/function
+// link populates it from the VPC's resolved subnets/security group. The
+// transformer only stamps the subnet-type placement annotation (see
+// stampTriggerAnnotations).
+func (e *emitter) buildFunctionSpec(
+	run *transformutils.Run,
+	r *handler.ResolvedHandler,
+	basis *functionBasis,
+) (*core.MappingNode, error) {
+	spec := core.MappingNodeFields(
+		"functionName", basis.name,
+		"handler", core.MappingNodeFromString(basis.code.handler),
+		"runtime", core.MappingNodeFromString(basis.runtime),
+		"code", basis.code.codeSpec,
+		"memorySize", basis.memory,
+		"timeout", basis.timeout,
+		"environment", core.MappingNodeFields(
+			"variables",
+			awslambda.BuildEnvironmentVariables(basis.envInput),
+		),
+	)
+	if r.TracingEnabled {
+		spec.Fields["tracingConfig"] = core.MappingNodeFields(
+			"mode",
+			core.MappingNodeFromString("Active"),
+		)
+	}
+
+	plan := RolePlanFor(r)
+	roleRef, err := shared.SubstitutionMappingNode(
+		fmt.Sprintf(
+			"${resources.%s.spec.arn}",
+			iamRoleResourceName(plan.Fingerprint()),
+		),
+	)
+	if err != nil {
+		return nil, err
+	}
+	spec.Fields["role"] = roleRef
+
+	layerDiagnostic, err := e.wireLayerForHandler(run, basis.name, basis.isValidationCtx, spec)
+	if err != nil {
+		return nil, err
+	}
+	basis.layerDiagnostic = layerDiagnostic
+
+	return spec, nil
+}
+
+func functionResource(
+	r *handler.ResolvedHandler,
+	spec *core.MappingNode,
+) *schema.Resource {
+	return &schema.Resource{
+		Type: &schema.ResourceTypeWrapper{
+			Value: "aws/lambda/function",
+		},
+		Spec: spec,
+		Metadata: &schema.Metadata{
+			Annotations: transformutils.TransformerBaseAnnotations(
+				&transformutils.TransformerBaseAnnotationsInput{
+					AbstractResourceName: r.Name,
+					AbstractResourceType: "celerity/handler",
+					ResourceCategory:     transformutils.ResourceCategoryCodeHosting,
+				},
+			),
+		},
+	}
+}
+
+// Everything stamped onto the emitted function so a provider link resolves it,
+// in the order the diagnostics are reported.
+func stampLinkAnnotations(
+	r *handler.ResolvedHandler,
+	run *transformutils.Run,
+	lambdaResource *schema.Resource,
+) ([]*core.Diagnostic, error) {
+	declareOutboundLinks(r, lambdaResource)
+
+	// Carry the union of the handler's and every absorbed consumer's labels so
+	// inbound source/api/subscription links resolve against the function.
+	labelDiagnostics := applyLambdaLabels(r, lambdaResource)
+
+	// Stamp VPC-placement and consumer event-source link annotations.
+	diagnostics := stampTriggerAnnotations(r, lambdaResource)
+	diagnostics = append(diagnostics, labelDiagnostics...)
+	// Placements the VPC's own topology cannot honour, then the ones that fail on
+	// how Lambda in particular attaches to a network.
+	diagnostics = append(diagnostics, handler.VPCPlacementDiagnostics(r)...)
+	diagnostics = append(diagnostics, awsServerlessEgressDiagnostics(r)...)
+
+	// Stamp the API Gateway route/auth link annotations for HTTP/WebSocket
+	// handlers so the aws/apigatewayv2/api::function link creates the route.
+	if err := stampAPIRouteAnnotations(r, lambdaResource); err != nil {
+		return nil, err
+	}
+
+	// Stamp the ElastiCache authMode annotation for iam-mode caches so the
+	// aws/lambda/function::aws/elasticache/replicationGroup link grants
+	// elasticache:Connect.
+	stampCacheAnnotations(r, lambdaResource)
+
+	// Stamp the RDS authMode annotation for iam-mode SQL databases so the
+	// aws/lambda/function::aws/rds/dbProxy (or ::aws/rds/dbCluster) link grants
+	// the execution role rds-db:connect.
+	stampSQLDatabaseAnnotations(r, run, lambdaResource)
+
+	// Stamp the config-store link annotations for each linked user
+	// celerity/config store so the aws/lambda/function::aws/ssm/parameterTree
+	// (or ::aws/secretsmanager/secret) link grants read access and maintains the
+	// CELERITY_CONFIG_<NS>_STORE_ID env var at deploy time.
+	stampConfigStoreAnnotations(r, lambdaResource)
+
+	return diagnostics, nil
+}
+
+// The function plus what an absorbed event source adds around it.
+func emitTriggerResources(
+	r *handler.ResolvedHandler,
+	run *transformutils.Run,
+	funcResourceName string,
+	lambdaResource *schema.Resource,
+	resPropRewriter transformutils.ResourcePropertyRewriter,
+) (map[string]*schema.Resource, []*core.Diagnostic, error) {
+	resources := map[string]*schema.Resource{
+		funcResourceName: lambdaResource,
+	}
+
+	// Absorbed schedules emit an aws/events/rule targeting the function.
+	scheduleRules, diagnostics, err := emitScheduleRules(
+		r,
+		funcResourceName,
+		shared.ResolveAppName(run),
+	)
+	if err != nil {
+		return nil, nil, err
+	}
+	rewriteTriggerSpecs(scheduleRules, resPropRewriter)
+	maps.Copy(resources, scheduleRules)
+
+	// Celerity-topic consumers emit an aws/sns/subscription delivering to the function.
+	subscriptions, err := emitConsumerSubscriptions(r, funcResourceName)
+	if err != nil {
+		return nil, nil, err
+	}
+	rewriteTriggerSpecs(subscriptions, resPropRewriter)
+	maps.Copy(resources, subscriptions)
+
+	return resources, diagnostics, nil
+}
+
+// Walks each emitted trigger/fan-out/ESM resource's spec through the chained
+// resource-property rewriter, as the handler's own Lambda spec is rewritten. This
+// resolves any abstract ${resources.<x>...} reference an absorbed trigger carries
+// into its concrete form, most importantly a consumer whose topic source is an
+// in-blueprint celerity/topic, whose SNS subscription topicArn must point at the
+// concrete <topic>_sns_topic rather than the abstract topic name that will not be
+// in the transformed blueprint.
+func rewriteTriggerSpecs(
+	resources map[string]*schema.Resource,
+	resPropRewriter transformutils.ResourcePropertyRewriter,
+) {
+	visitor := transformutils.RewriteResourcePropertyRefs(resPropRewriter)
+	for _, resource := range resources {
+		if resource == nil || resource.Spec == nil {
+			continue
+		}
+		resource.Spec = subwalk.WalkMappingNode(resource.Spec, visitor)
+	}
+}
+
+// One CELERITY_CONFIG_<NS>_STORE_ID/_STORE_KIND pair per linked user
+// celerity/config store.
+// The STORE_ID carries the abstract ${resources.<config>.spec.id} reference the
+// resource-property rewriter resolves to the emitted store's derived id value,
+// the same rewrite applied to user-authored spec.id references. The internal
+// resources namespace keeps its separate direct-literal treatment
+// (EnvInput.ResourceLinksStorePath).
+func userConfigStoreEnv(r *handler.ResolvedHandler) ([]awslambda.UserConfigStore, error) {
+	stores := make([]awslambda.UserConfigStore, 0, len(r.Configs))
+	for _, linked := range r.Configs {
+		if linked == nil || linked.Resource == nil {
+			continue
+		}
+
+		wiring := configaws.StoreWiringFor(linked.Name, linked.Resource)
+		storeIDRef := fmt.Sprintf("${resources.%s.spec.id}", linked.Name)
+		if wiring.Kind == configaws.StoreKindSecretsManager && !wiring.External {
+			storeIDRef = fmt.Sprintf("${resources.%s.spec.id}", wiring.ConcreteResourceName)
+		}
+
+		storeID, err := shared.SubstitutionMappingNode(storeIDRef)
+		if err != nil {
+			return nil, err
+		}
+
+		stores = append(stores, awslambda.UserConfigStore{
+			EnvNamespace: wiring.EnvNamespace,
+			Namespace:    wiring.Namespace,
+			StoreID:      storeID,
+			Kind:         wiring.Kind,
+		})
+	}
+
+	return stores, nil
+}
+
+// Stamps the aws.lambda.ssm.<store>.* / aws.lambda.secretsmanager.<store>.*
+// annotations for each linked user celerity/config store, keyed by the concrete
+// store resource name (the provider resolves annotation keys from
+// otherResourceInfo.ResourceName). accessLevel makes the link inject the scoped
+// read grant into the execution role, and envVarName renames the link-injected
+// store-identifier env var to the CELERITY_CONFIG_<NS>_STORE_ID name the SDK
+// runtime contract requires, matching the transformer-stamped value.
+func stampConfigStoreAnnotations(r *handler.ResolvedHandler, lambda *schema.Resource) {
+	for _, linked := range r.Configs {
+		if linked == nil || linked.Resource == nil {
+			continue
+		}
+		wiring := configaws.StoreWiringFor(linked.Name, linked.Resource)
+		if wiring.External {
+			// Keyed by the concrete store, which an external store does not have.
+			// The read grant these annotations ask the provider link for arrives
+			// with the external grant work instead.
+			continue
+		}
+		prefix := fmt.Sprintf(
+			"aws.lambda.%s.%s",
+			wiring.LinkAnnotationService,
+			wiring.ConcreteResourceName,
+		)
+		setStringAnnotation(
+			lambda.Metadata,
+			fmt.Sprintf("%s.envVarName", prefix),
+			awslambda.ConfigStoreIDEnvVarName(wiring.EnvNamespace),
+		)
+		setStringAnnotation(lambda.Metadata, fmt.Sprintf("%s.accessLevel", prefix), "read")
+	}
+}
+
+func userEnvMap(r *handler.ResolvedHandler) map[string]*core.MappingNode {
+	vars, _ := pluginutils.GetValueByPath("$.environmentVariables", r.Resource.Spec)
+	if vars == nil {
+		return nil
+	}
+
+	return vars.Fields
+}
+
+func (e *emitter) createDerivedValues(
+	funcResourceName string,
+	handlerID *core.MappingNode,
+	celerityRuntime *core.MappingNode,
+	r *handler.ResolvedHandler,
+) map[string]*schema.Value {
+	codeLocation, _ := pluginutils.GetValueByPath("$.codeLocation", r.Resource.Spec)
+
+	codeLocationKey := fmt.Sprintf("%s_code_location", funcResourceName)
+	runtimeKey := fmt.Sprintf("%s_celerity_runtime", funcResourceName)
+	handlerIDKey := fmt.Sprintf("%s_handler_id", funcResourceName)
+	tracingEnabledKey := fmt.Sprintf("%s_tracing_enabled", funcResourceName)
+
+	return map[string]*schema.Value{
+		// Code location key may be an empty string.
+		codeLocationKey:   shared.LiteralStringBlueprintValue(core.StringValue(codeLocation)),
+		runtimeKey:        shared.LiteralStringBlueprintValue(core.StringValue(celerityRuntime)),
+		handlerIDKey:      shared.LiteralStringBlueprintValue(core.StringValue(handlerID)),
+		tracingEnabledKey: shared.LiteralBoolBlueprintValue(r.TracingEnabled),
+	}
+}
+
+type codeLocationInfo struct {
+	codeSpec *core.MappingNode
+	handler  string
+}
+
+func (e *emitter) loadCodeLocationInfo(
+	run *transformutils.Run,
+	isValidationCtx bool,
+	handler *handler.ResolvedHandler,
+) (*codeLocationInfo, *core.Diagnostic, error) {
+	if isValidationCtx {
+		// During validation, a build manifest won't be provided or available,
+		// so we return a placeholder code location.
+		return placeholderCodeLocationInfo(), nil, nil
+	}
+
+	manifest, hasManifest := transformutils.Use[*build.Manifest](run)
+	if !hasManifest || manifest.Lambda == nil {
+		// Per the build-manifest fallback contract, a missing manifest does not fail the transform: the
+		// function is emitted with the same stageable placeholder code/handler
+		// values the validation-context path uses, a warning is recorded, and the
+		// placeholders fail at deploy time by design. This keeps validation and
+		// dry-run/plan working before "celerity build" has run.
+		message := fmt.Sprintf(
+			"no build manifest available for celerity/handler %q; the function is emitted with "+
+				"placeholder code and entry-point values that cannot deploy. Run \"celerity build\" "+
+				"before deploying (validation and a dry run/plan are still valid)",
+			handler.Name,
+		)
+		if loadErr, hasLoadErr := transformutils.Use[*shared.BuildManifestLoadError](run); hasLoadErr && loadErr.Cause != nil {
+			message = fmt.Sprintf("%s: %s", message, loadErr.Cause)
+		}
+		return placeholderCodeLocationInfo(), &core.Diagnostic{
+			Level:   core.DiagnosticLevelWarning,
+			Message: message,
+			Range:   shared.DiagnosticRange(shared.ResourceMeta(handler.Resource)),
+		}, nil
+	}
+
+	return &codeLocationInfo{
+		handler: manifest.Lambda.EntryPoint,
+		codeSpec: core.MappingNodeFields(
+			"s3Bucket", core.MappingNodeFromString(manifest.Lambda.AppCode.S3Bucket),
+			"s3Key", core.MappingNodeFromString(manifest.Lambda.AppCode.S3Key),
+		),
+	}, nil, nil
+}
+
+func placeholderCodeLocationInfo() *codeLocationInfo {
+	return &codeLocationInfo{
+		codeSpec: core.MappingNodeFields(
+			"s3Bucket", core.MappingNodeFromString("placeholder-bucket"),
+			"s3Key", core.MappingNodeFromString("placeholder-key"),
+		),
+		handler: "placeholder.handler",
+	}
+}
+
+func (e *emitter) wireLayerForHandler(
+	run *transformutils.Run,
+	handlerName *core.MappingNode,
+	isValidationCtx bool,
+	targetSpec *core.MappingNode,
+) (*core.Diagnostic, error) {
+	if isValidationCtx {
+		// During validation, a build manifest won't be provided or available,
+		// so we skip wiring the layer for the handler.
+		return nil, nil
+	}
+
+	manifest, hasManifest := transformutils.Use[*build.Manifest](run)
+	if !hasManifest || manifest.Lambda == nil {
+		// No build manifest: skip the layer rather than failing. The missing-code
+		// warning from loadCodeLocationInfo already covers this handler.
+		return nil, nil
+	}
+
+	hash, _ := awslambda.SelectLayerForHandler(
+		core.StringValue(handlerName),
+		manifest,
+	)
+	if hash != "" {
+		layerRef, err := shared.SubstitutionMappingNode(
+			fmt.Sprintf("${resources.%s.spec.layerVersionArn}", lambdaLayerResourceName(hash)))
+		if err != nil {
+			return nil, err
+		}
+		targetSpec.Fields["layers"] = core.MappingNodeItems(layerRef)
+	}
+
+	return nil, nil
+}
+
+func lambdaFuncResourceName(handlerName string) string {
+	return fmt.Sprintf("%s_lambda_func", handlerName)
+}

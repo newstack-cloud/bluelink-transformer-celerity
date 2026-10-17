@@ -2,23 +2,26 @@ package queue
 
 import (
 	"context"
+
 	"strings"
+
+	"github.com/newstack-cloud/bluelink-transformer-celerity/shared"
 
 	"github.com/newstack-cloud/bluelink/libs/blueprint/linktypes"
 	"github.com/newstack-cloud/bluelink/libs/blueprint/schema"
 	"github.com/newstack-cloud/bluelink/libs/plugin-framework/sdk/transformutils"
 )
 
-// TopicForwardEdge captures a resolved celerity/queue -> celerity/topic edge: the
-// queue's messages are forwarded to the topic by an intermediary Lambda emitted on
-// aws-serverless.
+// TopicForwardEdge captures a resolved celerity/queue -> celerity/topic edge:
+// the queue's messages are forwarded to the topic. How that forwarding is
+// carried out is the deploy target's concern.
 type TopicForwardEdge struct {
 	// TopicName is the abstract topic resource name the queue forwards to.
 	TopicName string
 	// SelectorLabels are the topic labels the queue's link selector matched,
-	// reconstructed from the edge's selector keys. The emitted forwarder function
-	// carries these as its own link selector so the function::sns link resolves it
-	// to the concrete topic.
+	// reconstructed from the edge's selector keys. Whatever a target emits to do
+	// the forwarding carries these as its own link selector, so the target's own
+	// link resolves them to the concrete topic.
 	SelectorLabels map[string]string
 }
 
@@ -31,11 +34,15 @@ type ResolvedQueue struct {
 	Name          string
 	Resource      *schema.Resource
 	TopicForwards []*TopicForwardEdge
-	// Consumed is true when a celerity/consumer links to this queue. A consumed
-	// queue's handler polls it via an SQS event source mapping, which competes with
-	// the forwarder's mapping (SQS is competing-consumers, not fan-out), so a queue
-	// cannot be both consumed and forwarded on aws-serverless.
+	// Consumed is true when a celerity/consumer links to this queue. Recorded
+	// here because a target whose forwarding also consumes the queue has to
+	// know: competing for one queue's messages is not the same as fanning them
+	// out, so such a target rejects a queue that is both.
 	Consumed bool
+	// External is set when the resource points at a queue the target environment
+	// already has and Celerity does not own, in which case no concrete resource
+	// is emitted for it.
+	External *shared.External
 }
 
 func (q *ResolvedQueue) ResourceName() string {
@@ -55,11 +62,14 @@ func resolveQueue(
 	_ *schema.Blueprint,
 ) (transformutils.ResolvedResource, error) {
 	forwards, consumed := outboundEdges(name, linkGraph)
+	external, _ := shared.ResolvedExternal("celerity/queue", name, resource)
+
 	return &ResolvedQueue{
 		Name:          name,
 		Resource:      resource,
 		TopicForwards: forwards,
 		Consumed:      consumed,
+		External:      external,
 	}, nil
 }
 

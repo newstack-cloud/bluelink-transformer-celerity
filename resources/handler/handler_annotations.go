@@ -138,10 +138,17 @@ const (
 	VPCEgressNone = "none"
 )
 
-func sharedParentAnnotations(abstractName string, category string) *core.MappingNode {
+func SharedParentAnnotations(abstractName string, category string) *core.MappingNode {
 	return core.MappingNodeFields(
 		transformutils.AnnotationSourceAbstractName, core.MappingNodeFromString(abstractName),
 		transformutils.AnnotationSourceAbstractType, core.MappingNodeFromString("celerity/handler"),
 		transformutils.AnnotationResourceCategory, core.MappingNodeFromString(category),
 	)
+}
+
+// IsPublic reports whether a handler opts out of the API's default guard.
+func IsPublic(r *ResolvedHandler) bool {
+	public, _ := transformutils.GetBoolAnnotation(r.Resource, AnnotationKeyPublic, "", false)
+
+	return public
 }

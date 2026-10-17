@@ -4,13 +4,21 @@ import (
 	"context"
 	"sort"
 
-	"github.com/newstack-cloud/bluelink-transformer-celerity/shared"
-	sharedaws "github.com/newstack-cloud/bluelink-transformer-celerity/shared/aws"
-	"github.com/newstack-cloud/bluelink/libs/blueprint/core"
 	"github.com/newstack-cloud/bluelink/libs/blueprint/linktypes"
 	"github.com/newstack-cloud/bluelink/libs/blueprint/schema"
 	"github.com/newstack-cloud/bluelink/libs/plugin-framework/sdk/transformutils"
 )
+
+// Placement is one resource placed in this VPC, in abstract terms. Each deploy
+// target derives from it whatever network identities it has to provision: the
+// placed resource is reached over the network, so it needs an identity of its
+// own rather than sharing the VPC's.
+type Placement struct {
+	// ResourceName is the abstract resource placed in the VPC.
+	ResourceName string
+	// ResourceType is its celerity resource type.
+	ResourceType string
+}
 
 // ResolvedVPC carries the abstract VPC through to the emit phase. Labels and
 // linkSelector are preserved verbatim so placement links (flex/vpc -> handler,
@@ -18,11 +26,9 @@ import (
 type ResolvedVPC struct {
 	Name     string
 	Resource *schema.Resource
-	// SecurityGroupNames are the groups this VPC provisions for the resources placed
-	// in it, in a stable order. Each placed resource that workloads reach over
-	// the network needs a group of its own so a path opened to one does not also
-	// reach the others sharing it.
-	SecurityGroupNames []string
+	// Placements are the resources placed in this VPC, in a stable order.
+	// Resolved here because the link graph is only available to this phase.
+	Placements []Placement
 }
 
 func (v *ResolvedVPC) ResourceName() string {
@@ -35,70 +41,44 @@ func (v *ResolvedVPC) ResourceType() string {
 
 func resolveVPC(
 	_ context.Context,
-	run *transformutils.Run,
+	_ *transformutils.Run,
 	name string,
 	resource *schema.Resource,
 	linkGraph linktypes.DeclaredLinkGraph,
 	_ *schema.Blueprint,
 ) (transformutils.ResolvedResource, error) {
 	return &ResolvedVPC{
-		Name:               name,
-		Resource:           resource,
-		SecurityGroupNames: placedSecurityGroupNames(run, name, linkGraph),
+		Name:       name,
+		Resource:   resource,
+		Placements: placements(name, linkGraph),
 	}, nil
 }
 
-// placedSecurityGroupNames collects the group names this VPC has to mint, from
-// the resources placed in it.
-//
-// Sorted so the emitted list is stable: an order that varied with graph
-// traversal would show as a change on every stage.
-func placedSecurityGroupNames(
-	run *transformutils.Run,
-	vpcName string,
-	linkGraph linktypes.DeclaredLinkGraph,
-) []string {
+// Sorted so anything derived from this is stable: an order that varied with
+// graph traversal would show as a change on every stage.
+func placements(vpcName string, linkGraph linktypes.DeclaredLinkGraph) []Placement {
 	if linkGraph == nil {
 		return nil
 	}
 
-	names := []string{}
+	placed := []Placement{}
 	for _, edge := range linkGraph.EdgesFrom(vpcName) {
 		if edge == nil {
 			continue
 		}
-		switch edge.TargetType {
-		case "celerity/cache":
-			names = append(names, shared.VPCNamedSecurityGroup(
-				edge.Target, shared.SecurityGroupRoleCache,
-			))
-		case "celerity/sqlDatabase":
-			names = append(names, shared.VPCNamedSecurityGroup(
-				edge.Target, shared.SecurityGroupRoleDatabase,
-			))
-			// Aurora pools connections itself, so no proxy is emitted for it and
-			// minting a group for one would leave an empty group behind.
-			if !auroraEnabled(run, edge.Target) {
-				names = append(names, shared.VPCNamedSecurityGroup(
-					edge.Target, shared.SecurityGroupRoleProxy,
-				))
-			}
+		placed = append(placed, Placement{
+			ResourceName: edge.Target,
+			ResourceType: edge.TargetType,
+		})
+	}
+
+	sort.Slice(placed, func(i, j int) bool {
+		if placed[i].ResourceName != placed[j].ResourceName {
+			return placed[i].ResourceName < placed[j].ResourceName
 		}
-	}
 
-	sort.Strings(names)
-	return names
-}
+		return placed[i].ResourceType < placed[j].ResourceType
+	})
 
-// auroraEnabled reads the same deploy config key the sqlDatabase transform reads,
-// rather than importing it: sqlDatabase already imports this package, so the
-// dependency cannot run the other way.
-func auroraEnabled(run *transformutils.Run, databaseName string) bool {
-	if run == nil {
-		return false
-	}
-	node, _ := sharedaws.ResolveDeployConfigNode(
-		run.TransformContext, "aws.aurora", databaseName, "enabled",
-	)
-	return core.BoolValue(node)
+	return placed
 }

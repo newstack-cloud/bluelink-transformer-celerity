@@ -1,12 +1,15 @@
 package queue
 
 import (
+	"maps"
+
+	"github.com/newstack-cloud/bluelink-transformer-celerity/shared"
 	"github.com/newstack-cloud/bluelink/libs/blueprint/core"
 	"github.com/newstack-cloud/bluelink/libs/blueprint/provider"
 )
 
 func queueResourceSchema() *provider.ResourceDefinitionsSchema {
-	return &provider.ResourceDefinitionsSchema{
+	definition := &provider.ResourceDefinitionsSchema{
 		Type:  provider.ResourceDefinitionsSchemaTypeObject,
 		Label: "QueueDefinition",
 		Description: "A managed message queue that handlers send messages to and consumers process " +
@@ -47,4 +50,8 @@ func queueResourceSchema() *provider.ResourceDefinitionsSchema {
 			},
 		},
 	}
+
+	maps.Copy(definition.Attributes, shared.ExternalModeAttributes())
+
+	return definition
 }

@@ -187,3 +187,38 @@ func (s *BucketTransformTestSuite) transformBucket(
 	s.Require().NotNil(out.TransformedBlueprint)
 	return out
 }
+
+// The abstract encryptionAlgorithm is an open string, because which algorithms
+// exist is a property of the target environment rather than of Celerity. The
+// check that catches a value AWS does not offer therefore belongs to the AWS
+// emit, not to the schema, and it has to be an error: a bucket encrypted some
+// other way than the author asked for is worse than no bucket.
+func (s *BucketTransformTestSuite) Test_an_algorithm_aws_does_not_offer_is_rejected() {
+	b := &schema.Resource{
+		Type: &schema.ResourceTypeWrapper{Value: "celerity/bucket"},
+		Spec: core.MappingNodeFields(
+			"name", core.MappingNodeFromString("uploads"),
+			"encryption", core.MappingNodeFields(
+				"encryptionAlgorithm", core.MappingNodeFromString("GOOGLE_SYMMETRIC_ENCRYPTION"),
+			),
+		),
+	}
+
+	out := s.transformBucket(map[string]*schema.Resource{"myBucket": b})
+
+	s.NotContains(out.TransformedBlueprint.Resources.Values, "myBucket_s3_bucket",
+		"no bucket is emitted for an algorithm that cannot be honoured")
+
+	var found bool
+	for _, diagnostic := range out.Diagnostics {
+		if diagnostic.Level != core.DiagnosticLevelError {
+			continue
+		}
+		if strings.Contains(diagnostic.Message, "GOOGLE_SYMMETRIC_ENCRYPTION") &&
+			strings.Contains(diagnostic.Message, "aws:kms") {
+			found = true
+		}
+	}
+	s.True(found,
+		"expected an error naming the rejected algorithm and the ones AWS offers")
+}

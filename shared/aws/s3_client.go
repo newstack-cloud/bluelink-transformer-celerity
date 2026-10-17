@@ -40,11 +40,14 @@ func NewS3Client(
 
 	return s3.NewFromConfig(
 		*cfg,
-		s3OptionsFromTransformContext(transformCtx)...,
+		S3OptionsFromTransformContext(transformCtx)...,
 	), nil
 }
 
-func s3OptionsFromTransformContext(transformCtx transform.Context) []func(*s3.Options) {
+// S3OptionsFromTransformContext exposes the endpoint and path-style options a
+// transformer config carries, for a caller that builds its own S3 client rather
+// than taking NewS3Client's deployment-region one.
+func S3OptionsFromTransformContext(transformCtx transform.Context) []func(*s3.Options) {
 	opts := []func(*s3.Options){}
 	endpoint, ok := transformCtx.TransformerConfigVariable("aws.s3.endpoint")
 	if ok && !core.IsScalarNil(endpoint) {

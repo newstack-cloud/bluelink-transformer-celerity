@@ -39,7 +39,7 @@ func resolveConfig(
 ) (transformutils.ResolvedResource, error) {
 	return &ResolvedConfig{
 		Name:                  name,
-		StoreName:             storeNameFor(name, resource.Spec),
+		StoreName:             StoreNameFor(name, resource.Spec),
 		Resource:              resource,
 		HandlerSelectorLabels: handlerSelectorLabels(name, linkGraph),
 	}, nil
@@ -47,8 +47,7 @@ func resolveConfig(
 
 // Collects the labels that inbound handler -> config edges matched: the labels
 // the emitted concrete store must carry for the linked handlers' preserved
-// lambda linkSelectors to re-match it and form the concrete
-// lambda -> store link.
+// link selectors to re-match it and form the concrete handler -> store link.
 func handlerSelectorLabels(
 	name string,
 	linkGraph linktypes.DeclaredLinkGraph,

@@ -4,7 +4,7 @@ import (
 	"context"
 
 	"github.com/newstack-cloud/bluelink-transformer-celerity/resources/consumer"
-	"github.com/newstack-cloud/bluelink-transformer-celerity/resources/handler"
+	"github.com/newstack-cloud/bluelink-transformer-celerity/resources/handler/handlerawsserverless"
 	"github.com/newstack-cloud/bluelink-transformer-celerity/resources/handlerconfig"
 	"github.com/newstack-cloud/bluelink-transformer-celerity/resources/schedule"
 	"github.com/newstack-cloud/bluelink-transformer-celerity/shared"
@@ -35,13 +35,15 @@ func createAWSServerlessAggregator() transformutils.Aggregator {
 		parents := []transformutils.SharedParent{}
 		parents = append(
 			parents,
-			handler.AWSServerlessSharedParents(ctx, primaries, manifest, shared.ResolveAppName(run))...,
+			handlerawsserverless.SharedParents(ctx, primaries, manifest, shared.ResolveAppName(run))...,
 		)
 
 		// The internal resources namespace config store: one aws/ssm/parameterTree
 		// mapping each linked backing resource's configKey to its physical id, read by
 		// handlers at runtime (see the store-read grant + STORE_ID/KIND env vars).
-		if store := collectResourcesStore(run, primaries, shared.ResourceLinksStorePath(run)); store != nil {
+		if store := collectResourcesStore(
+			awsResourcesStore{}, run, primaries, shared.ResourceLinksStorePath(run),
+		); store != nil {
 			parents = append(parents, *store)
 		}
 

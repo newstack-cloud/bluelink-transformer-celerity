@@ -1,9 +1,14 @@
 package datastore
 
-import "github.com/newstack-cloud/bluelink/libs/blueprint/provider"
+import (
+	"maps"
+
+	"github.com/newstack-cloud/bluelink-transformer-celerity/shared"
+	"github.com/newstack-cloud/bluelink/libs/blueprint/provider"
+)
 
 func datastoreResourceSchema() *provider.ResourceDefinitionsSchema {
-	return &provider.ResourceDefinitionsSchema{
+	definition := &provider.ResourceDefinitionsSchema{
 		Type:  provider.ResourceDefinitionsSchemaTypeObject,
 		Label: "DatastoreDefinition",
 		Description: "A managed NoSQL data store that handlers read from and write to, and consumers " +
@@ -105,4 +110,8 @@ func datastoreResourceSchema() *provider.ResourceDefinitionsSchema {
 			},
 		},
 	}
+
+	maps.Copy(definition.Attributes, shared.ExternalModeAttributes())
+
+	return definition
 }

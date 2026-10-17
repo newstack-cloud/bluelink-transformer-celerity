@@ -3,6 +3,8 @@ package bucket
 import (
 	"context"
 
+	"github.com/newstack-cloud/bluelink-transformer-celerity/shared"
+
 	"github.com/newstack-cloud/bluelink/libs/blueprint/linktypes"
 	"github.com/newstack-cloud/bluelink/libs/blueprint/schema"
 	"github.com/newstack-cloud/bluelink/libs/plugin-framework/sdk/transformutils"
@@ -14,6 +16,10 @@ import (
 type ResolvedBucket struct {
 	Name     string
 	Resource *schema.Resource
+	// External is set when the resource points at a bucket the target environment
+	// already has and Celerity does not own, in which case no concrete resource
+	// is emitted for it.
+	External *shared.External
 }
 
 func (b *ResolvedBucket) ResourceName() string {
@@ -32,8 +38,11 @@ func resolveBucket(
 	_ linktypes.DeclaredLinkGraph,
 	_ *schema.Blueprint,
 ) (transformutils.ResolvedResource, error) {
+	external, _ := shared.ResolvedExternal("celerity/bucket", name, resource)
+
 	return &ResolvedBucket{
 		Name:     name,
 		Resource: resource,
+		External: external,
 	}, nil
 }

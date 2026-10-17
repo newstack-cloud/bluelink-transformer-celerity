@@ -104,3 +104,51 @@ func AppendLiteral(s *substitutions.StringOrSubstitutions, literal string) *core
 		},
 	}
 }
+
+// EndsWithLiteral reports whether a substitution string ends in a literal
+// segment with the given suffix. False for one ending in a reference, whose
+// value is not known until the deploy engine resolves it.
+func EndsWithLiteral(s *substitutions.StringOrSubstitutions, literal string) bool {
+	if len(s.Values) == 0 {
+		return false
+	}
+	last := s.Values[len(s.Values)-1]
+
+	return last.StringValue != nil && strings.HasSuffix(*last.StringValue, literal)
+}
+
+// PhysicalNameWithSuffix maps an authored spec.name onto a deployed identifier
+// that must carry a suffix, such as the ".fifo" an ordered queue or topic needs.
+//
+// A substitution-valued name is passed through with the suffix appended rather
+// than stringified, so the deploy engine resolves it instead of the name
+// silently becoming "". Returns nil when no name is set, so the deployed name
+// auto-generates.
+func PhysicalNameWithSuffix(
+	nameNode *core.MappingNode,
+	required bool,
+	suffix string,
+) *core.MappingNode {
+	if nameNode == nil {
+		return nil
+	}
+
+	if nameNode.StringWithSubstitutions != nil {
+		if !required || EndsWithLiteral(nameNode.StringWithSubstitutions, suffix) {
+			return nameNode
+		}
+
+		return AppendLiteral(nameNode.StringWithSubstitutions, suffix)
+	}
+
+	name := core.StringValue(nameNode)
+	if name == "" {
+		return nil
+	}
+
+	if required && !strings.HasSuffix(name, suffix) {
+		name += suffix
+	}
+
+	return core.MappingNodeFromString(name)
+}

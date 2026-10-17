@@ -1,9 +1,14 @@
 package config
 
-import "github.com/newstack-cloud/bluelink/libs/blueprint/provider"
+import (
+	"maps"
+
+	"github.com/newstack-cloud/bluelink-transformer-celerity/shared"
+	"github.com/newstack-cloud/bluelink/libs/blueprint/provider"
+)
 
 func configResourceSchema() *provider.ResourceDefinitionsSchema {
-	return &provider.ResourceDefinitionsSchema{
+	definition := &provider.ResourceDefinitionsSchema{
 		Type:  provider.ResourceDefinitionsSchemaTypeObject,
 		Label: "ConfigDefinition",
 		Description: "A secrets and configuration store to be used by a Celerity application, " +
@@ -64,4 +69,8 @@ func configResourceSchema() *provider.ResourceDefinitionsSchema {
 			},
 		},
 	}
+
+	maps.Copy(definition.Attributes, shared.ExternalModeAttributes())
+
+	return definition
 }

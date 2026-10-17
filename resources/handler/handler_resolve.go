@@ -4,11 +4,9 @@ import (
 	"context"
 	"fmt"
 	"maps"
-	"slices"
 	"strings"
 
 	"github.com/newstack-cloud/bluelink-transformer-celerity/shared"
-	"github.com/newstack-cloud/bluelink-transformer-celerity/shared/awslambda"
 	"github.com/newstack-cloud/bluelink-transformer-celerity/types"
 	"github.com/newstack-cloud/bluelink/libs/blueprint/core"
 	"github.com/newstack-cloud/bluelink/libs/blueprint/linktypes"
@@ -81,16 +79,15 @@ type ResolvedHandler struct {
 	// Outbound reach declared by the component the placement was inherited from,
 	// overridden by the handler's own egress annotation.
 	inheritedVPCEgress string
-	// Labels the VPC's selector matched the component on, carried onto the
-	// emitted function so the concrete VPC-to-compute link selects it as well.
-	inheritedVPCSelectorLabels map[string]string
-	// memoised AWS serverless role plan.
-	rolePlan *awslambda.RolePlan
-	// resourceLinksStorePath is the internal resources config store's SSM path prefix,
+	// InheritedVPCSelectorLabels are the labels the VPC's selector matched the
+	// component on, carried onto the emitted compute resource so the concrete
+	// VPC-to-compute link selects it as well.
+	InheritedVPCSelectorLabels map[string]string
+	// ResourceLinksStorePath is the internal resources config store's path prefix,
 	// set when the handler links to a backing resource resolved through the store
 	// (queue/topic/datastore/bucket). Drives the store env vars and the role's
 	// store-read grant; empty when the handler has no such links.
-	resourceLinksStorePath string
+	ResourceLinksStorePath string
 }
 
 // hasResourceLinks reports whether the handler links to any backing resource
@@ -117,63 +114,6 @@ func (h *ResolvedHandler) ResourceName() string {
 
 func (h *ResolvedHandler) ResourceType() string {
 	return "celerity/handler"
-}
-
-func (h *ResolvedHandler) awsRolePlan() *awslambda.RolePlan {
-	if h.rolePlan == nil {
-		p := buildAWSRolePlan(h)
-		h.rolePlan = &p
-	}
-
-	return h.rolePlan
-}
-
-// Captures the handler's link set. Provider links inject their
-// own IAM grants into whichever role a function references, so a role may only
-// be shared between handlers with identical link sets, otherwise each would
-// inherit the other's permissions.
-func buildAWSRolePlan(r *ResolvedHandler) awslambda.RolePlan {
-	links := []string{}
-	add := func(linkType string, linked []*types.LinkedResource) {
-		for _, resource := range linked {
-			links = append(links, linkType+"::"+resource.Name)
-		}
-	}
-
-	// Outbound links from the handler.
-	add("celerity/queue", r.Queues)
-	add("celerity/topic", r.Topics)
-	add("celerity/datastore", r.Datastores)
-	add("celerity/bucket", r.Buckets)
-	add("celerity/cache", r.Caches)
-	add("celerity/config", r.Configs)
-	add("celerity/sqlDatabase", r.SQLDatabases)
-
-	// Inbound event-source links absorbed by the handler.
-	add("celerity/consumer", r.Consumers)
-	add("celerity/schedule", r.Schedules)
-	if r.APILink != nil {
-		links = append(links, "celerity/api::"+r.APILink.Name)
-	}
-
-	// Sorted so the fingerprint is order-independent.
-	slices.Sort(links)
-
-	subnetType := ""
-	if r.VPC != nil {
-		subnetType = r.VPCSubnetType
-	}
-
-	return awslambda.RolePlan{
-		Links:                  links,
-		Tracing:                r.TracingEnabled,
-		VPC:                    subnetType,
-		ResourceLinksStorePath: r.resourceLinksStorePath,
-		// External event sources (standalone ESMs) have no provider link to inject
-		// source-read IAM, so the seed grants it. Folding them into the plan also
-		// keeps the fingerprint (hence role sharing) sensitive to them.
-		ExternalSources: externalRoleSources(r),
-	}
 }
 
 func resolveHandler(
@@ -211,7 +151,7 @@ func resolveHandler(
 	// Once backing links are known, record the internal resources config store path
 	// so the role plan grants store-read and the emit sets the store env vars.
 	if hasResourceLinks(resolved) {
-		resolved.resourceLinksStorePath = shared.ResourceLinksStorePath(run)
+		resolved.ResourceLinksStorePath = shared.ResourceLinksStorePath(run)
 	}
 
 	err := resolveInheritedSpec(resolved, blueprint)
@@ -219,7 +159,7 @@ func resolveHandler(
 		return nil, err
 	}
 
-	if resolvedRuntime(resolved) == "" {
+	if ResolvedRuntime(resolved) == "" {
 		return nil, fmt.Errorf(
 			"celerity/handler %q resolves to an empty runtime; "+
 				"set spec.runtime on the handler, a linked celerity/handlerConfig, or "+
@@ -231,7 +171,7 @@ func resolveHandler(
 	return resolved, nil
 }
 
-func resolvedRuntime(resolved *ResolvedHandler) string {
+func ResolvedRuntime(resolved *ResolvedHandler) string {
 	if resolved.Resource == nil || resolved.Resource.Spec == nil {
 		return ""
 	}
@@ -616,7 +556,7 @@ func deriveRoutingKey(
 			continue
 		}
 
-		node, ok := pluginutils.GetValueByPath("$.routingKey", consumerSpec(binding))
+		node, ok := pluginutils.GetValueByPath("$.routingKey", ConsumerSpec(binding))
 		if ok && node != nil && core.StringValue(node) != "" {
 			return core.StringValue(node)
 		}

@@ -1,12 +1,14 @@
 package bucket
 
 import (
-	"github.com/newstack-cloud/bluelink/libs/blueprint/core"
+	"maps"
+
+	"github.com/newstack-cloud/bluelink-transformer-celerity/shared"
 	"github.com/newstack-cloud/bluelink/libs/blueprint/provider"
 )
 
 func bucketResourceSchema() *provider.ResourceDefinitionsSchema {
-	return &provider.ResourceDefinitionsSchema{
+	definition := &provider.ResourceDefinitionsSchema{
 		Type:  provider.ResourceDefinitionsSchemaTypeObject,
 		Label: "BucketDefinition",
 		Description: "A managed object storage bucket that handlers read from and write to. On " +
@@ -24,18 +26,18 @@ func bucketResourceSchema() *provider.ResourceDefinitionsSchema {
 				Attributes: map[string]*provider.ResourceDefinitionsSchema{
 					"encryptionKeyId": {
 						Type: provider.ResourceDefinitionsSchemaTypeString,
-						Description: "The ID of the KMS key used to encrypt objects. Requires KMS encryption: " +
-							"when set the algorithm is \"aws:kms\" regardless of encryptionAlgorithm, since a " +
-							"customer-managed key is not valid with \"AES256\".",
+						Description: "The ID of the encryption key used to encrypt objects. Setting one " +
+							"requires an algorithm that takes a customer-managed key, so the target " +
+							"environment uses its key-based algorithm regardless of " +
+							"encryptionAlgorithm.",
 					},
 					"encryptionAlgorithm": {
 						Type: provider.ResourceDefinitionsSchemaTypeString,
-						Description: "The encryption algorithm. On AWS this is the S3 SSE algorithm. Defaults " +
-							"to \"aws:kms\" when an encryptionKeyId is set, otherwise \"AES256\".",
-						AllowedValues: []*core.MappingNode{
-							core.MappingNodeFromString("AES256"),
-							core.MappingNodeFromString("aws:kms"),
-						},
+						Description: "The encryption algorithm, named as the target environment names it. " +
+							"Which algorithms exist is a property of the environment rather than of " +
+							"Celerity, so the value is passed through and the target rejects one it " +
+							"does not offer. Defaults to the environment's key-based algorithm when " +
+							"an encryptionKeyId is set, and to its default algorithm otherwise.",
 					},
 				},
 			},
@@ -145,4 +147,9 @@ func bucketResourceSchema() *provider.ResourceDefinitionsSchema {
 			},
 		},
 	}
+
+	maps.Copy(definition.Attributes, shared.ExternalModeAttributes())
+	maps.Copy(definition.Attributes, shared.RegionAttributes())
+
+	return definition
 }

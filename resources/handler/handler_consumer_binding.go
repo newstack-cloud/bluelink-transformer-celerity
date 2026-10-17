@@ -193,7 +193,7 @@ func namedDisambiguatedSource(
 	edges []linkedSourceEdge,
 ) (linkedSourceEdge, bool) {
 	for _, edge := range edges {
-		annotationKey, ok := disambiguationAnnotationKey(edge.kind)
+		annotationKey, ok := DisambiguationAnnotationKey(edge.kind)
 		if !ok {
 			continue
 		}
@@ -205,7 +205,7 @@ func namedDisambiguatedSource(
 	return linkedSourceEdge{}, false
 }
 
-func disambiguationAnnotationKey(kind ConsumerSourceKind) (string, bool) {
+func DisambiguationAnnotationKey(kind ConsumerSourceKind) (string, bool) {
 	switch kind {
 	case ConsumerSourceQueue:
 		return annotationConsumerSourceQueue, true
@@ -395,7 +395,7 @@ func objectStorageBucketRef(key string, config *core.MappingNode) string {
 // them. A source's linkSelector selected the consumer by label; propagating those
 // labels onto the function re-establishes the concrete source -> function event
 // source once the consumer is absorbed.
-func consumerLabelUnion(r *ResolvedHandler) (map[string]string, []*core.Diagnostic) {
+func ConsumerLabelUnion(r *ResolvedHandler) (map[string]string, []*core.Diagnostic) {
 	labels := map[string]string{}
 	origin := map[string]string{}
 	var diagnostics []*core.Diagnostic
@@ -433,4 +433,14 @@ func consumerLabelUnion(r *ResolvedHandler) (map[string]string, []*core.Diagnost
 		}
 	}
 	return labels, diagnostics
+}
+
+// ConsumerSpec is the spec of the consumer an absorbed binding came from, or nil
+// when the binding carries no consumer resource.
+func ConsumerSpec(binding *ConsumerBinding) *core.MappingNode {
+	if binding.ConsumerResource == nil {
+		return nil
+	}
+
+	return binding.ConsumerResource.Spec
 }

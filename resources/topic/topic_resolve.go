@@ -3,6 +3,7 @@ package topic
 import (
 	"context"
 
+	"github.com/newstack-cloud/bluelink-transformer-celerity/shared"
 	"github.com/newstack-cloud/bluelink/libs/blueprint/linktypes"
 	"github.com/newstack-cloud/bluelink/libs/blueprint/schema"
 	"github.com/newstack-cloud/bluelink/libs/plugin-framework/sdk/transformutils"
@@ -14,6 +15,11 @@ import (
 type ResolvedTopic struct {
 	Name     string
 	Resource *schema.Resource
+	// External is set when the resource points at a topic the target environment
+	// already has and Celerity does not own, in which case no concrete resource
+	// is emitted for it. Nil for a managed resource, and nil when the mode could
+	// not be resolved, which the emit reports.
+	External *shared.External
 }
 
 func (t *ResolvedTopic) ResourceName() string {
@@ -32,8 +38,11 @@ func resolveTopic(
 	_ linktypes.DeclaredLinkGraph,
 	_ *schema.Blueprint,
 ) (transformutils.ResolvedResource, error) {
+	external, _ := shared.ResolvedExternal("celerity/topic", name, resource)
+
 	return &ResolvedTopic{
 		Name:     name,
 		Resource: resource,
+		External: external,
 	}, nil
 }

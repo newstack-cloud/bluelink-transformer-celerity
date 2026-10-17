@@ -82,5 +82,6 @@ golangci-lint run ./...
 
 ## Further documentation
 
+- [Resource Package Layout](./RESOURCE_PACKAGE_LAYOUT.md)
 - [Commit Guidelines](./COMMIT_GUIDELINES.md)
 - [Source Control and Release Strategy](./SOURCE_CONTROL_RELEASE_STRATEGY.md)

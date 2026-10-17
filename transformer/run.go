@@ -10,6 +10,13 @@ import (
 
 func createRunHook(deps *shared.Dependencies) func(ctx context.Context, run *transformutils.Run) error {
 	return func(ctx context.Context, run *transformutils.Run) error {
+		// Provided whether or not a verifier is configured, so an emit has one
+		// place to look rather than branching on its absence.
+		transformutils.Provide(run, &shared.RunContext{
+			TransformContext: run.TransformContext,
+			Verifier:         deps.ExternalVerifier,
+		})
+
 		path, hasPath := run.TransformContext.ContextVariable(
 			shared.BuildManifestContextVarKey,
 		)

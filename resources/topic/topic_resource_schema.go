@@ -1,12 +1,15 @@
 package topic
 
 import (
+	"maps"
+
+	"github.com/newstack-cloud/bluelink-transformer-celerity/shared"
 	"github.com/newstack-cloud/bluelink/libs/blueprint/core"
 	"github.com/newstack-cloud/bluelink/libs/blueprint/provider"
 )
 
 func topicResourceSchema() *provider.ResourceDefinitionsSchema {
-	return &provider.ResourceDefinitionsSchema{
+	definition := &provider.ResourceDefinitionsSchema{
 		Type:  provider.ResourceDefinitionsSchemaTypeObject,
 		Label: "TopicDefinition",
 		Description: "A managed publish/subscribe topic that handlers publish messages to and consumers " +
@@ -41,4 +44,8 @@ func topicResourceSchema() *provider.ResourceDefinitionsSchema {
 			},
 		},
 	}
+
+	maps.Copy(definition.Attributes, shared.ExternalModeAttributes())
+
+	return definition
 }

@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/newstack-cloud/bluelink-transformer-celerity/resources/sqldatabase"
+	"github.com/newstack-cloud/bluelink-transformer-celerity/resources/sqldatabase/sqldatabaseawsserverless"
 	"github.com/newstack-cloud/bluelink-transformer-celerity/shared"
 	"github.com/newstack-cloud/bluelink/libs/blueprint/core"
 	"github.com/newstack-cloud/bluelink/libs/blueprint/schema"
@@ -86,10 +86,10 @@ func passwordDatabase() *core.MappingNode {
 func (s *MaintenanceRunnerTestSuite) Test_a_database_gets_a_maintenance_runner() {
 	resources := runnerTransform(&s.Suite, passwordDatabase())
 
-	runner := resources[sqldatabase.MaintenanceRunnerResourceName("ordersDb")]
+	runner := resources[sqldatabaseawsserverless.MaintenanceRunnerResourceName("ordersDb")]
 	s.Require().NotNil(runner, "a database needs a runner to provision its application user")
 	s.Equal("aws/lambda/function", runner.Type.Value)
-	s.NotNil(resources[sqldatabase.MaintenanceRunnerRoleResourceName("ordersDb")])
+	s.NotNil(resources[sqldatabaseawsserverless.MaintenanceRunnerRoleResourceName("ordersDb")])
 }
 
 // Lambda defaults to x86_64 when architectures is absent, while the CLI
@@ -100,7 +100,7 @@ func (s *MaintenanceRunnerTestSuite) Test_a_database_gets_a_maintenance_runner()
 func (s *MaintenanceRunnerTestSuite) Test_the_runner_declares_the_architecture_its_binary_is_built_for() {
 	resources := runnerTransform(&s.Suite, passwordDatabase())
 
-	runner := resources[sqldatabase.MaintenanceRunnerResourceName("ordersDb")]
+	runner := resources[sqldatabaseawsserverless.MaintenanceRunnerResourceName("ordersDb")]
 	s.Require().NotNil(runner)
 
 	architectures, ok := pluginutils.GetValueByPath("$.architectures", runner.Spec)
@@ -115,8 +115,8 @@ func (s *MaintenanceRunnerTestSuite) Test_the_runner_declares_the_architecture_i
 func (s *MaintenanceRunnerTestSuite) Test_the_runner_is_findable_in_deployed_state() {
 	resources := runnerTransform(&s.Suite, passwordDatabase())
 
-	runner := resources[sqldatabase.MaintenanceRunnerResourceName("ordersDb")]
-	annotation := runner.Metadata.Annotations.Values[sqldatabase.AnnotationKeyMaintenanceRunner]
+	runner := resources[sqldatabaseawsserverless.MaintenanceRunnerResourceName("ordersDb")]
+	annotation := runner.Metadata.Annotations.Values[sqldatabaseawsserverless.AnnotationKeyMaintenanceRunner]
 	s.Require().NotNil(annotation)
 	s.Equal("true", renderedSubstitutions(&core.MappingNode{StringWithSubstitutions: annotation}))
 }
@@ -127,7 +127,7 @@ func (s *MaintenanceRunnerTestSuite) Test_the_runner_is_findable_in_deployed_sta
 func (s *MaintenanceRunnerTestSuite) Test_the_runner_is_placed_in_private_subnets() {
 	resources := runnerTransform(&s.Suite, passwordDatabase())
 
-	runner := resources[sqldatabase.MaintenanceRunnerResourceName("ordersDb")]
+	runner := resources[sqldatabaseawsserverless.MaintenanceRunnerResourceName("ordersDb")]
 	placement := runner.Metadata.Annotations.Values["aws.flexvpc.lambda.subnetType"]
 	s.Require().NotNil(placement, "without a placement the runner has no path to the database")
 	s.Nil(runner.Spec.Fields["vpcConfig"], "vpcConfig is the link's to write, not the transformer's")
@@ -146,7 +146,7 @@ func (s *MaintenanceRunnerTestSuite) Test_the_runner_is_placed_in_private_subnet
 func (s *MaintenanceRunnerTestSuite) Test_handlers_do_not_select_the_runner() {
 	resources := runnerTransform(&s.Suite, passwordDatabase())
 
-	runner := resources[sqldatabase.MaintenanceRunnerResourceName("ordersDb")]
+	runner := resources[sqldatabaseawsserverless.MaintenanceRunnerResourceName("ordersDb")]
 	s.Require().NotNil(runner.Metadata.Labels)
 	s.NotContains(runner.Metadata.Labels.Values, "celerity.handler.uses.ordersDb",
 		"a handler-uses label on the runner makes every handler link to it")
@@ -159,7 +159,7 @@ func (s *MaintenanceRunnerTestSuite) Test_handlers_do_not_select_the_runner() {
 func (s *MaintenanceRunnerTestSuite) Test_the_runner_links_only_to_what_it_connects_to() {
 	resources := runnerTransform(&s.Suite, passwordDatabase())
 
-	runner := resources[sqldatabase.MaintenanceRunnerResourceName("ordersDb")]
+	runner := resources[sqldatabaseawsserverless.MaintenanceRunnerResourceName("ordersDb")]
 	s.Require().NotNil(runner.LinkSelector)
 	s.Require().NotNil(runner.LinkSelector.ByLabel)
 	s.Equal("ordersDb",
@@ -179,7 +179,7 @@ func (s *MaintenanceRunnerTestSuite) Test_the_runner_links_only_to_what_it_conne
 func (s *MaintenanceRunnerTestSuite) Test_the_runner_carries_its_own_connection_details() {
 	resources := runnerTransform(&s.Suite, passwordDatabase())
 
-	runner := resources[sqldatabase.MaintenanceRunnerResourceName("ordersDb")]
+	runner := resources[sqldatabaseawsserverless.MaintenanceRunnerResourceName("ordersDb")]
 	targets := runner.Spec.Fields["environment"].Fields["variables"].
 		Fields["CELERITY_MAINTENANCE_TARGETS"]
 	s.Require().NotNil(targets)
@@ -201,7 +201,7 @@ func (s *MaintenanceRunnerTestSuite) Test_the_runner_carries_its_own_connection_
 func (s *MaintenanceRunnerTestSuite) Test_only_the_runner_may_read_the_master_credential() {
 	resources := runnerTransform(&s.Suite, passwordDatabase())
 
-	role := resources[sqldatabase.MaintenanceRunnerRoleResourceName("ordersDb")]
+	role := resources[sqldatabaseawsserverless.MaintenanceRunnerRoleResourceName("ordersDb")]
 	s.Require().NotNil(role)
 	s.Equal("aws/iam/role", role.Type.Value)
 
@@ -219,7 +219,7 @@ func (s *MaintenanceRunnerTestSuite) Test_only_the_runner_may_read_the_master_cr
 	// defect this whole design exists to avoid.
 	for name, resource := range resources {
 		if resource.Type.Value != "aws/iam/role" ||
-			name == sqldatabase.MaintenanceRunnerRoleResourceName("ordersDb") ||
+			name == sqldatabaseawsserverless.MaintenanceRunnerRoleResourceName("ordersDb") ||
 			strings.Contains(name, "proxy") {
 			continue
 		}
@@ -237,10 +237,10 @@ func (s *MaintenanceRunnerTestSuite) Test_iam_mode_still_needs_a_runner() {
 		"authMode", core.MappingNodeFromString("iam"),
 	))
 
-	runner := resources[sqldatabase.MaintenanceRunnerResourceName("ordersDb")]
+	runner := resources[sqldatabaseawsserverless.MaintenanceRunnerResourceName("ordersDb")]
 	s.Require().NotNil(runner)
 
-	role := resources[sqldatabase.MaintenanceRunnerRoleResourceName("ordersDb")]
+	role := resources[sqldatabaseawsserverless.MaintenanceRunnerRoleResourceName("ordersDb")]
 	rendered := renderedSubstitutions(role.Spec)
 	s.Contains(rendered, "rds-db:connect")
 	s.NotContains(rendered, "secretsmanager:GetSecretValue",

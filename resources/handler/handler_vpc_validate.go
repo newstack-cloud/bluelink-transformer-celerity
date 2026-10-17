@@ -40,7 +40,7 @@ const defaultVPCPreset = "standard"
 //
 // Silent on a referenced VPC as its topology belongs to another blueprint and is
 // not knowable here, so every check would be a guess.
-func vpcPlacementDiagnostics(r *ResolvedHandler) []*core.Diagnostic {
+func VPCPlacementDiagnostics(r *ResolvedHandler) []*core.Diagnostic {
 	preset, known := resolvedPresetTopology(r)
 	if !known {
 		return nil
@@ -165,10 +165,10 @@ func placementDiagnostic(r *ResolvedHandler, message string) *core.Diagnostic {
 	return &core.Diagnostic{
 		Level:   core.DiagnosticLevelError,
 		Message: message,
-		Range:   diagnosticRangeFor(r),
+		Range:   DiagnosticRangeFor(r),
 	}
 }
 
-func diagnosticRangeFor(r *ResolvedHandler) *core.DiagnosticRange {
+func DiagnosticRangeFor(r *ResolvedHandler) *core.DiagnosticRange {
 	return shared.DiagnosticRange(shared.ResourceMeta(r.Resource))
 }

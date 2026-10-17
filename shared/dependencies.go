@@ -7,6 +7,11 @@ import "github.com/newstack-cloud/bluelink-transformer-celerity/shared/build"
 // and services.
 type Dependencies struct {
 	BuildManifestLoader build.ManifestLoader
+	// ExternalVerifier looks an external resource's identifier up so a wrong or
+	// stale one is reported at transform time. This is optional, a validation context has
+	// no credentials to look anything up with, and an absent verifier means an
+	// identifier is simply not checked.
+	ExternalVerifier ExternalVerifier
 }
 
 // BuildManifestLoadError carries the cause of a non-fatal build manifest load

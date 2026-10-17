@@ -6,7 +6,6 @@ import (
 	"context"
 	"testing"
 
-	"github.com/newstack-cloud/bluelink-transformer-celerity/shared"
 	"github.com/newstack-cloud/bluelink/libs/blueprint/core"
 	"github.com/newstack-cloud/bluelink/libs/blueprint/linktypes"
 	"github.com/newstack-cloud/bluelink/libs/blueprint/schema"
@@ -183,7 +182,7 @@ func Test_Resolve_returns_fatal_error_when_spec_is_nil(t *testing.T) {
 }
 
 func Test_Resource_schema_declares_defaults_and_required_fields(t *testing.T) {
-	attributes := Resource(&shared.Dependencies{}).Schema.Attributes
+	attributes := Resource().Schema.Attributes
 
 	assert.Equal(t, 512, core.IntValue(attributes["memory"].Default))
 	assert.Equal(t, 30, core.IntValue(attributes["timeout"].Default))
@@ -193,7 +192,7 @@ func Test_Resource_schema_declares_defaults_and_required_fields(t *testing.T) {
 	assert.ElementsMatch(
 		t,
 		[]string{"handlerName", "handler"},
-		Resource(&shared.Dependencies{}).Schema.Required,
+		Resource().Schema.Required,
 	)
 }
 
@@ -288,7 +287,7 @@ func resolveForTest(
 	blueprint *schema.Blueprint,
 ) *ResolvedHandler {
 	t.Helper()
-	def := Resource(&shared.Dependencies{})
+	def := Resource()
 	resolved, err := def.Resolve(context.Background(), nil, testHandlerName, resource, graph, blueprint)
 	require.NoError(t, err)
 	handler, ok := resolved.(*ResolvedHandler)
@@ -303,7 +302,7 @@ func resolveErr(
 	blueprint *schema.Blueprint,
 ) error {
 	t.Helper()
-	def := Resource(&shared.Dependencies{})
+	def := Resource()
 	_, err := def.Resolve(context.Background(), nil, testHandlerName, resource, graph, blueprint)
 	return err
 }

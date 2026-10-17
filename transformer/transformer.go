@@ -3,18 +3,28 @@ package transformer
 import (
 	"github.com/newstack-cloud/bluelink-transformer-celerity/links"
 	"github.com/newstack-cloud/bluelink-transformer-celerity/resources/api"
+	"github.com/newstack-cloud/bluelink-transformer-celerity/resources/api/apiawsserverless"
 	"github.com/newstack-cloud/bluelink-transformer-celerity/resources/bucket"
+	"github.com/newstack-cloud/bluelink-transformer-celerity/resources/bucket/bucketaws"
 	"github.com/newstack-cloud/bluelink-transformer-celerity/resources/cache"
+	"github.com/newstack-cloud/bluelink-transformer-celerity/resources/cache/cacheaws"
 	"github.com/newstack-cloud/bluelink-transformer-celerity/resources/config"
+	"github.com/newstack-cloud/bluelink-transformer-celerity/resources/config/configaws"
 	"github.com/newstack-cloud/bluelink-transformer-celerity/resources/consumer"
 	"github.com/newstack-cloud/bluelink-transformer-celerity/resources/datastore"
+	"github.com/newstack-cloud/bluelink-transformer-celerity/resources/datastore/datastoreaws"
 	"github.com/newstack-cloud/bluelink-transformer-celerity/resources/handler"
+	"github.com/newstack-cloud/bluelink-transformer-celerity/resources/handler/handlerawsserverless"
 	"github.com/newstack-cloud/bluelink-transformer-celerity/resources/handlerconfig"
 	"github.com/newstack-cloud/bluelink-transformer-celerity/resources/queue"
+	"github.com/newstack-cloud/bluelink-transformer-celerity/resources/queue/queueawsserverless"
 	"github.com/newstack-cloud/bluelink-transformer-celerity/resources/schedule"
 	"github.com/newstack-cloud/bluelink-transformer-celerity/resources/sqldatabase"
+	"github.com/newstack-cloud/bluelink-transformer-celerity/resources/sqldatabase/sqldatabaseawsserverless"
 	"github.com/newstack-cloud/bluelink-transformer-celerity/resources/topic"
+	"github.com/newstack-cloud/bluelink-transformer-celerity/resources/topic/topicaws"
 	"github.com/newstack-cloud/bluelink-transformer-celerity/resources/vpc"
+	"github.com/newstack-cloud/bluelink-transformer-celerity/resources/vpc/vpcaws"
 	"github.com/newstack-cloud/bluelink-transformer-celerity/shared"
 	"github.com/newstack-cloud/bluelink-transformer-celerity/shared/aws"
 	"github.com/newstack-cloud/bluelink/libs/blueprint/core"
@@ -30,18 +40,18 @@ func NewTransformer(deps *shared.Dependencies) transform.SpecTransformer {
 		TransformName:               transformName,
 		TransformerConfigDefinition: configDefinition(),
 		AbstractResources: map[string]*transformerv1.AbstractResourceDefinition{
-			"celerity/api":           api.Resource(),
-			"celerity/handler":       handler.Resource(deps),
-			"celerity/bucket":        bucket.Resource(),
-			"celerity/cache":         cache.Resource(),
-			"celerity/queue":         queue.Resource(),
-			"celerity/topic":         topic.Resource(),
-			"celerity/datastore":     datastore.Resource(),
-			"celerity/sqlDatabase":   sqldatabase.Resource(),
+			"celerity/api":           api.Resource(apiawsserverless.Implementation()),
+			"celerity/handler":       handler.Resource(handlerawsserverless.Implementation(deps)),
+			"celerity/bucket":        bucket.Resource(bucketaws.Implementation(shared.AWSServerless)),
+			"celerity/cache":         cache.Resource(cacheaws.Implementation(shared.AWSServerless)),
+			"celerity/queue":         queue.Resource(queueawsserverless.Implementation()),
+			"celerity/topic":         topic.Resource(topicaws.Implementation(shared.AWSServerless)),
+			"celerity/datastore":     datastore.Resource(datastoreaws.Implementation(shared.AWSServerless)),
+			"celerity/sqlDatabase":   sqldatabase.Resource(sqldatabaseawsserverless.Implementation()),
 			"celerity/consumer":      consumer.Resource(),
 			"celerity/schedule":      schedule.Resource(),
-			"celerity/vpc":           vpc.Resource(),
-			"celerity/config":        config.Resource(),
+			"celerity/vpc":           vpc.Resource(vpcaws.Implementation(shared.AWSServerless)),
+			"celerity/config":        config.Resource(configaws.Implementation(shared.AWSServerless)),
 			"celerity/handlerConfig": handlerconfig.Resource(),
 		},
 		AbstractLinks: abstractLinks(),

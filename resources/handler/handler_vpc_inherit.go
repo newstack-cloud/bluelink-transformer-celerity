@@ -71,7 +71,7 @@ func resolveInheritedVPCPlacement(
 	target.InheritedVPCFrom = placement.parentName
 	target.inheritedVPCSubnetType = placement.subnetType
 	target.inheritedVPCEgress = placement.egress
-	target.inheritedVPCSelectorLabels = placement.selectorLabels
+	target.InheritedVPCSelectorLabels = placement.selectorLabels
 
 	return nil
 }
