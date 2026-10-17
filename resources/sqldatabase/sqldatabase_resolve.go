@@ -14,9 +14,9 @@ import (
 )
 
 // ResolvedSQLDatabase carries the abstract database plus the placement VPC found
-// from the link graph. Databases require VPC placement; the emit references the
-// concrete flex VPC's computed subnets/security-groups and validates the VPC's
-// preset provides enough private subnets (RDS needs at least two AZs).
+// from the link graph. Databases require VPC placement; each target's emit
+// references the concrete VPC's computed networking and validates that the VPC's
+// preset provides enough private subnets across enough availability zones.
 type ResolvedSQLDatabase struct {
 	Name     string
 	Resource *schema.Resource

@@ -15,6 +15,9 @@ import (
 // and the aggregator drops it from the primaries. The emitter exists only because
 // the framework requires an Emitters entry wherever a pipeline field such as
 // Resolve is set.
+// Deliberately not target-named, unlike the emits that build resources: a schedule
+// contributes to other resources and emits none of its own on any target, so
+// every target can register this same function.
 func emitSchedule(
 	_ context.Context,
 	_ *transformutils.Run,
