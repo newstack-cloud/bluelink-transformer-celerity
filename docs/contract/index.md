@@ -420,8 +420,8 @@ Individual source-of-truth references are declared inline in each section that d
 
 Every supported deploy target has a companion contract document that pins down its concrete resource types, provider runtime mapping, target-specific build-manifest sub-manifest, access-model details, and any target-specific env vars the SDK reads.
 
-| Deploy target | Contract |
-|---|---|
-| `aws-serverless` (AWS Lambda) | [aws-serverless.md](aws-serverless.md) |
+| Deploy target | Contract | Companion |
+|---|---|---|
+| `aws-serverless` (AWS Lambda) | [aws-serverless.md](aws-serverless.md) | [resource-mapping-aws-serverless.md](resource-mapping-aws-serverless.md) - every abstract resource's concrete emission |
 
 Additional targets (`aws`, `gcloud`, `gcloud-serverless`, `azure`, `azure-serverless`) will have their own contract files as they are implemented.
