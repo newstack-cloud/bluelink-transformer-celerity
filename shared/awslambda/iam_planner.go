@@ -43,9 +43,10 @@ func SeedRoleSpec(roleName string, plan *RolePlan) *core.MappingNode {
 	return spec
 }
 
-// Builds the inline policy list the transformer owns: the X-Ray policy (no
-// provider link grants it) and, for each external event source that has no
-// provider link, a scoped source-read policy statement.
+// Builds the inline policy list the transformer owns. Each covers something no
+// provider link grants: X-Ray, the source-read actions for an external event
+// source, the actions for an external resource the handler uses, and read access
+// to the internal resources store.
 func inlinePolicies(plan *RolePlan) []*core.MappingNode {
 	policies := []*core.MappingNode{}
 	if plan.Tracing {
@@ -53,6 +54,9 @@ func inlinePolicies(plan *RolePlan) []*core.MappingNode {
 	}
 	if doc := externalSourcesPolicyDoc(plan.ExternalSources); doc != nil {
 		policies = append(policies, policyEntry("celerity-external-event-sources", doc))
+	}
+	if doc := externalTargetsPolicyDoc(plan.ExternalTargets); doc != nil {
+		policies = append(policies, policyEntry("celerity-external-resources", doc))
 	}
 	if plan.ResourceLinksStorePath != "" {
 		policies = append(policies, policyEntry(

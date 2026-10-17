@@ -34,6 +34,18 @@ type RolePlan struct {
 	// seed grants it; they are part of the fingerprint so a handler with external
 	// sources never shares a role with one that lacks them.
 	ExternalSources []ExternalEventSource `json:"externalSources,omitempty"`
+	// ExternalTargets are out-of-blueprint resources a handler links to and uses:
+	// a bucket it reads, a table it writes, a topic it publishes to. They differ
+	// from ExternalSources in direction rather than in kind, a source invokes the
+	// handler, a target is used by it. For the same reason, neither gets IAM
+	// from a provider link: no concrete resource exists in the blueprint to link
+	// to, so the seed grants it. It is a part of the fingerprint, so a handler reaching an
+	// external resource never shares a role with one that does not.
+	//
+	// omitempty matters as a handler with no external targets marshals exactly as it
+	// did before this field existed, so its fingerprint and therefore its IAM role
+	// name are unchanged.
+	ExternalTargets []ExternalGrant `json:"externalTargets,omitempty"`
 	// ResourceLinksStorePath is the SSM Parameter Store path prefix of the internal
 	// resources namespace config store. When set, the seed grants the role read
 	// access to that path (no provider link does); it is part of the fingerprint so a
@@ -58,6 +70,35 @@ const (
 	ExternalSourceServiceSQS            = "sqs"
 	ExternalSourceServiceDynamoDBStream = "dynamodb-stream"
 	ExternalSourceServiceKinesisStream  = "kinesis-stream"
+)
+
+// ExternalGrant is one out-of-blueprint resource a handler uses, and the access
+// level that is granted to it.
+//
+// The action sets this selects mirror what the provider's own links grant for
+// the managed equivalent, so an author moving a resource in or out of a
+// blueprint does not change what their handler may do with it. They are
+// duplicated rather than shared because the provider cannot inject IAM for a
+// resource that is not in the blueprint: see the lambda_* inter-service links in
+// bluelink-provider-aws for the originals.
+type ExternalGrant struct {
+	// Service selects the action set (see ExternalTargetService* constants).
+	Service string `json:"service"`
+	// ARN is the resource the statement is scoped to.
+	ARN string `json:"arn"`
+	// Access narrows the action set. Empty takes the service's default, which is
+	// the same default the provider link applies.
+	Access string `json:"access,omitempty"`
+}
+
+// External link target service identifiers.
+const (
+	ExternalTargetServiceS3       = "s3"
+	ExternalTargetServiceDynamoDB = "dynamodb"
+	ExternalTargetServiceSQS      = "sqs"
+	ExternalTargetServiceSNS      = "sns"
+	ExternalTargetServiceSSM      = "ssm"
+	ExternalTargetServiceSecret   = "secretsmanager"
 )
 
 // Fingerprint is the role-sharing key: identical plans → identical fingerprint

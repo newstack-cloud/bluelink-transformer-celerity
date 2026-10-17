@@ -5,6 +5,7 @@ package transformer
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/newstack-cloud/bluelink-transformer-celerity/shared"
@@ -512,4 +513,89 @@ func (s *ExternalResourcesTransformTestSuite) Test_external_config_with_values_i
 
 func TestExternalResourcesTransformTestSuite(t *testing.T) {
 	suite.Run(t, new(ExternalResourcesTransformTestSuite))
+}
+
+func (s *ExternalResourcesTransformTestSuite) Test_a_handler_is_granted_access_to_an_external_bucket() {
+	out := s.transform(
+		map[string]*schema.Resource{
+			"archiveWriter": handlerLinkedTo(map[string]string{"app": "orders"}),
+			// An S3 ARN carries no region, so an external bucket declares one.
+			"archive": externalResource(
+				"celerity/bucket", externalBucketARN,
+				core.MappingNodeFromString("region"),
+				core.MappingNodeFromString("eu-west-2"),
+			),
+		},
+		edges(edge("archiveWriter", "archive", "celerity/handler", "celerity/bucket")),
+	)
+
+	s.Empty(s.errorMessages(out))
+
+	policy := s.externalResourcesPolicy(out)
+	s.Require().NotNil(policy, "expected the execution role to seed an external-resource policy")
+
+	statement := policy.Fields["policyDocument"].Fields["statement"].Items[0]
+	actions := []string{}
+	for _, action := range statement.Fields["action"].Items {
+		actions = append(actions, core.StringValue(action))
+	}
+	s.ElementsMatch(
+		[]string{"s3:GetObject", "s3:ListBucket", "s3:PutObject", "s3:DeleteObject"},
+		actions,
+		"an external bucket is granted what the provider grants for a managed one",
+	)
+
+	resources := []string{}
+	for _, resource := range statement.Fields["resource"].Items {
+		resources = append(resources, core.StringValue(resource))
+	}
+	s.Equal(
+		[]string{externalBucketARN, externalBucketARN + "/*"},
+		resources,
+		"scoped to the bucket and its objects, and to nothing else",
+	)
+}
+
+func (s *ExternalResourcesTransformTestSuite) Test_a_managed_only_handler_seeds_no_external_policy() {
+	out := s.transform(
+		map[string]*schema.Resource{
+			"archiveWriter": handlerLinkedTo(map[string]string{"app": "orders"}),
+			"archive": {
+				Type: &schema.ResourceTypeWrapper{Value: "celerity/bucket"},
+				Spec: core.MappingNodeFields("name", core.MappingNodeFromString("archive")),
+				Metadata: &schema.Metadata{
+					Labels: &schema.StringMap{Values: map[string]string{"app": "orders"}},
+				},
+			},
+		},
+		edges(edge("archiveWriter", "archive", "celerity/handler", "celerity/bucket")),
+	)
+
+	s.Empty(s.errorMessages(out))
+	s.Nil(s.externalResourcesPolicy(out))
+}
+
+// The seeded inline policy granting access to external resources, or nil when
+// the role seeds none.
+func (s *ExternalResourcesTransformTestSuite) externalResourcesPolicy(
+	out *transform.SpecTransformerTransformOutput,
+) *core.MappingNode {
+	for name, resource := range out.TransformedBlueprint.Resources.Values {
+		if !strings.HasPrefix(name, "celerityLambdaExec_") {
+			continue
+		}
+
+		policies, ok := resource.Spec.Fields["policies"]
+		if !ok || policies == nil {
+			continue
+		}
+
+		for _, policy := range policies.Items {
+			if core.StringValue(policy.Fields["policyName"]) == "celerity-external-resources" {
+				return policy
+			}
+		}
+	}
+
+	return nil
 }

@@ -55,5 +55,8 @@ func RolePlanFor(r *handler.ResolvedHandler) awslambda.RolePlan {
 		// source-read IAM, so the seed grants it. Folding them into the plan also
 		// keeps the fingerprint (hence role sharing) sensitive to them.
 		ExternalSources: externalRoleSources(r),
+		// An external resource the handler uses, as opposed to one that invokes
+		// it. Neither gets IAM from a provider link, for the same reason.
+		ExternalTargets: externalRoleTargets(r),
 	}
 }
