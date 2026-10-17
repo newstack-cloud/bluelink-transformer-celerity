@@ -76,3 +76,8 @@ CLAUDE.md
 # dependencies with local versions for testing and development.
 go.work
 go.work.sum
+
+# Design docs and working notes are kept locally, not in version control: they
+# record thinking in progress, where the committed contract docs record what the
+# transformer must do.
+docs/design/

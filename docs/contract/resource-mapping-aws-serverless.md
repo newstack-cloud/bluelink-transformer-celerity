@@ -4,11 +4,11 @@
 **Deploy target:** `aws-serverless`
 **Provider:** `bluelink-provider-aws` v0.4.0 (adds the DynamoDB-stream `reportBatchItemFailures` annotation → `FunctionResponseTypes` [P1] and the `aws/elasticache/replicationGroup::aws/secretsmanager/secret` AUTH-token link [P2]; both required by the `consumer` and `cache` mappings below)
 
-This document places all thirteen Celerity abstract resources on one map: for each, the concrete AWS resource(s) the transformer emits, the provider link(s) that wire them, the Celerity→`aws.*` annotation translation, and the gaps. [aws-serverless.md](aws-serverless.md) specifies the handler and the shared emission rules in depth; this document is the system-wide view, so the handler's link-declaration layer can be built once against the full set of backing targets rather than discovered piecemeal.
+This document places all thirteen Celerity abstract resources on one map: for each, the concrete AWS resource(s) the transformer emits, the provider link(s) that wire them, and the Celerity→`aws.*` annotation translation. [aws-serverless.md](aws-serverless.md) specifies the handler and the shared emission rules in depth; this document is the system-wide view, so the handler's link-declaration layer can be built once against the full set of backing targets rather than discovered piecemeal.
 
 Where a mapping is specified in depth elsewhere (handler, config store, VPC), this document states it compactly and links out rather than duplicating.
 
-> **Implementation status (2026-07):** emits exist for **all thirteen** abstract resources. `celerity/handler`, `celerity/config`, `celerity/queue`, `celerity/topic`, `celerity/datastore`, `celerity/bucket` (partial — `lifecycle`/`replication` deferred), `celerity/vpc`, and now `celerity/api`, `celerity/consumer`, `celerity/schedule`, `celerity/cache` and `celerity/sqlDatabase` all emit; `celerity/handlerConfig` is complete (contributory-only: inheritance + strip, §C). The handler→backing-target links are established generically by preserving the handler's `linkSelector` onto the emitted Lambda, and the handler now carries the **union of its own labels and each absorbed consumer's labels** so an inbound source/api/subscription link that selected the abstract consumer/handler by label resolves to the concrete function (label-on-source; [`handler_aws_triggers.go`](../../resources/handler/handler_aws_triggers.go), [`handler_api_annotations.go`](../../resources/handler/handler_api_annotations.go)). **Deploy-target config (`aws.<svc>.*`) is wired for `queue`, `datastore`, `vpc`, `cache` (`aws.elasticache.<cacheName>.*`) and `sqlDatabase` (`aws.rds.<dbName>.*` and `aws.aurora.<dbName>.*`)** via the shared resolver `shared/aws.ResolveDeployConfig` (per-resource-over-global precedence, §2.1); **`topic` and `bucket` deploy-config are deferred** (topic pending the `archivePolicy`/indexed-`statusLogging` shape; bucket's `replication.role` lands with the deferred `replication` block). **Still deferred within otherwise-implemented slices:** API stage **X-Ray tracing** (`tracingEnabled`, an API Gateway v2 platform limitation — handler-level Lambda tracing is wired instead), consumer **externalEvents on out-of-blueprint object storage**, and per-target **access-level annotations** on backing-target handler links. This document is therefore both a *contract* (what the mapping must be) and a *gap register* (what is not yet built). Per-resource "Status" notes and the [Gaps & build sequencing](#gaps--build-sequencing) appendix track the delta.
+> **Implementation status (2026-07):** emits exist for **all thirteen** abstract resources. `celerity/handler`, `celerity/config`, `celerity/queue`, `celerity/topic`, `celerity/datastore`, `celerity/bucket` (partial — `lifecycle`/`replication` deferred), `celerity/vpc`, and now `celerity/api`, `celerity/consumer`, `celerity/schedule`, `celerity/cache` and `celerity/sqlDatabase` all emit; `celerity/handlerConfig` is complete (contributory-only: inheritance + strip). The handler→backing-target links are established generically by preserving the handler's `linkSelector` onto the emitted Lambda, and the handler now carries the **union of its own labels and each absorbed consumer's labels** so an inbound source/api/subscription link that selected the abstract consumer/handler by label resolves to the concrete function (label-on-source; [`handler_aws_triggers.go`](../../resources/handler/handler_aws_triggers.go), [`handler_api_annotations.go`](../../resources/handler/handler_api_annotations.go)). **Deploy-target config (`aws.<svc>.*`) is wired for `queue`, `datastore`, `vpc`, `cache` (`aws.elasticache.<cacheName>.*`) and `sqlDatabase` (`aws.rds.<dbName>.*` and `aws.aurora.<dbName>.*`)** via the shared resolver `shared/aws.ResolveDeployConfig` (per-resource-over-global precedence, §2.1); **`topic` and `bucket` deploy-config are deferred** (topic pending the `archivePolicy`/indexed-`statusLogging` shape; bucket's `replication.role` lands with the deferred `replication` block). **Still deferred within otherwise-implemented slices:** API stage **X-Ray tracing** (`tracingEnabled`, an API Gateway v2 platform limitation — handler-level Lambda tracing is wired instead), consumer **externalEvents on out-of-blueprint object storage**, and per-target **access-level annotations** on backing-target handler links. Each resource's **Status** note states what is built and what is deferred for that resource; there is no separate gap appendix.
 
 ---
 
@@ -290,7 +290,7 @@ The absorbing handler emits the rule; its `targets[].arn` reference to the handl
 
 **Outputs:** `spec.id` → **synthesise ARN** (no ARN attribute); `host` → `configurationEndPoint`/`primaryEndPoint.address`; `port` → default 6379. Connection details reach the handler as **per-link env vars** (`<PREFIX>_HOST`/`_PORT`), not the config store; only the AUTH token is a secret.
 
-**Links.** From: handler (`lambda/function::elasticache/replicationGroup` — SG ingress via `ReconcileLinkNetworking`, `elasticache:Connect` IAM for iam-mode, `<PREFIX>_HOST/_PORT` env vars) + the password secret (`lambda/function::secretsmanager/secret`). `vpc→cache` has **no provider link** (create-only placement, see gaps).
+**Links.** From: handler (`lambda/function::elasticache/replicationGroup` — SG ingress via `ReconcileLinkNetworking`, `elasticache:Connect` IAM for iam-mode, `<PREFIX>_HOST/_PORT` env vars) + the password secret (`lambda/function::secretsmanager/secret`). `vpc→cache` has **no provider link**: ElastiCache placement is create-only, so the emit provisions an `aws/elasticache/subnetGroup` instead (above) rather than wiring one.
 
 **Annotation map:** `aws.lambda.elasticache.<cache>.{authMode,userId,port,envVarPrefix,populateEnvVars}`; handler VPC tier via `aws.flexvpc.lambda.subnetType` on the handler↔VPC link. The `replicationGroup::secret` link exposes `aws.elasticache.secretsmanager.authTokenUpdateStrategy` on the **replication group** (resourceA) — the transformer leaves it unset (provider default). Cache spec has no other linking annotations (spec-field-driven).
 
@@ -351,137 +351,3 @@ Backend is **derived from `plaintext`**: empty ⇒ one `aws/secretsmanager/secre
 **Shared VPCs across blueprints (`referenced` mode).** `aws/flex/vpc` supports `mode: reference`, which resolves an existing flex VPC by its `bluelink:flex-vpc:name={name}` tag via `GetExternalState` rather than provisioning one ([`flex/vpc_resource_create.go:51`](../../../projects2025/bluelink-provider-aws/flex/vpc_resource_create.go#L51)). This is how a VPC is shared across applications **without native cross-blueprint links**: one blueprint declares `celerity/vpc` in `managed` mode (the owner), others declare a `celerity/vpc` with the **same `name`** in `referenced` mode. Each blueprint's own `flex/vpc::function` link places its functions into the shared VPC; nothing crosses a blueprint boundary. The transformer lowering is: `referenced` → `aws/flex/vpc` `mode: reference` with only `name`; `preset` and the `aws.vpc.*` deploy keys are dropped (they `ConflictsWith` reference on the provider). Two constraints follow from the tag-lookup design: the referenced VPC must itself be a Celerity/flex-managed VPC (not an arbitrary imported one), and — because AWS VPCs are regional — it must be in the same region as the resources placed into it. The abstraction generalises across providers: each provider plugin resolves the Celerity `name` via its native tag/label convention (GCP VPCs are global, so no region match is needed). See [celerity-vpc.mdx §mode](https://celerityframework.io/docs/framework/applications/resources/celerity-vpc#mode).
 
 ---
-
-## Gaps & build sequencing
-
-### A0. Deploy-config keys: specified versus read (2026-10-16)
-
-The resource specifications in `celerity-docs-v2` are the contract for
-`deployTarget.config`, and they are a clean source of truth: their **AWS
-Configuration Options** sections contain deploy-target config and nothing else.
-No link annotation key appears in them anywhere. Reconciled by set difference,
-every key the emits read is a specified key, so nothing has drifted or been
-invented.
-
-| | |
-|---|---|
-| Specified across the resource specs | **44** distinct keys (52 headings; the pairs are the per-resource and app-wide shapes) |
-| Read, declared and routed | **22** |
-| Specified but unread | **22** |
-
-An unread key is **rejected, not ignored**: the transformer's config definition
-does not set `AllowAdditionalFields`, so `core.ValidateConfigDefinition` reports
-an undeclared key as an error and the engine returns 422. This register exists so
-the unread half is not rediscovered as a bug by someone following the specs.
-
-Declaration lives in `shared/aws/config_definition_resources.go`, beside the
-`ResolveDeployConfig` call sites that read each key. The CLI's
-`transformerConfigPrefixes` decides only which plugin receives a key, never
-whether it is valid.
-
-**The one unautomated edge, and why this section drifted.** Four statements of
-this surface exist, and only one of the links between them is unchecked:
-
-| Statement | Kept in step by |
-|---|---|
-| Implementation, the `ResolveDeployConfig` call sites | The truth |
-| Declaration, `shared/aws/config_definition_resources.go` | Sits beside the call sites; a test reconciles the two |
-| Bluelink Registry plugin docs | **Generated** from the declaration by `plugin-docgen` on every release (`.github/workflows/release.yaml`, via `ConfigDefinition()`) |
-| `celerity-docs-v2` resource specifications | **Nothing. Hand-written prose** |
-
-So the drift is not between the implementation and the declaration, nor between
-the declaration and the Registry. It is the declaration against the public
-specifications, which is also the document authors actually read, which is why
-the gap presented as though everything were out of sync.
-
-The docgen JSON already carries every declared key with its type, label and
-description, and `celerity-docs-v2` has a build pipeline that consumes none of
-it. Closing the edge (a CI check diffing the spec headings against that JSON, or
-generating those sections from it) is **recorded here and not yet decided**. Until
-it is, the **read and declared** list below is a hand-maintained snapshot of a
-machine-derivable fact and will go stale the way the CLI prefix list did. The
-**specified but unread** table is the half that genuinely cannot be generated,
-because each row carries an editorial reason.
-
-**Read and declared** (22 keys, each in both shapes):
-`aws.sqs.<queue>.{messageRetentionPeriod,maxMessageSize}`;
-`aws.dynamodb.<datastoreName>.{billingMode,readCapacityUnits,writeCapacityUnits,maxReadRequestUnits,maxWriteRequestUnits}`;
-`aws.vpc.<vpc>.{cidrBlock,enableDNSSupport,enableDNSHostnames}`;
-`aws.rds.<dbName>.{instanceClass,allocatedStorage,readReplicas.instanceClass}`;
-`aws.aurora.<dbName>.{enabled,minACU,maxACU}`;
-`aws.elasticache.<cacheName>.{nodeType,numShards,numReplicas,automaticFailover,atRestEncryption,snapshotRetentionDays}`.
-
-**Specified but unread** (22 keys). The emit produces nothing these could set, so
-wiring one would have nothing to write to. Each needs its feature first.
-
-| Keys | Blocked on |
-|---|---|
-| `aws.rds.<dbName>.{engineVersion,multiAz,storageType,backupRetentionPeriod}` | Not emitted on the provisioned instance at all |
-| `aws.rds.<dbName>.readReplicas.{count,regions,storageType}` | One reader is emitted rather than a count; cross-region replicas and replica storage unimplemented |
-| `aws.aurora.<dbName>.reader.{minACU,maxACU}` | **May not be expressible.** `serverlessV2ScalingConfiguration` is a cluster-level setting and the emit sets one for the whole cluster, so a separate reader range has nowhere to go. Settle the shape before promising it |
-| `aws.dynamodb.<datastoreName>.replicaRegions` | Global tables |
-| `aws.config.{replicateRegions,regionKMSKeys.<region>}` | Multi-region config replication. The `aws.config.` prefix is also unrouted in the CLI |
-| `aws.elasticache.<cacheName>.evictionPolicy` | No parameter-group emit to carry it |
-| `aws.s3[.<bucketName>].replication.role` | Lands with the deferred `replication` block |
-| `aws.sns.fifo[.<topic>].messageRetentionPeriod`, `aws.sns[.<topic>].statusLogging.<index>.{protocol,successFeedbackRoleArn,failureFeedbackRoleArn,successFeedbackSampleRate}` | Topic deploy-config. Also needs `ResolveDeployConfig` to grow an indexed-collection variant, where the per-resource form overrides the app-wide one **by index** rather than wholesale |
-| `aws.workflow.dynamodb.{capacityMode,readCapacityUnits,writeCapacityUnits}` | `celerity/workflow` is not a registered abstract resource. The `aws.workflow.` prefix is also unrouted |
-
-**Annotations are a separate mechanism, documented separately.** The
-`aws.lambda.<svc>.<target>.*`, `aws.apigatewayv2.*`, `aws.sqs.lambda.*` and
-`aws.flexvpc.lambda.*` keys elsewhere in this document are **link annotations**
-stamped on resource metadata for the provider's links to consume. They are not
-deploy config, they take no declaration in a config definition, and they
-correctly appear nowhere in the resource specifications. Do not reconcile the two
-lists against each other.
-
-**Four routed prefixes match nothing specified.** `aws.lambda.`,
-`aws.apigateway.`, `aws.ecs.` and `aws.eks.` are in the CLI's
-`transformerConfigPrefixes` but no specification documents a deploy-config key
-under any of them, and no emit reads one. They are speculative entries rather
-than deferred surfaces, and are removal candidates. `aws.lambda.<handlerName>.runtime`
-is the one future key in this space, flagged in `celerity-handler.mdx` as planned
-for v1 and deliberately not in an AWS Configuration Options section.
-
-### A. Missing provider links (abstract edge with no concrete counterpart)
-
-> **Link inventory reconciled against the full `provider.go` registry.** An earlier draft under-counted provider links because it searched only `inter-service-links/`; **service-scoped** links also live under `services/<svc>/links/` (`sqs`, `lambda`, `events`). The rows below are checked against the complete registration list in `bluelink-provider-aws: provider/provider.go`. Notably `aws/sqs/queue::aws/sqs/queue` (DLQ redrive) **does exist** and is *not* a gap — it is the `queue`-section mapping above.
-
-| Abstract edge | Why it has no link | Transformer must instead |
-|---|---|---|
-| `queue → topic` (forward) | no `sqs::sns` link | **Resolved** (`resources/queue/queue_forwarder_aws_serverless.go`). Emit **one** intermediary `aws/lambda/function` per source queue (inline `code.zipFile` Node.js forwarder) + its base `aws/iam/role`. The source queue triggers the forwarder via a synthetic `celerity.queue.forward.<queue>` label activating the `sqs/queue::lambda/function` poll link; the forwarder's own `linkSelector` (union of the target topics' labels) activates a `lambda/function::sns/topic` link per topic, which injects each topic ARN under `CELERITY_FORWARD_TOPIC_ARN_<index>`. One forwarder fans out to **all** target topics (SQS is competing-consumers, so one poller per queue). See the v0 limitations below. |
-| `vpc → cache` | ElastiCache placement is create-only; not a link | **Resolved (provider v0.3.1).** Emit `aws/elasticache/subnetGroup` with `subnetIds` = `${vpc.spec.privateSubnetIds}` + reference `securityGroups`. The subnet-group resource validates ≥1 subnet at plan time. |
-| `vpc → sqlDatabase` | RDS placement is create-only; not a link | **Resolved (provider v0.3.1).** Emit `aws/rds/dbSubnetGroup` with `subnetIds` = `${vpc.spec.privateSubnetIds}` + reference `securityGroups`. The subnet-group resource validates ≥2 subnets across distinct AZs at plan time (also enforced for RDS Proxy). |
-| `api → config` | no app-level concrete link | fan out to a `function::parameterTree`/`::secret` link **per handler** in the API |
-| `api custom domain` | no `domainname::api` link, no ACM cert link | **Resolved.** The `api` emit builds `aws/apigatewayv2/domainName` (`domainNameConfigurations[].certificateArn` from `spec.domain.certificateId`) + one `aws/apigatewayv2/apiMapping` per protocol/basePath, wired by reference. The ACM certificate is referenced by ARN, not created. |
-| `topic → consumer` subscription node | `sns::sqs`/`sns::lambda` links only attach policy | **Resolved.** The absorbing handler emits the `aws/sns/subscription` node (`protocol=lambda`, `topicArn`, `endpoint`=`${func.arn}`); the reference-activated `sns/subscription::lambda/function` link grants the invoke permission. |
-| `api/apigatewayv2 stage` | no `stage::api` link | **Resolved.** The `api` emit emits `aws/apigatewayv2/stage` (`apiId`, `stageName=$default`, `autoDeploy=true`) directly. |
-
-**`queue → topic` forwarder — known v0 limitations.** The forwarder is implemented but constrained: (1) the forwarder's inline `code.zipFile` is **write-only** in the provider, so a change to the forwarder source only takes effect after the code object is refreshed (a source edit does not by itself force a redeploy); (2) **no KMS grants** are added for customer-managed-key-encrypted queues or topics, so a CMK-encrypted queue/topic will fail at runtime with `AccessDenied`; (3) a **FIFO queue ↔ FIFO topic** mismatch is not validated (MessageGroupId is passed through, but the shapes are not checked); (4) a queue that is **both consumed and forwarded** is an error diagnostic (a single SQS queue feeds one poller — the consumer's and the forwarder's would compete), and a forward edge carrying no target-topic label selector is likewise an error.
-
-**Cross-blueprint VPC sharing is intentionally link-free.** Sharing a VPC across applications is the one cross-blueprint relationship handled *without* a link, by design — `celerity/vpc` `mode: referenced` → `aws/flex/vpc` `mode: reference`, resolved by name tag (see the `celerity/vpc` section). This sidesteps native cross-blueprint links entirely. It depends on an upstream `celerity-vpc.mdx` spec addition (the `mode` field), which has been drafted; the transformer lowering (add `mode`, drop `preset`/`aws.vpc.*` in reference mode) is a small extension of the `celerity/vpc` emit in build step 4.
-
-### B. Shape mismatches to confirm with the provider
-
-- ~~**`consumer.partialFailures` on DynamoDB streams**~~ — **Resolved (provider P1).** The `dynamodb/table::lambda/function` link now honours `aws.dynamodb.lambda.stream.reportBatchItemFailures` → `FunctionResponseTypes=[ReportBatchItemFailures]`; the transformer stamps it from `spec.partialFailures` for datastore sources.
-- **`bucket → consumer` FaaS path** — the spec describes an EventBridge rule; the provider offers only direct S3→Lambda notification (`s3::lambda`). The transformer uses the **direct S3 push path** (`aws.s3.lambda.event.<index>`); confirm this is acceptable long-term or whether an S3→EventBridge link is needed.
-- **`spec.id` ARN synthesis** — **`api` resolved:** synthesised as `arn:aws:apigateway:<region>::/apis/${apiId}` (account id omitted; empty region + warning when `aws.region` unset). `cache` (`replicationGroupId`) ARN synthesis is still **deferred** (part of the cache outputs follow-up).
-- ~~**Standalone RDS has no direct `function::dbInstance` link**~~ — **Confirmed & handled.** Lambda access is only via `dbProxy`; the transformer therefore emits the proxy as **mandatory** for VPC-placed standalone RDS (a non-VPC standalone DB emits no proxy and warns that handlers cannot pool to it).
-- **`readerEndpoint` only on the cluster link** — `readReplicas` now emits a reader instance, but `readHost` can't surface through the standalone `dbProxy` path; the output is deferred with the rest of the sqlDatabase outputs.
-
-### C. Correctness bug in an existing stub
-
-- ~~**`celerity/handlerConfig` is not stripped.**~~ **Resolved.** `celerity/handlerConfig` is contributory-only and correctly handled: its emitter is a no-op, so the framework (which builds the output `Resources` solely from emitted resources — `assembleBlueprint`) leaves the abstract resource out of the concrete blueprint automatically; and the handler's `resolveInheritedSpec` performs the inheritance merge (linked `handlerConfig` → `metadata.sharedHandlerConfig` → schema defaults, per-field). Covered by `resources/handler/handler_resolve_test.go` (inheritance) and `transformer/handlerconfig_transform_test.go` (strip + inherited fields reaching the emitted lambda). The dead `TransformResource` free function that copied it into output — the source of the original claim — has been removed.
-
-### D. Recommended build order
-
-Rationale: build the link *targets* before the link *declarers*, and networking substrate before the resources that need placement.
-
-1. ~~**`handlerConfig` strip + inheritance**~~ — **Done.** Was already implemented; hardened with a strip regression test and dead-code removal (§C).
-2. ~~**Simple backing targets: `queue`, `topic`, `datastore`, `bucket`**~~ — **Done** (bucket partial: `lifecycle`/`replication` deferred). Emit concrete resource from schema; the handler→target link is established generically by preserving the handler's `linkSelector` onto the Lambda (`handler_aws_links.go`), so no per-target handler change is needed. **Two deferred cross-cutting follow-ups:** (a) per-target access-level annotations (`aws.lambda.<svc>.<target>.accessLevel`), sourced from the abstract `celerity/handler`→target annotations; (b) the **deploy-config pass** — wire `aws.<svc>[.<name>].*` deploy config (queue retention/max-size, datastore billing/capacity, bucket replication + lifecycle) via a shared resolver, contract-mapped first.
-3. **`config`** — backend-derived emission + the internal `resources` namespace store (the freshest, fully-specified mapping); unblocks runtime resource resolution.
-4. ~~**`vpc`**~~ — **Done** (emit). `aws/flex/vpc` with mode mapping, preset passthrough, deploy-config `cidrBlock`/DNS + `region`, reference-mode drops. Handler VPC *placement* (`vpcConfig` via `flex/vpc::function`, the `aws.flexvpc.lambda.subnetType` annotation) landed with the event-source/trigger work in step 6.
-5. ~~**`cache`, `sqlDatabase`**~~ — **Done.** Emit subnet-group + primary resource referencing `${resources.<vpc>_flex_vpc.spec.{privateSubnetIds,securityGroups}}` via `vpc.ConcreteResourceName`, resolving the VPC from the inbound `vpc→resource` link. **Cache password auth** is wired via the `aws/secretsmanager/secret` + `replicationGroup::secret` link (provider P2); **sqlDatabase** emits `dbProxy` (+IAM role + target group), the Aurora Serverless v2 cluster path (`aws.aurora.<db>.enabled`), and `readReplicas`. Cache iam/RBAC auth and the cache + sqlDatabase endpoint outputs are wired. **Preset-suitability validation is implemented:** a `managed`-mode VPC linked to a `cache`/`sqlDatabase` must have enough private subnets — `public`/`light-public` have none (reject both), and `light` is single-AZ (reject `sqlDatabase`, needs ≥2 AZs; a single-node `cache` is fine). Not checked for `referenced`-mode VPCs (topology unknown at transform time) — relies on the provider's plan-time subnet-group AZ validation. Facts derived from `celerity-vpc.mdx`, not a hardcoded table.
-6. ~~**`consumer`, `schedule` + the event-source half of `handler_aws_triggers.go`**~~ — **Done.** Absorbed sources: the handler emits `aws/events/rule` (schedule) + `aws/sns/subscription` (topic consumer), and stamps poll/push link annotations on the function (label-on-source). Handler VPC placement (`aws.flexvpc.lambda.subnetType`, no `vpcConfig`) also landed here.
-7. ~~**`api`**~~ — **Done.** Per-protocol fan-out, stage, JWT/REQUEST authorizers, custom domain (`domainName`+`apiMapping`), and route/auth annotations stamped on the function; `spec.id` ARN synthesised.
-
-`handler_aws_triggers.go` / `handler_api_annotations.go` are the connective tissue built incrementally across steps 2–7: each backing target or event source contributes its slice of "emit node + stamp annotations + set labels."
