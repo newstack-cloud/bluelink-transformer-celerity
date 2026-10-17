@@ -417,7 +417,17 @@ func (s *QueueTransformTestSuite) Test_queue_to_topic_emits_a_forwarder() {
 		annotationLiteral(fwd.Metadata.Annotations, "aws.lambda.sns.eventsTopic_sns_topic.envVarName"))
 
 	// A base execution role is emitted for it.
-	s.Require().NotNil(resources["ordersQueue_topic_forwarder_role"], "expected a forwarder role")
+	role := resources["ordersQueue_topic_forwarder_role"]
+	s.Require().NotNil(role, "expected a forwarder role")
+
+	// The blueprint resource names stay app-agnostic (selectors and the
+	// assertions above reference them), while the DEPLOYED names are app-scoped
+	// so two apps sharing an account never collide on create. No app name is
+	// available in a validation context, so the placeholder stands in.
+	s.Equal("placeholder-app-ordersQueue-fwd",
+		core.StringValue(fwd.Spec.Fields["functionName"]))
+	s.Equal("placeholder-app-ordersQueue-fwd-role",
+		core.StringValue(role.Spec.Fields["roleName"]))
 
 	// The source queue carries the forward label so it triggers the forwarder,
 	// while keeping its original selector label.
@@ -595,4 +605,50 @@ func literalAnnotation(value string) *substitutions.StringOrSubstitutions {
 			{StringValue: &value},
 		},
 	}
+}
+
+// Deployed forwarder names are scoped by the app name when one is available, so
+// two apps (or two concurrent e2e runs) sharing an account cannot collide on
+// CreateFunction or CreateRole.
+func (s *QueueTransformTestSuite) Test_forwarder_deployed_names_are_app_scoped() {
+	q := &schema.Resource{
+		Type: &schema.ResourceTypeWrapper{Value: "celerity/queue"},
+		Spec: core.MappingNodeFields("name", core.MappingNodeFromString("orders")),
+		LinkSelector: &schema.LinkSelector{
+			ByLabel: &schema.StringMap{Values: map[string]string{"stream": "orders-events"}},
+		},
+	}
+	topicRes := &schema.Resource{
+		Type: &schema.ResourceTypeWrapper{Value: "celerity/topic"},
+		Spec: core.MappingNodeFields("name", core.MappingNodeFromString("events")),
+		Metadata: &schema.Metadata{
+			Labels: &schema.StringMap{Values: map[string]string{"stream": "orders-events"}},
+		},
+	}
+
+	bp := &schema.Blueprint{Resources: &schema.ResourceMap{Values: map[string]*schema.Resource{
+		"ordersQueue": q,
+		"eventsTopic": topicRes,
+	}}}
+	out, err := NewTransformer(&shared.Dependencies{}).Transform(
+		context.Background(),
+		&transform.SpecTransformerTransformInput{
+			InputBlueprint: bp,
+			LinkGraph: edges(edgeWithLabels(
+				"ordersQueue", "eventsTopic", "celerity/queue", "celerity/topic",
+				map[string]string{"stream": "orders-events"},
+			)),
+			TransformerContext: configContext("orders-app"),
+		},
+	)
+	s.Require().NoError(err)
+	resources := out.TransformedBlueprint.Resources.Values
+
+	fwd := resources["ordersQueue_topic_forwarder"]
+	s.Require().NotNil(fwd, "the forwarder resource name must stay app-agnostic")
+	s.Equal("orders-app-ordersQueue-fwd", core.StringValue(fwd.Spec.Fields["functionName"]))
+
+	role := resources["ordersQueue_topic_forwarder_role"]
+	s.Require().NotNil(role, "the forwarder role resource name must stay app-agnostic")
+	s.Equal("orders-app-ordersQueue-fwd-role", core.StringValue(role.Spec.Fields["roleName"]))
 }
