@@ -57,6 +57,9 @@ func (e *emitter) emit(
 		return nil, err
 	}
 	diagnostics = append(diagnostics, basis.deferredDiagnostics()...)
+	diagnostics = append(diagnostics, externalResourcePolicyDiagnostics(
+		r, shared.ResolveAppName(run),
+	)...)
 
 	resources, triggerDiagnostics, err := emitTriggerResources(
 		r, run, funcResourceName, lambdaResource, resPropRewriter,

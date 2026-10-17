@@ -46,6 +46,23 @@ func externalTargetsPolicyDoc(targets []ExternalGrant) *core.MappingNode {
 	)
 }
 
+// ExternalTargetActions is what a grant allows, exported so a diagnostic
+// describing the far account's side of it cannot disagree with the policy
+// actually seeded.
+func ExternalTargetActions(service, access string) []string {
+	return externalTargetActions(service, access)
+}
+
+// ExternalTargetResourceARNs is what a grant is scoped to, exported for the same
+// reason.
+func ExternalTargetResourceARNs(target ExternalGrant) []string {
+	if target.Service != ExternalTargetServiceS3 {
+		return []string{target.ARN}
+	}
+
+	return []string{target.ARN, strings.TrimSuffix(target.ARN, "/") + "/*"}
+}
+
 // The action sets the provider's links grant for a managed resource, so that
 // moving a resource out of the blueprint does not change what a handler may do
 // with it. Each default matches the provider's default for its link.
@@ -138,9 +155,11 @@ func externalTargetResourceNode(target ExternalGrant) *core.MappingNode {
 		return policyResourceNode(target.ARN)
 	}
 
+	arns := ExternalTargetResourceARNs(target)
+
 	return core.MappingNodeItems(
-		core.MappingNodeFromString(target.ARN),
-		core.MappingNodeFromString(strings.TrimSuffix(target.ARN, "/")+"/*"),
+		core.MappingNodeFromString(arns[0]),
+		core.MappingNodeFromString(arns[1]),
 	)
 }
 

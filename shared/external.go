@@ -51,6 +51,24 @@ func ExternalModeAttributes() map[string]*provider.ResourceDefinitionsSchema {
 	}
 }
 
+// AccountAttributes returns the account attribute a resource type declares when
+// its identifier does not name the account that owns it.
+//
+// Authored only so a diagnostic can name the owner of a resource in another
+// account. It grants nothing and changes nothing about what is emitted: the
+// account that owns a resource is a fact about the environment, not a knob.
+func AccountAttributes() map[string]*provider.ResourceDefinitionsSchema {
+	return map[string]*provider.ResourceDefinitionsSchema{
+		"account": {
+			Type: provider.ResourceDefinitionsSchemaTypeString,
+			Description: "The account that owns the external resource, for a target whose " +
+				"identifier does not name one. Optional, and used only to tell you what the " +
+				"owning account has to allow: reaching a resource another account owns needs " +
+				"that account's permission as well as this one's.",
+		},
+	}
+}
+
 // RegionAttributes returns the region attribute a resource type declares when
 // its identifier may not carry one.
 func RegionAttributes() map[string]*provider.ResourceDefinitionsSchema {
@@ -77,6 +95,10 @@ type External struct {
 	// and the author set it. A target whose identifier carries a region resolves
 	// the effective region itself.
 	Region string
+	// Account as authored, empty unless the resource type declares the attribute
+	// and the author set it. Carried only so a diagnostic can name the owner; a
+	// target whose identifier names the account reads it from there.
+	Account string
 }
 
 // ResolvedExternal reads the mode and identifier fields, returning nil for a
@@ -112,8 +134,9 @@ func ResolvedExternal(
 	}
 
 	return &External{
-		ID:     identifier,
-		Region: stringField(resource, "$.region"),
+		ID:      identifier,
+		Region:  stringField(resource, "$.region"),
+		Account: stringField(resource, "$.account"),
 	}, nil
 }
 

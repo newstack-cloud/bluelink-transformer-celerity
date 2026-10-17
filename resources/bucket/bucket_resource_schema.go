@@ -150,6 +150,7 @@ func bucketResourceSchema() *provider.ResourceDefinitionsSchema {
 
 	maps.Copy(definition.Attributes, shared.ExternalModeAttributes())
 	maps.Copy(definition.Attributes, shared.RegionAttributes())
+	maps.Copy(definition.Attributes, shared.AccountAttributes())
 
 	return definition
 }

@@ -599,3 +599,68 @@ func (s *ExternalResourcesTransformTestSuite) externalResourcesPolicy(
 
 	return nil
 }
+
+// The grant on the execution role is half of a cross-account reach. The other
+// half is a statement on the resource itself, in an account Celerity cannot
+// write to, so the author is handed the statement rather than left to discover
+// an AccessDenied at the first call.
+func (s *ExternalResourcesTransformTestSuite) Test_a_cross_account_grant_reports_the_statement_to_add() {
+	out := s.transform(
+		map[string]*schema.Resource{
+			"auditWriter": handlerLinkedTo(map[string]string{"app": "orders"}),
+			"auditTopic":  externalResource("celerity/topic", externalTopicARN),
+		},
+		edges(edge("auditWriter", "auditTopic", "celerity/handler", "celerity/topic")),
+	)
+
+	s.Empty(s.errorMessages(out))
+
+	message := s.infoMessageContaining(out, "must also allow this principal")
+	s.Require().NotEmpty(message, "expected the far account's side of the grant to be reported")
+
+	s.Contains(message, externalTopicARN, "the statement names the resource")
+	s.Contains(message, "\"sns:Publish\"", "and the actions actually granted")
+	s.Contains(message, "210987654321",
+		"an SNS ARN names its account, so the owner is named rather than guessed")
+	s.Contains(message, "arn:aws:iam::<account-being-deployed-into>:role/",
+		"the account being deployed into is a placeholder, not an STS lookup")
+	s.Contains(message, "kms:Decrypt",
+		"the encrypted case is stated, since neither policy can be read from here")
+}
+
+// A handler reaching nothing external has no far account to tell about, so it
+// gets no such diagnostic.
+func (s *ExternalResourcesTransformTestSuite) Test_a_managed_only_handler_reports_no_statement() {
+	out := s.transform(
+		map[string]*schema.Resource{
+			"auditWriter": handlerLinkedTo(map[string]string{"app": "orders"}),
+			"auditTopic": {
+				Type: &schema.ResourceTypeWrapper{Value: "celerity/topic"},
+				Spec: core.MappingNodeFields("name", core.MappingNodeFromString("audit")),
+				Metadata: &schema.Metadata{
+					Labels: &schema.StringMap{Values: map[string]string{"app": "orders"}},
+				},
+			},
+		},
+		edges(edge("auditWriter", "auditTopic", "celerity/handler", "celerity/topic")),
+	)
+
+	s.Empty(s.errorMessages(out))
+	s.Empty(s.infoMessageContaining(out, "must also allow this principal"))
+}
+
+func (s *ExternalResourcesTransformTestSuite) infoMessageContaining(
+	out *transform.SpecTransformerTransformOutput,
+	fragment string,
+) string {
+	for _, diagnostic := range out.Diagnostics {
+		if diagnostic.Level != core.DiagnosticLevelInfo {
+			continue
+		}
+		if strings.Contains(diagnostic.Message, fragment) {
+			return diagnostic.Message
+		}
+	}
+
+	return ""
+}
