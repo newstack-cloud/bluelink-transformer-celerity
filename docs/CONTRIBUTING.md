@@ -2,11 +2,8 @@
 
 ## Setup
 
-Ensure git uses the custom directory for git hooks so the pre-commit and commit-msg linting hooks kick in.
-
-```bash
-git config core.hooksPath .githooks
-```
+The repo has no git hooks: run `golangci-lint run --build-tags=unit,integration,e2e ./...` before committing, and, after
+`yarn install`, `yarn commitlint --from origin/main` to check your commit messages.
 
 ### Prerequisites
 
@@ -25,7 +22,7 @@ go mod download
 
 ### Node dependencies
 
-There are node.js dependencies that provide tools that are used in git hooks and scripting for the transformer.
+There are node.js dependencies that provide commitlint, for checking commit messages.
 
 Install dependencies from the root directory by simply running:
 ```bash
@@ -34,11 +31,13 @@ yarn
 
 ## Running Tests
 
-This project uses Go build tags to separate unit and integration tests. All test files include a
-build tag at the top of the file:
+This project uses Go build tags to separate test tiers. Test files include a build tag at the
+top of the file:
 
 - `//go:build unit` for unit tests
-- `//go:build integration` for integration tests
+- `//go:build integration` for integration tests, against LocalStack (needs docker, the AWS CLI
+  with `awslocal`, `jq` and `curl`)
+- `//go:build e2e` for end-to-end tests, which deploy to a real AWS account
 
 Test caching is disabled (`-count=1`) for all test modes since this project is heavily
 integration-focused and cached test results can mask real issues.
@@ -67,18 +66,24 @@ bash scripts/run-tests.sh --integration
 ```
 
 The script will:
-- Source `.env.test` automatically when running integration or all tests
-- Generate a `coverage.txt` coverage profile
-- Generate `coverage.html` for local visual coverage inspection
-- In CI, generate a `report.json` for test reporting
+- Source `.env.test` automatically when running integration, all or e2e tests
+- Except with `--e2e`:
+  - Generate a `coverage.txt` coverage profile
+  - Generate `coverage.html` for local visual coverage inspection
+  - In CI, generate a `report.json` for test reporting
+
+`--e2e` empties `coverage.txt` and writes neither of the others, so a `coverage.html` left from
+an earlier run is stale.
 
 ### Linting
 
 Run the linter:
 
 ```bash
-golangci-lint run ./...
+golangci-lint run --build-tags=unit,integration,e2e ./...
 ```
+
+Without `--build-tags`, the linter skips every tagged file, which is nearly all tests.
 
 ## Further documentation
 

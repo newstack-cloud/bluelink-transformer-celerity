@@ -43,8 +43,8 @@ On every push to `main`, the workflow:
 The release PR accumulates changes as you push to main. When you're ready to release:
 
 1. Review the changelog and version in the release PR.
-2. Merge the PR.
-3. The merge commit (prefixed `chore: release vX.Y.Z`) triggers the workflow again, which:
+2. Rebase-merge or squash-merge the PR, so the commit on main is `chore: release vX.Y.Z`; a merge commit isn't detected.
+3. That commit triggers the workflow again, which:
    - Detects the release merge from the commit message
    - Creates the `vX.Y.Z` tag
    - Runs goreleaser to build artifacts and create the GitHub release
