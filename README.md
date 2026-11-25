@@ -9,7 +9,7 @@ This plugin provides a collection of abstract resource types and functionality t
 
 For the full list of supported abstract resources, see the [Celerity Transformer](https://registry.bluelink.dev/transformers/newstack-cloud/celerity/latest/).
 
-For documentation on Celerity and its resource types, see the [Celerity documentation](https://www.celerityframework.io/docs/framework/applications/).
+For documentation on Celerity and its resource types, see the [Celerity documentation](https://celerity.dev/docs/framework/applications/).
 
 ## Overview
 
