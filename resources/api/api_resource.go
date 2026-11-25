@@ -24,7 +24,7 @@ func Resource() *transformerv1.AbstractResourceDefinition {
 			"environment or a custom server, routing incoming requests to the " +
 			"`celerity/handler` resources that are linked to it.\n\n" +
 			"See the " +
-			"[`celerity/api` specification](https://www.celerityframework.io/docs/framework/applications/resources/celerity-api) " +
+			"[`celerity/api` specification](https://celerity.dev/docs/framework/applications/resources/celerity-api) " +
 			"for more information.",
 		Schema:  apiResourceSchema(),
 		Resolve: resolveAPI,

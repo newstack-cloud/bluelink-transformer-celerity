@@ -25,7 +25,7 @@ func Resource() *transformerv1.AbstractResourceDefinition {
 			"and the database schema (migrations, validation and exports) are managed as a " +
 			"single concern.\n\n" +
 			"See the " +
-			"[`celerity/sqlDatabase` specification](https://www.celerityframework.io/docs/framework/applications/resources/celerity-sql-database) " +
+			"[`celerity/sqlDatabase` specification](https://celerity.dev/docs/framework/applications/resources/celerity-sql-database) " +
 			"for more information.",
 		Schema:  sqlDatabaseResourceSchema(),
 		Resolve: resolveSQLDatabase,

@@ -20,7 +20,7 @@ func Resource() *transformerv1.AbstractResourceDefinition {
 		FormattedDescription: "The abstract resource type used to define a virtual private cloud in which " +
 			"Celerity applications, databases and caches can be placed.\n\n" +
 			"See the " +
-			"[`celerity/vpc` specification](https://www.celerityframework.io/docs/framework/applications/resources/celerity-vpc) " +
+			"[`celerity/vpc` specification](https://celerity.dev/docs/framework/applications/resources/celerity-vpc) " +
 			"for more information.",
 		Schema:  vpcResourceSchema(),
 		Resolve: resolveVPC,

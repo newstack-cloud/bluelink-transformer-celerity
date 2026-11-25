@@ -23,7 +23,7 @@ func Resource() *transformerv1.AbstractResourceDefinition {
 			"Redis OSS-compatible in-memory databases are supported, abstracting the " +
 			"difference between single-instance and cluster topologies.\n\n" +
 			"See the " +
-			"[`celerity/cache` specification](https://www.celerityframework.io/docs/framework/applications/resources/celerity-cache) " +
+			"[`celerity/cache` specification](https://celerity.dev/docs/framework/applications/resources/celerity-cache) " +
 			"for more information.",
 		Schema:  cacheResourceSchema(),
 		Resolve: resolveCache,

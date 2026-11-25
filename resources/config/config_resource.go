@@ -23,7 +23,7 @@ func Resource() *transformerv1.AbstractResourceDefinition {
 			"It holds configuration and sensitive information such as API keys, database " +
 			"passwords and other credentials used by an application.\n\n" +
 			"See the " +
-			"[`celerity/config` specification](https://www.celerityframework.io/docs/framework/applications/resources/celerity-config) " +
+			"[`celerity/config` specification](https://celerity.dev/docs/framework/applications/resources/celerity-config) " +
 			"for more information.",
 		Schema:  configResourceSchema(),
 		Resolve: resolveConfig,

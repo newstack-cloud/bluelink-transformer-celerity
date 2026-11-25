@@ -20,7 +20,7 @@ func Resource() *transformerv1.AbstractResourceDefinition {
 			"`celerity/handler` resources, such as runtime, memory, timeout and environment " +
 			"variables that would otherwise be repeated across each handler.\n\n" +
 			"See the " +
-			"[`celerity/handlerConfig` specification](https://www.celerityframework.io/docs/framework/applications/resources/celerity-handler-config) " +
+			"[`celerity/handlerConfig` specification](https://celerity.dev/docs/framework/applications/resources/celerity-handler-config) " +
 			"for more information.",
 		Schema:  handlerConfigResourceSchema(),
 		Resolve: resolveHandlerConfig,

@@ -25,7 +25,7 @@ func Resource() *transformerv1.AbstractResourceDefinition {
 			"communication between applications and to respond to infrastructure events, " +
 			"with a `celerity/consumer` resource subscribing to the messages.\n\n" +
 			"See the " +
-			"[`celerity/topic` specification](https://www.celerityframework.io/docs/framework/applications/resources/celerity-topic) " +
+			"[`celerity/topic` specification](https://celerity.dev/docs/framework/applications/resources/celerity-topic) " +
 			"for more information.",
 		Schema:  topicResourceSchema(),
 		Resolve: resolveTopic,

@@ -23,7 +23,7 @@ func Resource() *transformerv1.AbstractResourceDefinition {
 			"A queue is typically paired with a `celerity/consumer` resource that processes " +
 			"messages from it, while handlers write messages to it.\n\n" +
 			"See the " +
-			"[`celerity/queue` specification](https://www.celerityframework.io/docs/framework/applications/resources/celerity-queue) " +
+			"[`celerity/queue` specification](https://celerity.dev/docs/framework/applications/resources/celerity-queue) " +
 			"for more information.",
 		Schema:  queueResourceSchema(),
 		Resolve: resolveQueue,

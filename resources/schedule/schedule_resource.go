@@ -18,7 +18,7 @@ func Resource() *transformerv1.AbstractResourceDefinition {
 		FormattedDescription: "The abstract resource type used to define a scheduled rule that triggers " +
 			"`celerity/handler` resources at a specific time or interval.\n\n" +
 			"See the " +
-			"[`celerity/schedule` specification](https://www.celerityframework.io/docs/framework/applications/resources/celerity-schedule) " +
+			"[`celerity/schedule` specification](https://celerity.dev/docs/framework/applications/resources/celerity-schedule) " +
 			"for more information.",
 		Schema:  scheduleResourceSchema(),
 		Resolve: resolveSchedule,
