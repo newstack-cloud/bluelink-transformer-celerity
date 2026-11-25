@@ -21,7 +21,7 @@ func Resource() *transformerv1.AbstractResourceDefinition {
 			"messages from a `celerity/queue`, an externally defined queue or a message " +
 			"broker.\n\n" +
 			"See the " +
-			"[`celerity/consumer` specification](https://www.celerityframework.io/docs/framework/applications/resources/celerity-consumer) " +
+			"[`celerity/consumer` specification](https://celerity.dev/docs/framework/applications/resources/celerity-consumer) " +
 			"for more information.",
 		Schema:  consumerResourceSchema(),
 		Resolve: resolveConsumer,

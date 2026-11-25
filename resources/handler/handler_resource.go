@@ -28,7 +28,7 @@ func Resource(deps *shared.Dependencies) *transformerv1.AbstractResourceDefiniti
 			"scheduled events or events from cloud services, along with steps in a " +
 			"workflow.\n\n" +
 			"See the " +
-			"[`celerity/handler` specification](https://www.celerityframework.io/docs/framework/applications/resources/celerity-handler) " +
+			"[`celerity/handler` specification](https://celerity.dev/docs/framework/applications/resources/celerity-handler) " +
 			"for more information.",
 		Schema:  handlerResourceSchema(),
 		Resolve: resolveHandler,

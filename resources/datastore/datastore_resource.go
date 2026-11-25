@@ -23,7 +23,7 @@ func Resource() *transformerv1.AbstractResourceDefinition {
 			"Handlers can be triggered by changes in a data store through a " +
 			"`celerity/consumer` resource.\n\n" +
 			"See the " +
-			"[`celerity/datastore` specification](https://www.celerityframework.io/docs/framework/applications/resources/celerity-datastore) " +
+			"[`celerity/datastore` specification](https://celerity.dev/docs/framework/applications/resources/celerity-datastore) " +
 			"for more information.",
 		Schema:  datastoreResourceSchema(),
 		Resolve: resolveDatastore,

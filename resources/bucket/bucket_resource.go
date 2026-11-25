@@ -23,7 +23,7 @@ func Resource() *transformerv1.AbstractResourceDefinition {
 			"Handlers can be triggered by events emitted for objects in a bucket through a " +
 			"`celerity/consumer` resource.\n\n" +
 			"See the " +
-			"[`celerity/bucket` specification](https://www.celerityframework.io/docs/framework/applications/resources/celerity-bucket) " +
+			"[`celerity/bucket` specification](https://celerity.dev/docs/framework/applications/resources/celerity-bucket) " +
 			"for more information.",
 		Schema:  bucketResourceSchema(),
 		Resolve: resolveBucket,
