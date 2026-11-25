@@ -2,6 +2,15 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.3.0] - 2026-11-25
+
+### Bug Fixes
+
+- Link the resource type descriptions to the celerity docs at celerity.dev([c17e0f7](https://github.com/newstack-cloud/bluelink-transformer-celerity/commit/c17e0f7523244d0176612cd5bdb152910cfc26a9))
+
+### Features
+
+- Wire cache and SQL database access for handlers([e42bf72](https://github.com/newstack-cloud/bluelink-transformer-celerity/commit/e42bf729c8bb88c4a48cf691ff2995ace54865ee))
 ## [0.2.0] - 2026-08-07
 
 ### Features
