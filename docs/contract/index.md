@@ -152,7 +152,7 @@ The CLI reads `app.deploy.jsonc`, splits its keys by prefix, and passes a `Bluel
 
 `appName` is a **first-class authoring item**: it is a named field at the top level of `app.deploy.jsonc`, deliberately not buried in the generic `contextVariables` map, so the project name is an explicit part of the authoring experience. As with the build manifest, it may be absent in a validation context — the transformer must tolerate that and only require it when emitting resources that depend on it.
 
-**Target-specific keys** (`aws.*`, `gcloud.*`, `azure.*` and their equivalents, including provider-scoped and transformer-scoped config) are documented in the target environment section of the Celerity resource type [specifications](https://celerityframework.io/docs/framework/applications). For example, `aws-serverless` uses `aws.lambda.*`, `aws.config.*`, and related prefixes; see [aws-serverless.md §2](aws-serverless.md#2-deploy-configuration-aws-specific-keys).
+**Target-specific keys** (`aws.*`, `gcloud.*`, `azure.*` and their equivalents, including provider-scoped and transformer-scoped config) are documented in the target environment section of the Celerity resource type [specifications](https://celerity.dev/docs/framework/applications). For example, `aws-serverless` uses `aws.lambda.*`, `aws.config.*`, and related prefixes; see [aws-serverless.md §2](aws-serverless.md#2-deploy-configuration-aws-specific-keys).
 
 ---
 
